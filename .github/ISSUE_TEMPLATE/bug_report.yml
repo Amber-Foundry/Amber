@@ -54,7 +54,7 @@ body:
         - Linux
         - Other
     validations:
-      required: true
+      required: false
 
   - type: input
     id: version
@@ -89,7 +89,7 @@ body:
         - Ollama
         - LM Studio
     validations:
-      required: true
+      required: flase
 
   - type: textarea
     id: impact
