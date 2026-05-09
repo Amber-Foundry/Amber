@@ -18,9 +18,7 @@ fn cl100k_bpe() -> &'static CoreBPE {
 
 /// Token count for budgeting using OpenAI `cl100k_base` (tiktoken-compatible).
 pub fn count_tokens(text: &str) -> usize {
-    cl100k_bpe()
-        .encode_with_special_tokens(text)
-        .len()
+    cl100k_bpe().encode_with_special_tokens(text).len()
 }
 
 fn trim_tail_fallback_chars(text: &str, max_tokens: usize) -> String {
