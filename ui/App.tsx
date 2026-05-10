@@ -7,6 +7,7 @@ import DecayDashboard from "./components/DecayDashboard";
 import LlmSettings from "./components/LlmSettings";
 import ScopeIndicator from "./components/ScopeIndicator";
 import ChatPanel from "./components/ChatPanel";
+import ActiveMemoryPanel from "./components/ActiveMemoryPanel";
 import type { ContextAssemblerScope } from "./constants/contextBudget";
 import { refreshAllDecayScores } from "./services/nodes";
 import "./App.css";
@@ -24,7 +25,7 @@ function App() {
   const [isRedactedUnlocked, setIsRedactedUnlocked] = useState<boolean>(false);
   const [showDashboard, setShowDashboard] = useState<boolean>(false);
   const [showSettings, setShowSettings] = useState<boolean>(false);
-  const leftPaneExpanded = leftPaneVisible || selectedNodeId !== null;
+  const leftPaneExpanded = leftPaneVisible;
   const scopeNodeIds = useMemo(() => (selectedNodeId ? [selectedNodeId] : []), [selectedNodeId]);
   const [assemblerScope, setAssemblerScope] = useState<ContextAssemblerScope>("local");
 
@@ -159,6 +160,7 @@ function App() {
                   scope={assemblerScope}
                   onScopeChange={setAssemblerScope}
                 />
+                <ActiveMemoryPanel selectedNodeIds={scopeNodeIds} />
                 <NodeEditor
                   selectedNodeId={selectedNodeId}
                   onNodeDeleted={onNodeDeleted}

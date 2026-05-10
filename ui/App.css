@@ -951,6 +951,111 @@ body,
   min-height: 0;
 }
 
+.active-memory-panel {
+  margin: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(8, 12, 22, 0.72);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.active-memory-header h3 {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #e3ecff;
+  letter-spacing: 0.01em;
+}
+
+.active-memory-list {
+  display: grid;
+  gap: 8px;
+}
+
+.active-memory-item {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 8px 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.active-memory-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.active-memory-item-top strong {
+  min-width: 0;
+  color: #dce7ff;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.active-memory-door-stub {
+  color: #a8b6dc;
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.active-memory-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.active-memory-rate-badge {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #dce7ff;
+}
+
+.active-memory-rate-badge.rate-fast {
+  border-color: rgba(252, 129, 129, 0.4);
+  background: rgba(252, 129, 129, 0.12);
+}
+
+.active-memory-rate-badge.rate-standard {
+  border-color: rgba(143, 184, 255, 0.35);
+  background: rgba(143, 184, 255, 0.12);
+}
+
+.active-memory-rate-badge.rate-slow {
+  border-color: rgba(104, 211, 145, 0.4);
+  background: rgba(104, 211, 145, 0.12);
+}
+
+.active-memory-rate-badge.rate-pinned {
+  border-color: rgba(237, 137, 54, 0.45);
+  background: rgba(237, 137, 54, 0.12);
+}
+
+.active-memory-usage {
+  color: #9eb0db;
+  font-size: 0.72rem;
+}
+
+.active-memory-empty {
+  margin: 0;
+  color: #9eb0db;
+  font-size: 0.78rem;
+}
+
+.active-memory-status {
+  margin: 0;
+  color: #ffb8b8;
+  font-size: 0.76rem;
+}
+
 .chat-panel {
   position: relative;
   z-index: 10;
