@@ -33,10 +33,6 @@ type BasicsAnswers = {
   interests: string;
 };
 
-type StagedOnboardingProposal = OnboardingProposedNode & {
-  resolvedVaultId: string | null;
-};
-
 const QUESTION_FIELDS: Array<{
   key: keyof BasicsAnswers;
   label: string;
@@ -103,29 +99,6 @@ function vaultDisplayLabel(vaultId: string | null, nameFromList: string | null):
   return KNOWN_VAULT_DISPLAY_NAMES[vaultId] ?? "Unknown vault";
 }
 
-function resolveVaultIdFromProposal(proposal: OnboardingProposedNode): string | null {
-  const rawKey = (proposal.targetVaultKey ?? proposal.category ?? "").trim().toLowerCase();
-  switch (rawKey) {
-    case "demographics":
-      return "vault_root_graph";
-    case "interests":
-    case "personal":
-      return "vault_personal";
-    case "work":
-      return "vault_work";
-    case "learning":
-      return "vault_learning";
-    case "health":
-      return "vault_health";
-    case "finance":
-      return "vault_finance";
-    case "credentials":
-      return "vault_credentials";
-    default:
-      return null;
-  }
-}
-
 function buildAnswersJson(answers: BasicsAnswers): string {
   const payload = {
     displayName: answers.displayName.trim(),
@@ -155,7 +128,7 @@ function OnboardingShell({ onComplete, onSkip, busy, errorMessage }: OnboardingS
   const [llmBusy, setLlmBusy] = useState(false);
   const [extractBusy, setExtractBusy] = useState(false);
   const [hasExtracted, setHasExtracted] = useState(false);
-  const [stagedProposals, setStagedProposals] = useState<StagedOnboardingProposal[]>([]);
+  const [stagedProposals, setStagedProposals] = useState<OnboardingProposedNode[]>([]);
   const [vaultNameById, setVaultNameById] = useState<Record<string, string>>({});
 
   const endpoint = provider === "ollama" ? ollamaEndpoint : lmStudioEndpoint;
@@ -266,16 +239,9 @@ function OnboardingShell({ onComplete, onSkip, busy, errorMessage }: OnboardingS
       const extracted = await unwrapIpcResult(
         onboardingExtractProposals(answersJson, provider, endpoint.trim(), selectedModel.trim())
       );
-      const staged = extracted.map((proposal) => {
-        const resolvedVaultId = resolveVaultIdFromProposal(proposal);
-        return {
-          ...proposal,
-          resolvedVaultId,
-        };
-      });
-      setStagedProposals(staged);
+      setStagedProposals(extracted);
       setHasExtracted(true);
-      setStatusMessage(`Extraction complete. Staged ${staged.length} proposal(s).`);
+      setStatusMessage(`Extraction complete. Staged ${extracted.length} proposal(s).`);
       return true;
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : String(error));
@@ -460,7 +426,7 @@ function OnboardingShell({ onComplete, onSkip, busy, errorMessage }: OnboardingS
                             proposal.resolvedVaultId,
                             vaultNameById[proposal.resolvedVaultId] ?? null
                           )} (${proposal.resolvedVaultId})`
-                        : "Unmapped — choose in Commit 8 review editor"}
+                        : "Unmapped — resolve before saving"}
                     </p>
                     <p className="onboarding-meta">
                       Category/key source: {proposal.targetVaultKey ?? proposal.category ?? "none"}

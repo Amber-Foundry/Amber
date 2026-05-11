@@ -203,6 +203,8 @@ pub struct OnboardingProposedNode {
     pub tags: Option<Vec<String>>,
     #[ts(optional)]
     pub node_type: Option<String>,
+    #[ts(optional)]
+    pub resolved_vault_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
