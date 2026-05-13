@@ -1469,6 +1469,11 @@ fn onboarding_commit(
                 return Err("Onboarding commit row is missing vault_id".to_string());
             }
             ensure_onboarding_vault_exists(&tx, vault_id)?;
+            let vault = fetch_vault_by_id(&tx, vault_id)?;
+            let (resolved_vault_id, resolved_sub_vault_id) = match vault.parent_vault_id {
+                Some(parent_id) => (parent_id, Some(vault.id)),
+                None => (vault.id, None),
+            };
 
             let title = proposal.title.trim();
             if title.is_empty() {
@@ -1537,10 +1542,11 @@ fn onboarding_commit(
                 "INSERT INTO nodes (
                     id, vault_id, sub_vault_id, node_type, title, summary, detail, source, source_type,
                     privacy_tier, priority, meta
-                ) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10);",
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11);",
                 params![
                     node_id,
-                    vault_id,
+                    resolved_vault_id,
+                    resolved_sub_vault_id,
                     node_type,
                     title,
                     summary,
