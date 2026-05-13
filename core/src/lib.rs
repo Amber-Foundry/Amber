@@ -1123,9 +1123,9 @@ fn node_create(input: NodeCreateInput, state: tauri::State<'_, DbState>) -> IpcR
 
         let id = generate_id(&tx, "node")?;
         let node_type = input.node_type.unwrap_or_else(|| "concept".to_string());
-        let priority_json = input.priority.unwrap_or_else(|| {
-            "{\"score\":1.0,\"profile\":\"standard\",\"pinned\":false,\"access_count_30active\":0,\"access_count_90active\":0,\"auto_trim_threshold\":0.25}".to_string()
-        });
+        let priority_json = input
+            .priority
+            .unwrap_or_else(|| priority::DEFAULT_PRIORITY_JSON.to_string());
         let meta = input.meta.unwrap_or_else(|| "{}".to_string());
 
         tx.execute(
@@ -1531,7 +1531,7 @@ fn onboarding_commit(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(|value| value.to_string());
-            let priority_json = "{\"score\":1.0,\"profile\":\"standard\",\"pinned\":false,\"access_count_30active\":0,\"access_count_90active\":0,\"auto_trim_threshold\":0.25}";
+            let priority_json = priority::DEFAULT_PRIORITY_JSON;
 
             tx.execute(
                 "INSERT INTO nodes (
