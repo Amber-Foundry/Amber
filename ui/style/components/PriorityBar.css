@@ -1,0 +1,42 @@
+@import "../Shared.css";
+
+.priority-bar {
+  position: relative;
+  width: 80px;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.priority-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 300ms ease;
+}
+
+.priority-bar-high {
+  background: linear-gradient(90deg, #4fd1c5, #63b3ed);
+}
+
+.priority-bar-mid {
+  background: linear-gradient(90deg, #ecc94b, #ed8936);
+}
+
+.priority-bar-low {
+  background: linear-gradient(90deg, #fc8181, #e53e3e);
+  opacity: 0.8;
+}
+
+.priority-bar-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.58rem;
+  color: #f3f6ff;
+  pointer-events: none;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
+}

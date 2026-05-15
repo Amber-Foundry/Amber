@@ -1,0 +1,88 @@
+@import "../Shared.css";
+
+.scope-indicator {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(8, 12, 22, 0.72);
+  padding: 10px 12px;
+  margin: 10px 10px 0;
+  display: grid;
+  gap: 8px;
+}
+
+.scope-indicator-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #c9d3f0;
+  font-size: 0.78rem;
+}
+
+.scope-indicator-row-controls {
+  align-items: center;
+}
+
+.scope-indicator-label {
+  margin-right: 4px;
+  opacity: 0.85;
+}
+
+.scope-indicator-scope-toggle {
+  display: inline-flex;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.scope-scope-btn {
+  padding: 4px 12px;
+  font-size: 0.72rem;
+  border: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: #c9d3f0;
+  cursor: pointer;
+}
+
+.scope-scope-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.scope-scope-btn.active {
+  background: rgba(99, 179, 237, 0.28);
+  color: #fff;
+}
+
+.scope-indicator-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 0;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.scope-indicator-track::-webkit-progress-bar {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.scope-indicator-track::-webkit-progress-value {
+  background: linear-gradient(90deg, #63b3ed, #68d391);
+}
+
+.scope-indicator-track::-moz-progress-bar {
+  background: linear-gradient(90deg, #63b3ed, #68d391);
+}
+
+.scope-indicator-track.danger::-webkit-progress-value {
+  background: linear-gradient(90deg, #fc8181, #e53e3e);
+}
+
+.scope-indicator-track.danger::-moz-progress-bar {
+  background: linear-gradient(90deg, #fc8181, #e53e3e);
+}
+
+.scope-indicator-status {
+  margin: 0;
+  color: #ffb8b8;
+  font-size: 0.76rem;
+}

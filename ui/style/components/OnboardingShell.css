@@ -1,0 +1,258 @@
+@import "../Shared.css";
+
+.onboarding-shell {
+  position: absolute;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(4, 7, 14, 0.82);
+  backdrop-filter: blur(8px);
+}
+
+.onboarding-card {
+  width: min(860px, 95vw);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 16px;
+  background: rgba(9, 12, 22, 0.92);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+  padding: 20px;
+  display: grid;
+  gap: 18px;
+}
+
+.onboarding-loading-card {
+  width: min(500px, 92vw);
+  text-align: center;
+}
+
+onboarding-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.onboarding-eyebrow {
+  margin: 0 0 4px;
+  font-size: 0.76rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #98acd8;
+}
+
+.onboarding-header h1 {
+  margin: 0;
+  font-size: 1.4rem;
+  color: #e6eeff;
+}
+
+.onboarding-skip {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #dce7ff;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.onboarding-stepper {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.onboarding-step {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.onboarding-step span {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: #dce7ff;
+}
+
+.onboarding-step small {
+  font-size: 0.78rem;
+  color: #b5c4e9;
+}
+
+.onboarding-step.active {
+  border-color: rgba(111, 190, 255, 0.75);
+  background: rgba(111, 190, 255, 0.16);
+}
+
+.onboarding-step.done {
+  border-color: rgba(104, 211, 145, 0.45);
+  background: rgba(104, 211, 145, 0.13);
+}
+
+.onboarding-content {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 14px;
+  min-height: 170px;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.onboarding-content h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: #ebf2ff;
+}
+
+.onboarding-content p {
+  margin: 0;
+  color: #c3cfef;
+}
+
+.onboarding-form-grid,
+.onboarding-llm-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.onboarding-field {
+  display: grid;
+  gap: 6px;
+}
+
+.onboarding-field span {
+  font-size: 0.84rem;
+  color: #cfdbf9;
+}
+
+.onboarding-field input,
+.onboarding-field textarea,
+.onboarding-field select {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(10, 14, 26, 0.8);
+  color: #ecf3ff;
+  padding: 9px 10px;
+  font: inherit;
+}
+
+.onboarding-field textarea {
+  resize: vertical;
+  min-height: 72px;
+}
+
+.onboarding-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.onboarding-inline-button {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8efff;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.onboarding-inline-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.onboarding-review-list {
+  display: grid;
+  gap: 10px;
+}
+
+.onboarding-proposal-card {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px;
+  display: grid;
+  gap: 7px;
+}
+
+.onboarding-proposal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.onboarding-proposal-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #edf3ff;
+}
+
+.onboarding-proposal-header small {
+  color: #a8bbe6;
+  font-size: 0.75rem;
+}
+
+.onboarding-meta {
+  font-size: 0.82rem;
+  color: #b6c6ea !important;
+}
+
+.onboarding-hint {
+  font-size: 0.84rem;
+  color: #a5f2cd !important;
+}
+
+.onboarding-done-note {
+  display: grid;
+  gap: 6px;
+}
+
+.onboarding-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.onboarding-actions button {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8efff;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.onboarding-actions button.primary {
+  border-color: rgba(143, 184, 255, 0.35);
+  background: rgba(143, 184, 255, 0.16);
+}
+
+.onboarding-actions button:disabled,
+.onboarding-skip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.onboarding-error {
+  color: #ffb8b8 !important;
+  font-size: 0.86rem;
+}

@@ -1,0 +1,329 @@
+@import "../Shared.css";
+.dashboard-trigger {
+  width: 100%;
+  margin: 0 0 10px;
+  border: 1px solid rgba(143, 184, 255, 0.2);
+  border-radius: 10px;
+  background: rgba(143, 184, 255, 0.08);
+  color: #d6e5ff;
+  padding: 10px;
+  font-size: 0.88rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease;
+}
+
+.dashboard-trigger:hover {
+  background: rgba(143, 184, 255, 0.16);
+}
+
+.vault-search,
+.search-input {
+  width: 100%;
+  margin: 0 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(5, 8, 14, 0.55);
+  color: #eff3ff;
+  padding: 8px 10px;
+  font-size: 0.9rem;
+}
+
+/* Search result count badge */
+
+.search-result-count {
+  margin: -6px 0 8px;
+  font-size: 0.78rem;
+  color: #8fa8d4;
+  letter-spacing: 0.02em;
+}
+
+.vault-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+/* Dim non-matching tree items — smooth transition so items fade in/out */
+.tree-dimmed {
+  opacity: 0.3;
+  pointer-events: auto;
+  transition: opacity 0.22s ease;
+}
+
+.tree-dimmed:hover {
+  opacity: 0.55;
+}
+
+.tree-toggle {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.04);
+  color: #dce5ff;
+  border-radius: 8px;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.tree-toggle.empty {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Highlight matching tree items with a subtle left-border accent */
+.tree-match {
+  border-left: 2px solid rgba(111, 190, 255, 0.7);
+  border-radius: 0;
+}
+
+.tree-match .list-main {
+  border-color: rgba(111, 190, 255, 0.4);
+  background: rgba(111, 190, 255, 0.08);
+}
+
+/* Inline node list under vault/sub-vault tree entries */
+.tree-node-list {
+  list-style: none;
+  margin: 4px 0 2px;
+  padding: 0 0 0 32px;
+  display: grid;
+  gap: 4px;
+}
+
+.tree-node-item {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  color: #d0daf2;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 6px 9px;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.tree-node-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.tree-node-item.tree-match {
+  border-left: 2px solid rgba(111, 190, 255, 0.7);
+  background: rgba(111, 190, 255, 0.06);
+}
+
+.tree-node-icon {
+  font-size: 0.78rem;
+  line-height: 1.2rem;
+  flex-shrink: 0;
+}
+
+.tree-node-text {
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  min-width: 0;
+}
+
+.tree-node-text strong {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #d8e3ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-node-text small {
+  color: #97a7cb;
+  font-size: 0.74rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list-item {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.vault-header,
+.sub-vault-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
+}
+
+.list-main {
+  width: 100%;
+  text-align: left;
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+  cursor: pointer;
+  min-width: 0;
+  flex: 1;
+}
+
+.list-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.list-delete {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #eaf0ff;
+  border-radius: 8px;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.list-subvault {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #dff1ff;
+  border-radius: 8px;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.list-settings {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #dff1ff;
+  border-radius: 8px;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.list-item:hover .list-actions,
+.list-item:focus-within .list-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sub-vault-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0 0 0 20px;
+  display: grid;
+  gap: 8px;
+}
+
+.list-item.sub .list-main {
+  padding-left: 14px;
+}
+
+.list-item small {
+  color: #b8c0d9;
+}
+
+.list-item.active {
+  border-color: rgba(103, 166, 255, 0.9);
+  background: rgba(103, 166, 255, 0.18);
+}
+
+.list-item.active .list-main {
+  border-color: rgba(103, 166, 255, 0.9);
+  background: rgba(103, 166, 255, 0.18);
+}
+.settings-trigger {
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid rgba(143, 184, 255, 0.2);
+  border-radius: 10px;
+  background: rgba(143, 184, 255, 0.08);
+  color: #d6e5ff;
+  padding: 10px;
+  font-size: 0.88rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease;
+}
+
+.settings-trigger:hover {
+  background: rgba(143, 184, 255, 0.16);
+}
+
+.sidebar-auth-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 7, 13, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 220;
+  padding: 18px;
+}
+
+.sidebar-auth-modal {
+  width: min(420px, 100%);
+  min-height: 0;
+  padding: 26px 20px;
+}
+
+.sidebar-auth-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.sidebar-auth-cancel {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+}

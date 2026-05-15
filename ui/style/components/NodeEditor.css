@@ -36,6 +36,11 @@
   font-size: 0.95rem;
 }
 
+.editor-form textarea {
+  resize: vertical;
+  min-height: 90px;
+}
+
 .editor-breadcrumb {
   margin: 0;
   font-size: 0.8rem;
@@ -420,5 +425,161 @@
   background: rgba(255, 255, 255, 0.06);
   color: #d4e2ff;
   padding: 7px 10px;
+  cursor: pointer;
+}
+
+.redacted-lock-error {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #ff8b8b;
+}
+
+.tag-input {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(5, 8, 14, 0.55);
+  color: #eff3ff;
+  padding: 8px 10px;
+  font-size: 0.9rem;
+}
+
+.tag-dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 50;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  background: rgba(12, 16, 28, 0.98);
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+}
+
+.tag-dropdown button {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #d2dcf5;
+  text-align: left;
+  cursor: pointer;
+  padding: 6px 8px;
+}
+
+.tag-dropdown button:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* -----------------------------------------------------------------------
+   Wikilink [[NodeName]] autocomplete dropdown
+   ----------------------------------------------------------------------- */
+
+.wikilink-wrapper {
+  position: relative;
+}
+
+.wikilink-dropdown {
+  z-index: 60;
+  min-width: 220px;
+  max-width: 320px;
+  border: 1px solid rgba(111, 190, 255, 0.35);
+  border-radius: 10px;
+  background: rgba(10, 14, 26, 0.96);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  padding: 6px;
+  display: grid;
+  gap: 3px;
+}
+
+.wikilink-dropdown-header {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7a95c4;
+  padding: 4px 8px 2px;
+}
+
+.wikilink-option {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #d2dcf5;
+  text-align: left;
+  cursor: pointer;
+  padding: 6px 8px;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.wikilink-option:hover {
+  border-color: rgba(111, 190, 255, 0.4);
+  background: rgba(111, 190, 255, 0.1);
+}
+
+.wikilink-option-icon {
+  flex-shrink: 0;
+  font-size: 0.82rem;
+  line-height: 1.3rem;
+}
+
+.wikilink-option-text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.wikilink-option-text strong {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #dce7ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wikilink-option-text small {
+  font-size: 0.74rem;
+  color: #97a7cb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connections-section {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(10, 14, 24, 0.6);
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.connections-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.connections-header h4 {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #d0daf5;
+}
+
+.connections-header button {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #d4e2ff;
+  padding: 6px 10px;
   cursor: pointer;
 }

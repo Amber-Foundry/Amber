@@ -1,0 +1,28 @@
+@import "../Shared.css";
+
+.privacy-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1em;
+  font-size: 0.76rem;
+  line-height: 1;
+  opacity: 0.7;
+  vertical-align: middle;
+}
+
+.privacy-badge.open {
+  opacity: 0.45;
+}
+
+.privacy-badge.local_only {
+  opacity: 0.7;
+}
+
+.privacy-badge.locked {
+  opacity: 0.82;
+}
+
+.privacy-badge.redacted {
+  opacity: 0.9;
+}

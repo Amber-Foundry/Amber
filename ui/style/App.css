@@ -1,51 +1,21 @@
 @import "./Shared.css";
 
-* {
-  box-sizing: border-box;
-}
-
-body,
-#root {
-  margin: 0;
-  min-height: 100vh;
-}
-
 .hybrid-shell {
   position: relative;
   min-height: 100vh;
   overflow: hidden;
   margin: 0;
   padding: 0;
-  background: radial-gradient(circle at top, #2f3d68 0%, #141826 40%, #0c0f1a 100%);
-  color: #f3f6ff;
-}
+  background: var(--background-secondary);
+  color: var(--text-black);
 
-.onboarding-shell {
-  position: absolute;
-  inset: 0;
-  z-index: 120;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  background: rgba(4, 7, 14, 0.82);
-  backdrop-filter: blur(8px);
-}
+  /* Lowered alpha to 0.04 for fainter lines */
+  background-image:
+    linear-gradient(to right, rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
 
-.onboarding-card {
-  width: min(860px, 95vw);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 16px;
-  background: rgba(9, 12, 22, 0.92);
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
-  padding: 20px;
-  display: grid;
-  gap: 18px;
-}
-
-.onboarding-loading-card {
-  width: min(500px, 92vw);
-  text-align: center;
+  /* Control the size of each grid square */
+  background-size: 40px 40px;
 }
 
 .zen-canvas {
@@ -55,7 +25,6 @@ body,
   justify-content: center;
   align-items: center;
   flex-direction: column;
-  backdrop-filter: blur(8px);
   padding: 24px;
 }
 
@@ -166,4 +135,32 @@ body,
 .pane-header h3 {
   margin: 0;
   font-size: 1rem;
+}
+
+.pane-empty,
+.pane-status {
+  color: #c6cde4;
+}
+
+.pane-header button,
+.list-main {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #eaf0ff;
+  border-radius: 10px;
+}
+
+.pane-header button {
+  padding: 8px 16px;
+  cursor: pointer;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: auto;
+}
+
+.pane-error {
+  margin: 0 0 12px;
+  color: #ffb8b8;
+  font-size: 0.9rem;
 }
