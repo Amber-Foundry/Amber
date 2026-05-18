@@ -1495,6 +1495,19 @@ pub fn execute_onboarding_commit(
     db_path: &Path,
 ) -> Result<bool, String> {
     (|| {
+        struct ValidatedProposal<'a> {
+            vault_id: &'a str,
+            title: &'a str,
+            summary: &'a str,
+            detail: Option<String>,
+            node_type: &'a str,
+            source_type: &'a str,
+            tags: Option<&'a Vec<String>>,
+        }
+
+        let mut conn = open_connection(db_path)?;
+        let mut validated_proposals = Vec::with_capacity(proposals.len());
+
         // 1. Validate all proposals first
         for proposal in proposals {
             let vault_id = proposal.vault_id.trim();
@@ -1557,14 +1570,24 @@ pub fn execute_onboarding_commit(
                     source_type, valid_source_types
                 ));
             }
-        }
-
-        let mut conn = open_connection(db_path)?;
-
-        // 1.5 Validate and ensure all vaults exist before backing up
-        for proposal in proposals {
-            let vault_id = proposal.vault_id.trim();
             ensure_onboarding_vault_exists(&conn, vault_id)?;
+
+            let detail = proposal
+                .detail
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(String::from);
+
+            validated_proposals.push(ValidatedProposal {
+                vault_id,
+                title,
+                summary,
+                detail,
+                node_type,
+                source_type,
+                tags: proposal.tags.as_ref(),
+            });
         }
 
         // 2. Take pre-write backup (expensive, only run if payload is completely valid)
@@ -1577,37 +1600,14 @@ pub fn execute_onboarding_commit(
             .map_err(|err| format!("Failed starting onboarding_commit transaction: {err}"))?;
 
         // 3. Process and write
-        for proposal in proposals {
-            let vault_id = proposal.vault_id.trim();
-            if vault_id.is_empty() {
-                return Err("Onboarding commit row is missing vault_id".to_string());
-            }
+        for proposal in validated_proposals {
             // ensure_onboarding_vault_exists already done above
-            let vault = fetch_vault_by_id(&tx, vault_id)?;
+            let vault = fetch_vault_by_id(&tx, proposal.vault_id)?;
             let (resolved_vault_id, resolved_sub_vault_id) = match vault.parent_vault_id {
                 Some(parent_id) => (parent_id, Some(vault.id)),
                 None => (vault.id, None),
             };
 
-            let node_type = proposal
-                .node_type
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("concept");
-
-            let source_type = proposal
-                .source_type
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("onboarding");
-            let detail = proposal
-                .detail
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_string());
             let priority_json = priority::DEFAULT_PRIORITY_JSON;
 
             let node_id = generate_id(&tx, "node")?;
@@ -1621,19 +1621,19 @@ pub fn execute_onboarding_commit(
                     node_id,
                     resolved_vault_id,
                     resolved_sub_vault_id,
-                    node_type,
-                    proposal.title.trim(),
-                    proposal.summary.trim(),
-                    detail,
+                    proposal.node_type,
+                    proposal.title,
+                    proposal.summary,
+                    proposal.detail,
                     Some("onboarding_wizard"),
-                    source_type,
+                    proposal.source_type,
                     priority_json,
                     "{}"
                 ],
             )
             .map_err(|err| format!("Failed inserting onboarding node: {err}"))?;
 
-            if let Some(tags) = &proposal.tags {
+            if let Some(tags) = proposal.tags {
                 for tag_name in tags {
                     let clean_name = tag_name.trim();
                     if clean_name.is_empty() {

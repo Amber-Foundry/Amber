@@ -198,10 +198,6 @@ pub fn parse_proposals_json(raw_json: &str) -> Result<Vec<ProposedNode>, String>
     let envelope: ProposalEnvelope = serde_json::from_str(raw_json)
         .map_err(|err| format!("Invalid onboarding proposals JSON: {err}"))?;
 
-    if envelope.proposals.is_empty() {
-        return Err("Onboarding proposals payload is empty".to_string());
-    }
-
     envelope
         .proposals
         .into_iter()
