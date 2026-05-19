@@ -308,6 +308,17 @@
   width: 100%;
 }
 
+/* Allow wrapping dynamically when both panels are open (leaving narrow center space) or on narrow viewports */
+.hybrid-shell.left-pinned.right-pinned .zen-pills-row {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 800px) {
+  .zen-pills-row {
+    flex-wrap: wrap;
+  }
+}
+
 .zen-pill-container {
   position: relative;
   min-width: 0;

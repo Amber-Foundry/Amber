@@ -843,10 +843,22 @@ function VaultSidebar({
         <div className="sidebar-section-container">
           <h4 className="sidebar-section-title">Private</h4>
           <ul className="vault-list">
-            {topLevelVaults.map((vault) => renderVault(vault, false))}
-            {topLevelVaults.length === 0 && (
-              <li className="empty-section-tip">No vaults available</li>
-            )}
+            {topLevelVaults
+              .filter((v) => v.privacyTier && v.privacyTier !== "open")
+              .map((vault) => renderVault(vault, false))}
+            {topLevelVaults.filter((v) => v.privacyTier && v.privacyTier !== "open").length ===
+              0 && <li className="empty-section-tip">No private vaults</li>}
+          </ul>
+        </div>
+
+        <div className="sidebar-section-container">
+          <h4 className="sidebar-section-title">Open</h4>
+          <ul className="vault-list">
+            {topLevelVaults
+              .filter((v) => !v.privacyTier || v.privacyTier === "open")
+              .map((vault) => renderVault(vault, false))}
+            {topLevelVaults.filter((v) => !v.privacyTier || v.privacyTier === "open").length ===
+              0 && <li className="empty-section-tip">No open vaults</li>}
           </ul>
         </div>
       </div>

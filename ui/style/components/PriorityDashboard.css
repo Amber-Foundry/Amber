@@ -49,6 +49,18 @@
   padding-top: 10px;
   padding-bottom: 10px;
   overflow: hidden;
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease,
+    border-color 150ms ease,
+    background 150ms ease;
+}
+
+.dashboard-row:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(188, 108, 37, 0.05);
+  border-color: rgba(188, 108, 37, 0.25);
+  background: rgba(255, 255, 255, 0.85);
 }
 
 .dashboard-title {
@@ -79,4 +91,53 @@
 
 .dashboard-frozen {
   border-color: rgba(188, 108, 37, 0.35);
+}
+
+@container (max-width: 340px) {
+  .dashboard-header {
+    display: none; /* Hide headers as they no longer align with stacked cards */
+  }
+
+  .dashboard-row {
+    display: grid;
+    grid-template-columns: 1fr auto; /* Left column for title/stats, right column for actions */
+    grid-template-rows: auto auto auto;
+    gap: 8px 12px;
+    padding: 12px;
+    align-items: center;
+  }
+
+  .dashboard-title {
+    grid-column: 1;
+    grid-row: 1;
+    font-weight: 600;
+    font-size: 0.88rem;
+    max-width: 100%;
+  }
+
+  .freeze-toggle {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  /* PriorityBar element selector */
+  .dashboard-row > .priority-bar {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .dashboard-activity {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+    text-align: right;
+    font-size: 0.76rem;
+  }
+
+  .dashboard-rate {
+    grid-column: 1 / span 2;
+    grid-row: 3;
+    width: 100%;
+  }
 }
