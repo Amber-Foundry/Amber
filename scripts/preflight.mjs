@@ -139,6 +139,10 @@ const steps = [
     cmd: "cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used",
   },
   { name: "cargo test", cmd: "cargo test --manifest-path core/Cargo.toml" },
+  {
+    name: "format generated types",
+    cmd: "npx prettier --write ui/types/generated",
+  },
 ];
 
 for (const step of steps) {
