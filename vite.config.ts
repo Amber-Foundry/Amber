@@ -1,7 +1,13 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// @ts-expect-error process is a nodejs global
+// Declare process typing locally to avoid installing a heavy @types/node dependency
+declare const process: {
+  env: {
+    TAURI_DEV_HOST?: string;
+  };
+};
+
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
