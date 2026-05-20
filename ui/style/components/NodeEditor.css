@@ -135,23 +135,24 @@
   justify-content: center;
   text-align: center;
   gap: 12px;
-  padding: 48px 24px;
-  border: 1px solid rgba(188, 108, 37, 0.15);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.45);
+  padding: 40px 24px;
+  border: 1px solid rgba(188, 108, 37, 0.16);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(250, 249, 247, 0.94));
+  box-shadow: 0 10px 30px rgba(27, 26, 23, 0.05);
   color: var(--text-black);
   min-height: 280px;
 }
 
 .redacted-lock-icon {
-  font-size: 2.6rem;
+  font-size: 2.2rem;
   line-height: 1;
-  opacity: 0.85;
+  opacity: 0.9;
 }
 
 .redacted-lock-title {
   margin: 0;
-  font-size: 1rem;
+  font-size: 1.02rem;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--primary-color);
@@ -160,7 +161,7 @@
 .redacted-lock-subtitle {
   margin: 0;
   max-width: 340px;
-  font-size: 0.85rem;
+  font-size: 0.86rem;
   color: rgba(27, 26, 23, 0.6);
   line-height: 1.4;
 }
@@ -169,7 +170,32 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: min(100%, 280px);
+  width: min(100%, 300px);
+}
+
+.inline-content-lock {
+  min-height: 0;
+  padding: 28px 20px;
+  gap: 10px;
+  border-style: solid;
+  background: linear-gradient(180deg, rgba(253, 252, 250, 0.96), rgba(246, 243, 239, 0.98));
+}
+
+.inline-content-lock .redacted-lock-icon {
+  font-size: 1.55rem;
+}
+
+.inline-content-lock .redacted-lock-title {
+  color: var(--text-black);
+}
+
+.inline-content-lock .redacted-lock-form {
+  margin-top: 8px;
+}
+
+.inline-content-lock .redacted-lock-input,
+.inline-content-lock .redacted-lock-button {
+  width: 100%;
 }
 
 .redacted-lock-input {
@@ -190,11 +216,17 @@
   padding: 9px 12px;
   font-size: 0.88rem;
   cursor: pointer;
-  transition: background 120ms ease;
+  font-weight: 600;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
 }
 
 .redacted-lock-button:hover {
   background: rgba(188, 108, 37, 0.15);
+  border-color: rgba(188, 108, 37, 0.35);
+  transform: translateY(-1px);
 }
 
 .editor-title {

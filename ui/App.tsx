@@ -141,6 +141,8 @@ function App() {
   const [showDashboard, setShowDashboard] = useState<boolean>(false);
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [sidebarModalOpen, setSidebarModalOpen] = useState<boolean>(false);
+  const [editorModalOpen, setEditorModalOpen] = useState<boolean>(false);
+  const [spatialModalOpen, setSpatialModalOpen] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<"chat" | "spatial">("chat");
   const leftPaneExpanded = leftPanePinned;
   const rightPaneExpanded = rightPanePinned;
@@ -315,7 +317,7 @@ function App() {
   return (
     <ErrorBoundary>
       <main
-        className={`hybrid-shell ${leftPanePinned ? "left-pinned" : ""} ${rightPanePinned ? "right-pinned" : ""} ${leftResizing || rightResizing ? "is-resizing" : ""}`}
+        className={`hybrid-shell ${leftPanePinned ? "left-pinned" : ""} ${rightPanePinned ? "right-pinned" : ""} ${sidebarModalOpen || editorModalOpen || spatialModalOpen ? "modal-open" : ""} ${leftResizing || rightResizing ? "is-resizing" : ""}`}
       >
         {!onboardingResolved ? (
           <section className="onboarding-shell">
@@ -366,6 +368,7 @@ function App() {
                   onNodeDeleted={onNodeDeleted}
                   onNodeUpdated={onNodeUpdated}
                   isRedactedUnlocked={isRedactedUnlocked}
+                  onModalToggle={setSpatialModalOpen}
                 />
               ) : (
                 <ChatPanel
@@ -401,12 +404,16 @@ function App() {
                   selectedVaultId={selectedVaultId}
                   selectedNodeId={selectedNodeId}
                   onSelectNode={onSelectNode}
+                  onSelectVault={onSelectVault}
                   onNodeCreated={onNodeCreated}
+                  onVaultCreated={onVaultCreated}
                   onBack={() => {
                     setSelectedVaultId(null);
                     setSelectedNodeId(null);
                   }}
                   refreshKey={nodeRefreshKey}
+                  isRedactedUnlocked={isRedactedUnlocked}
+                  onModalToggle={setSidebarModalOpen}
                 />
               )}
               {/* Left Resize Handle */}
@@ -421,7 +428,10 @@ function App() {
               style={{ width: `${rightPaneWidth}px` }}
             >
               {showDashboard ? (
-                <PriorityDashboard refreshKey={nodeRefreshKey} />
+                <PriorityDashboard
+                  refreshKey={nodeRefreshKey}
+                  isRedactedUnlocked={isRedactedUnlocked}
+                />
               ) : showSettings ? (
                 <LlmSettings />
               ) : (
@@ -431,7 +441,10 @@ function App() {
                     scope={assemblerScope}
                     onScopeChange={setAssemblerScope}
                   />
-                  <ActiveMemoryPanel selectedNodeIds={scopeNodeIds} />
+                  <ActiveMemoryPanel
+                    selectedNodeIds={scopeNodeIds}
+                    isRedactedUnlocked={isRedactedUnlocked}
+                  />
                   <NodeEditor
                     selectedNodeId={selectedNodeId}
                     onNodeDeleted={onNodeDeleted}
@@ -439,6 +452,7 @@ function App() {
                     refreshKey={nodeRefreshKey}
                     isRedactedUnlocked={isRedactedUnlocked}
                     setIsRedactedUnlocked={setIsRedactedUnlocked}
+                    onModalToggle={setEditorModalOpen}
                   />
                 </div>
               )}

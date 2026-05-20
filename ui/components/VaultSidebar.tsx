@@ -5,7 +5,32 @@ import { getAllNodes } from "../services/nodes";
 import { createVault, deleteVault, listVaults, updateVault } from "../services/vaults";
 import { isAuthSetup, setMasterPassword, verifyMasterPassword } from "../services/auth";
 import { AppError } from "../services/ipcResult";
-import { getEffectivePrivacy, getPrivacyRank } from "../utils/privacy";
+import {
+  getEffectivePrivacy,
+  getPrivacyDisplayLabel,
+  getPrivacyDisplaySummary,
+  getPrivacyRank,
+  getVaultEffectivePrivacy as getRecursiveVaultEffectivePrivacy,
+} from "../utils/privacy";
+
+const VAULT_ICON_CHOICES = [
+  "💳",
+  "🪙",
+  "💪",
+  "📚",
+  "👤",
+  "💼",
+  "🏠",
+  "📱",
+  "💻",
+  "📝",
+  "🧠",
+  "💰",
+  "🔑",
+  "🎨",
+  "🚀",
+  "📂",
+];
 
 type VaultSidebarProps = {
   selectedVaultId: string | null;
@@ -56,6 +81,24 @@ function VaultSidebar({
   const [editDescription, setEditDescription] = useState("");
   const [editPrivacyTier, setEditPrivacyTier] = useState("");
   const [editIcon, setEditIcon] = useState("");
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [createModalName, setCreateModalName] = useState("");
+  const [createModalDescription, setCreateModalDescription] = useState("");
+  const [createModalIcon, setCreateModalIcon] = useState("");
+  const [createModalPrivacyTier, setCreateModalPrivacyTier] = useState("open");
+  const [createModalError, setCreateModalError] = useState("");
+  const [createSubvaultModalOpen, setCreateSubvaultModalOpen] = useState(false);
+  const [createSubvaultParentVaultId, setCreateSubvaultParentVaultId] = useState("");
+  const [createSubvaultParentName, setCreateSubvaultParentName] = useState("");
+  const [createSubvaultName, setCreateSubvaultName] = useState("");
+  const [createSubvaultDescription, setCreateSubvaultDescription] = useState("");
+  const [createSubvaultIcon, setCreateSubvaultIcon] = useState("");
+  const [createSubvaultPrivacyTier, setCreateSubvaultPrivacyTier] = useState("open");
+  const [createSubvaultError, setCreateSubvaultError] = useState("");
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteTargetVault, setDeleteTargetVault] = useState<Vault | null>(null);
+  const [deletePasswordInput, setDeletePasswordInput] = useState("");
+  const [deleteModalError, setDeleteModalError] = useState("");
   const [favoriteVaultIds, setFavoriteVaultIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem("favorite_vault_ids");
@@ -68,6 +111,22 @@ function VaultSidebar({
   useEffect(() => {
     localStorage.setItem("favorite_vault_ids", JSON.stringify(favoriteVaultIds));
   }, [favoriteVaultIds]);
+
+  const vaultById = useMemo(() => {
+    const map: Record<string, Vault> = {};
+    for (const vault of vaults) {
+      map[vault.id] = vault;
+    }
+    return map;
+  }, [vaults]);
+
+  const vaultEffectivePrivacyById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const vault of vaults) {
+      map[vault.id] = getRecursiveVaultEffectivePrivacy(vault.id, vaultById, map);
+    }
+    return map;
+  }, [vaultById, vaults]);
 
   useEffect(() => {
     if (vaults.length > 0) {
@@ -176,9 +235,21 @@ function VaultSidebar({
   const authModalResolverRef = useRef<((allowed: boolean) => void) | null>(null);
 
   useEffect(() => {
-    const isAnyModalOpen = !!editingVault || authModalOpen;
+    const isAnyModalOpen =
+      !!editingVault ||
+      authModalOpen ||
+      createModalOpen ||
+      createSubvaultModalOpen ||
+      deleteModalOpen;
     onModalToggle?.(isAnyModalOpen);
-  }, [editingVault, authModalOpen, onModalToggle]);
+  }, [
+    editingVault,
+    authModalOpen,
+    createModalOpen,
+    createSubvaultModalOpen,
+    deleteModalOpen,
+    onModalToggle,
+  ]);
 
   async function loadVaults() {
     try {
@@ -220,63 +291,144 @@ function VaultSidebar({
   }, [refreshKey]);
 
   async function onCreateVault() {
-    const name = window.prompt("Vault name");
-    if (!name || !name.trim()) {
+    setCreateModalName("");
+    setCreateModalDescription("");
+    setCreateModalIcon("");
+    setCreateModalPrivacyTier("open");
+    setCreateModalError("");
+    setCreateModalOpen(true);
+  }
+
+  function closeCreateVaultModal() {
+    setCreateModalOpen(false);
+    setCreateModalName("");
+    setCreateModalDescription("");
+    setCreateModalIcon("");
+    setCreateModalPrivacyTier("open");
+    setCreateModalError("");
+  }
+
+  async function submitCreateVaultModal() {
+    const name = createModalName.trim();
+    if (!name) {
+      setCreateModalError("Enter a vault name.");
       return;
     }
 
     try {
       const created = await createVault({
-        name: name.trim(),
+        name,
+        description: createModalDescription.trim() || undefined,
+        icon: createModalIcon.trim() || undefined,
+        privacyTier: createModalPrivacyTier.trim() || undefined,
       });
       onVaultCreated(created.id);
       await loadVaults();
+      closeCreateVaultModal();
       setError(null);
     } catch (err) {
       if (err instanceof AppError) {
-        setError(err.message);
+        setCreateModalError(err.message);
         return;
       }
-      setError("Failed to create vault.");
+      setCreateModalError("Failed to create vault.");
     }
   }
 
   async function onCreateSubVault(parentVaultId: string, parentName: string) {
-    const name = window.prompt(`Sub-vault name for ${parentName}`);
-    if (!name || !name.trim()) {
+    setCreateSubvaultParentVaultId(parentVaultId);
+    setCreateSubvaultParentName(parentName);
+    setCreateSubvaultName("");
+    setCreateSubvaultDescription("");
+    setCreateSubvaultIcon("");
+    setCreateSubvaultPrivacyTier("open");
+    setCreateSubvaultError("");
+    setCreateSubvaultModalOpen(true);
+  }
+
+  function closeCreateSubvaultModal() {
+    setCreateSubvaultModalOpen(false);
+    setCreateSubvaultParentVaultId("");
+    setCreateSubvaultParentName("");
+    setCreateSubvaultName("");
+    setCreateSubvaultDescription("");
+    setCreateSubvaultIcon("");
+    setCreateSubvaultPrivacyTier("open");
+    setCreateSubvaultError("");
+  }
+
+  async function submitCreateSubvaultModal() {
+    const name = createSubvaultName.trim();
+    if (!name) {
+      setCreateSubvaultError("Enter a subvault name.");
       return;
     }
 
     try {
       const created = await createVault({
-        name: name.trim(),
-        parentVaultId,
+        name,
+        description: createSubvaultDescription.trim() || undefined,
+        icon: createSubvaultIcon.trim() || undefined,
+        privacyTier: createSubvaultPrivacyTier.trim() || undefined,
+        parentVaultId: createSubvaultParentVaultId,
       });
-      setExpandedVaults((prev) => ({ ...prev, [parentVaultId]: true }));
+      setExpandedVaults((prev) => ({ ...prev, [createSubvaultParentVaultId]: true }));
       onVaultCreated(created.id);
       await loadVaults();
+      closeCreateSubvaultModal();
       setError(null);
     } catch (err) {
       if (err instanceof AppError) {
-        setError(err.message);
+        setCreateSubvaultError(err.message);
         return;
       }
-      setError("Failed to create sub-vault.");
+      setCreateSubvaultError("Failed to create sub-vault.");
     }
   }
 
-  async function onDeleteVault(vaultId: string) {
-    if (!window.confirm("Are you sure?")) {
+  function openDeleteVaultModal(vault: Vault) {
+    setDeleteTargetVault(vault);
+    setDeletePasswordInput("");
+    setDeleteModalError("");
+    setDeleteModalOpen(true);
+  }
+
+  async function submitDeleteVaultModal() {
+    if (!deleteTargetVault) {
       return;
     }
+
+    const vault = deleteTargetVault;
+    const effectiveTier = getVaultEffectivePrivacy(vault);
+    if ((effectiveTier === "locked" || effectiveTier === "redacted") && !deletePasswordInput) {
+      setDeleteModalError("Enter your master password to continue.");
+      return;
+    }
+
+    if (effectiveTier === "locked" || effectiveTier === "redacted") {
+      const verifyResult = await verifyMasterPassword(deletePasswordInput);
+      if (verifyResult.error) {
+        setDeleteModalError(verifyResult.error.message);
+        return;
+      }
+      if (!verifyResult.data) {
+        setDeleteModalError("Incorrect password");
+        return;
+      }
+    }
+
     try {
-      const deleted = await deleteVault(vaultId);
+      const deleted = await deleteVault(vault.id);
       if (!deleted) {
         setError("Vault could not be deleted.");
         return;
       }
-      onVaultDeleted(vaultId);
+      onVaultDeleted(vault.id);
       await loadVaults();
+      setDeleteModalOpen(false);
+      setDeleteTargetVault(null);
+      setDeletePasswordInput("");
+      setDeleteModalError("");
       setError(null);
     } catch (err) {
       if (err instanceof AppError) {
@@ -285,6 +437,13 @@ function VaultSidebar({
       }
       setError("Failed to delete vault.");
     }
+  }
+
+  function closeDeleteVaultModal() {
+    setDeleteModalOpen(false);
+    setDeleteTargetVault(null);
+    setDeletePasswordInput("");
+    setDeleteModalError("");
   }
 
   function closeAuthModal(allowed: boolean) {
@@ -445,11 +604,40 @@ function VaultSidebar({
     }
   }
 
-  function onSelectVaultEntry(vault: Vault) {
+  function getVaultEffectivePrivacy(vault: Vault): string {
+    return (
+      vaultEffectivePrivacyById[vault.id] ?? getRecursiveVaultEffectivePrivacy(vault.id, vaultById)
+    );
+  }
+
+  async function onSelectVaultEntry(vault: Vault) {
+    const effectiveTier = getVaultEffectivePrivacy(vault);
+    if (effectiveTier === "redacted" && !isRedactedUnlocked) {
+      const success = await unlockRedactedFromSidebar();
+      if (success) {
+        onSelectVault(vault.id);
+      }
+      return;
+    }
     onSelectVault(vault.id);
   }
 
-  function onSelectNodeEntry(node: Node) {
+  async function onSelectNodeEntry(node: Node) {
+    const containerId = node.subVaultId ?? node.vaultId;
+    const containerTier =
+      vaultEffectivePrivacyById[containerId] ??
+      getRecursiveVaultEffectivePrivacy(containerId, vaultById);
+    const nodeEffectiveTier = getEffectivePrivacy(node.privacyTier, null, containerTier);
+
+    if (nodeEffectiveTier === "redacted" && !isRedactedUnlocked) {
+      const success = await unlockRedactedFromSidebar();
+      if (success) {
+        onSelectVault(node.subVaultId ?? node.vaultId);
+        onSelectNode(node.id);
+      }
+      return;
+    }
+
     onSelectVault(node.subVaultId ?? node.vaultId);
     onSelectNode(node.id);
   }
@@ -590,16 +778,19 @@ function VaultSidebar({
 
   function renderVault(vault: Vault, isFavSection: boolean) {
     const suffix = isFavSection ? "-fav" : "";
-    const effectiveTier = getEffectivePrivacy(vault.privacyTier);
+    const effectiveTier = getVaultEffectivePrivacy(vault);
     const children = childrenByParent.get(vault.id) ?? [];
     const vaultNodes = nodesByVaultId.get(vault.id) ?? [];
-    const hasExpandableContent = children.length > 0 || vaultNodes.length > 0;
+    const isRedactedLocked = effectiveTier === "redacted" && !isRedactedUnlocked;
+    const hasExpandableContent =
+      !isRedactedLocked && (children.length > 0 || vaultNodes.length > 0);
     const expanded = shouldExpand(vault.id, hasExpandableContent);
 
     // Dimming logic: when searching, dim everything that is NOT on a match path
     const isDimmed = isSearching && !isVaultOnMatchPath(vault.id);
     const isHighlighted = isSearching && isVaultOnMatchPath(vault.id);
     const isFav = favoriteVaultIds.includes(vault.id);
+    const vaultEmoji = isRedactedLocked ? "⬛" : getVaultEmoji(vault);
 
     return (
       <li key={vault.id + suffix} className={isDimmed ? "tree-dimmed" : ""}>
@@ -620,11 +811,21 @@ function VaultSidebar({
           <div className="vault-header">
             <button type="button" className="list-main" onClick={() => onSelectVaultEntry(vault)}>
               <span className="list-title-row">
-                <span className="vault-icon-emoji">{getVaultEmoji(vault)}</span>
-                <span className="list-title-text">{vault.name}</span>
-                {effectiveTier !== "open" && <span className="privacy-lock-icon">🔒</span>}
+                <span className="vault-icon-emoji">{vaultEmoji}</span>
+                <span className="list-title-text">
+                  {getPrivacyDisplayLabel(vault.name, effectiveTier, isRedactedUnlocked)}
+                </span>
+                {effectiveTier === "locked" && <span className="privacy-lock-icon">🔒</span>}
               </span>
-              {vault.description && <small>{vault.description}</small>}
+              {isRedactedLocked ? (
+                <small>[Metadata Locked]</small>
+              ) : (
+                vault.description && (
+                  <small>
+                    {getPrivacyDisplaySummary(vault.description, effectiveTier, isRedactedUnlocked)}
+                  </small>
+                )
+              )}
             </button>
             <div className="list-actions">
               <button
@@ -660,7 +861,7 @@ function VaultSidebar({
               <button
                 type="button"
                 className="list-delete"
-                onClick={() => onDeleteVault(vault.id)}
+                onClick={() => openDeleteVaultModal(vault)}
                 aria-label={`Delete ${vault.name}`}
               >
                 ×
@@ -673,15 +874,18 @@ function VaultSidebar({
         {expanded && (children.length > 0 || vaultNodes.length > 0) && (
           <ul className="tree-child-list">
             {children.map((child) => {
-              const childEffectiveTier = getEffectivePrivacy(child.privacyTier, vault.privacyTier);
+              const childEffectiveTier = getVaultEffectivePrivacy(child);
               const childNodes = nodesByVaultId.get(child.id) ?? [];
+              const isChildRedactedLocked =
+                childEffectiveTier === "redacted" && !isRedactedUnlocked;
+              const childHasContent = !isChildRedactedLocked && childNodes.length > 0;
               const childIsDimmed =
                 isSearching && !isSubVaultMatch(child.id) && !isVaultOnMatchPath(child.id);
               const childIsHighlighted = isSearching && isSubVaultMatch(child.id);
-              const childHasContent = childNodes.length > 0;
               const childExpanded =
                 childHasContent &&
                 ((isSearching && isSubVaultMatch(child.id)) || (expandedVaults[child.id] ?? false));
+              const childEmoji = isChildRedactedLocked ? "⬛" : getVaultEmoji(child);
 
               return (
                 <li key={child.id + suffix} className={childIsDimmed ? "tree-dimmed" : ""}>
@@ -705,13 +909,31 @@ function VaultSidebar({
                       onClick={() => onSelectVaultEntry(child)}
                     >
                       <span className="list-title-row">
-                        <span className="vault-icon-emoji">{getVaultEmoji(child)}</span>
-                        <span className="list-title-text">{child.name}</span>
-                        {childEffectiveTier !== "open" && (
+                        <span className="vault-icon-emoji">{childEmoji}</span>
+                        <span className="list-title-text">
+                          {getPrivacyDisplayLabel(
+                            child.name,
+                            childEffectiveTier,
+                            isRedactedUnlocked
+                          )}
+                        </span>
+                        {childEffectiveTier === "locked" && (
                           <span className="privacy-lock-icon">🔒</span>
                         )}
                       </span>
-                      {child.description && <small>{child.description}</small>}
+                      {isChildRedactedLocked ? (
+                        <small>[Metadata Locked]</small>
+                      ) : (
+                        child.description && (
+                          <small>
+                            {getPrivacyDisplaySummary(
+                              child.description,
+                              childEffectiveTier,
+                              isRedactedUnlocked
+                            )}
+                          </small>
+                        )
+                      )}
                     </button>
                     <div className="list-actions">
                       <button
@@ -728,7 +950,7 @@ function VaultSidebar({
                       <button
                         type="button"
                         className="list-delete"
-                        onClick={() => onDeleteVault(child.id)}
+                        onClick={() => openDeleteVaultModal(child)}
                         aria-label={`Delete ${child.name}`}
                       >
                         ×
@@ -742,6 +964,19 @@ function VaultSidebar({
                       {childNodes.map((node) => {
                         const nodeDimmed = isSearching && !isNodeMatch(node.id);
                         const nodeHighlighted = isSearching && isNodeMatch(node.id);
+                        const nodeEffectiveTier = getEffectivePrivacy(
+                          node.privacyTier,
+                          null,
+                          childEffectiveTier
+                        );
+                        const isNodeRedactedLocked =
+                          nodeEffectiveTier === "redacted" && !isRedactedUnlocked;
+                        const isNodeLocked = nodeEffectiveTier === "locked";
+                        const nodeIcon = isNodeRedactedLocked ? "⬛" : isNodeLocked ? "🔒" : "📄";
+                        const summaryText = isNodeRedactedLocked
+                          ? "[Metadata Locked]"
+                          : node.summary.slice(0, 60);
+
                         return (
                           <li key={node.id + suffix} className={nodeDimmed ? "tree-dimmed" : ""}>
                             <button
@@ -749,10 +984,22 @@ function VaultSidebar({
                               className={`tree-node-item ${nodeHighlighted ? "tree-match" : ""}`}
                               onClick={() => onSelectNodeEntry(node)}
                             >
-                              <span className="tree-node-icon">📄</span>
+                              <span className="tree-node-icon">{nodeIcon}</span>
                               <span className="tree-node-text">
-                                <strong>{node.title}</strong>
-                                <small>{node.summary.slice(0, 60)}</small>
+                                <strong>
+                                  {getPrivacyDisplayLabel(
+                                    node.title,
+                                    nodeEffectiveTier,
+                                    isRedactedUnlocked
+                                  )}
+                                </strong>
+                                <small>
+                                  {getPrivacyDisplaySummary(
+                                    summaryText,
+                                    nodeEffectiveTier,
+                                    isRedactedUnlocked
+                                  )}
+                                </small>
                               </span>
                             </button>
                           </li>
@@ -768,6 +1015,18 @@ function VaultSidebar({
             {vaultNodes.map((node) => {
               const nodeDimmed = isSearching && !isNodeMatch(node.id);
               const nodeHighlighted = isSearching && isNodeMatch(node.id);
+              const nodeEffectiveTier = getEffectivePrivacy(
+                node.privacyTier,
+                null,
+                getVaultEffectivePrivacy(vault)
+              );
+              const isNodeRedactedLocked = nodeEffectiveTier === "redacted" && !isRedactedUnlocked;
+              const isNodeLocked = nodeEffectiveTier === "locked";
+              const nodeIcon = isNodeRedactedLocked ? "⬛" : isNodeLocked ? "🔒" : "📄";
+              const summaryText = isNodeRedactedLocked
+                ? "[Metadata Locked]"
+                : node.summary.slice(0, 60);
+
               return (
                 <li key={node.id + suffix} className={nodeDimmed ? "tree-dimmed" : ""}>
                   <button
@@ -775,10 +1034,18 @@ function VaultSidebar({
                     className={`tree-node-item ${nodeHighlighted ? "tree-match" : ""}`}
                     onClick={() => onSelectNodeEntry(node)}
                   >
-                    <span className="tree-node-icon">📄</span>
+                    <span className="tree-node-icon">{nodeIcon}</span>
                     <span className="tree-node-text">
-                      <strong>{node.title}</strong>
-                      <small>{node.summary.slice(0, 60)}</small>
+                      <strong>
+                        {getPrivacyDisplayLabel(node.title, nodeEffectiveTier, isRedactedUnlocked)}
+                      </strong>
+                      <small>
+                        {getPrivacyDisplaySummary(
+                          summaryText,
+                          nodeEffectiveTier,
+                          isRedactedUnlocked
+                        )}
+                      </small>
                     </span>
                   </button>
                 </li>
@@ -908,6 +1175,250 @@ function VaultSidebar({
                 </div>
               </form>
               {authModalError && <p className="redacted-lock-error">{authModalError}</p>}
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {deleteModalOpen &&
+        createPortal(
+          <div className="sidebar-auth-overlay" onClick={closeDeleteVaultModal}>
+            <div
+              className="vault-settings-modal sidebar-auth-modal delete-confirm-modal"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="modal-title">Delete Vault</h3>
+              <p className="modal-subtitle">
+                {deleteTargetVault
+                  ? `Delete ${deleteTargetVault.name}? This cannot be undone.`
+                  : "Delete this vault? This cannot be undone."}
+              </p>
+              {deleteTargetVault &&
+                (getVaultEffectivePrivacy(deleteTargetVault) === "locked" ||
+                  getVaultEffectivePrivacy(deleteTargetVault) === "redacted") && (
+                  <label className="settings-field">
+                    <span>Master Password</span>
+                    <input
+                      type="password"
+                      className="settings-input"
+                      value={deletePasswordInput}
+                      onChange={(e) => setDeletePasswordInput(e.target.value)}
+                      placeholder="Master password"
+                      autoFocus
+                    />
+                  </label>
+                )}
+              {deleteModalError && <p className="redacted-lock-error">{deleteModalError}</p>}
+              <div className="sidebar-auth-actions settings-modal-actions">
+                <button
+                  type="button"
+                  className="redacted-lock-button sidebar-auth-cancel"
+                  onClick={closeDeleteVaultModal}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="redacted-lock-button"
+                  onClick={submitDeleteVaultModal}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {createModalOpen &&
+        createPortal(
+          <div className="sidebar-auth-overlay" onClick={closeCreateVaultModal}>
+            <div
+              className="vault-settings-modal sidebar-auth-modal delete-confirm-modal"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="modal-title">New Vault</h3>
+              <p className="modal-subtitle">Create a new top-level vault in the sidebar.</p>
+              <div className="settings-fields-grid">
+                <label className="settings-field">
+                  <span>Vault Name</span>
+                  <input
+                    type="text"
+                    className="settings-input"
+                    value={createModalName}
+                    onChange={(e) => setCreateModalName(e.target.value)}
+                    placeholder="e.g. Finance"
+                    autoFocus
+                  />
+                </label>
+
+                <label className="settings-field">
+                  <span>Description</span>
+                  <input
+                    type="text"
+                    className="settings-input"
+                    value={createModalDescription}
+                    onChange={(e) => setCreateModalDescription(e.target.value)}
+                    placeholder="e.g. Budgets, planning, and reports"
+                  />
+                </label>
+
+                <div className="settings-field">
+                  <span>Emoji / Icon</span>
+                  <div className="emoji-picker-container">
+                    <div className="emoji-picker-grid">
+                      {VAULT_ICON_CHOICES.map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          className={`emoji-choice-btn ${createModalIcon === emoji ? "selected" : ""}`}
+                          onClick={() => setCreateModalIcon(emoji)}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      type="text"
+                      value={createModalIcon}
+                      onChange={(e) => setCreateModalIcon(e.target.value)}
+                      placeholder="Or type a custom emoji/text"
+                      maxLength={10}
+                      className="settings-input custom-emoji-input"
+                    />
+                  </div>
+                </div>
+
+                <label className="settings-field">
+                  <span>Privacy Tier</span>
+                  <select
+                    value={createModalPrivacyTier}
+                    onChange={(e) => setCreateModalPrivacyTier(e.target.value)}
+                    className="settings-select"
+                  >
+                    <option value="open">Open (No restriction)</option>
+                    <option value="local_only">Local Only (Never cloud synced)</option>
+                    <option value="locked">Locked (Requires unlock to access)</option>
+                    <option value="redacted">Redacted (Hidden metadata/title)</option>
+                  </select>
+                </label>
+              </div>
+              {createModalError && <p className="redacted-lock-error">{createModalError}</p>}
+              <div className="sidebar-auth-actions settings-modal-actions">
+                <button
+                  type="button"
+                  className="redacted-lock-button sidebar-auth-cancel"
+                  onClick={closeCreateVaultModal}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="redacted-lock-button"
+                  onClick={submitCreateVaultModal}
+                >
+                  Create
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {createSubvaultModalOpen &&
+        createPortal(
+          <div className="sidebar-auth-overlay" onClick={closeCreateSubvaultModal}>
+            <div
+              className="vault-settings-modal sidebar-auth-modal delete-confirm-modal"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="modal-title">New Subvault</h3>
+              <p className="modal-subtitle">
+                {createSubvaultParentName
+                  ? `Create a new subvault inside ${createSubvaultParentName}.`
+                  : "Create a new subvault."}
+              </p>
+              <div className="settings-fields-grid">
+                <label className="settings-field">
+                  <span>Subvault Name</span>
+                  <input
+                    type="text"
+                    className="settings-input"
+                    value={createSubvaultName}
+                    onChange={(e) => setCreateSubvaultName(e.target.value)}
+                    placeholder="e.g. Research"
+                    autoFocus
+                  />
+                </label>
+
+                <label className="settings-field">
+                  <span>Description</span>
+                  <input
+                    type="text"
+                    className="settings-input"
+                    value={createSubvaultDescription}
+                    onChange={(e) => setCreateSubvaultDescription(e.target.value)}
+                    placeholder="e.g. Notes and sources"
+                  />
+                </label>
+
+                <div className="settings-field">
+                  <span>Emoji / Icon</span>
+                  <div className="emoji-picker-container">
+                    <div className="emoji-picker-grid">
+                      {VAULT_ICON_CHOICES.map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          className={`emoji-choice-btn ${createSubvaultIcon === emoji ? "selected" : ""}`}
+                          onClick={() => setCreateSubvaultIcon(emoji)}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      type="text"
+                      value={createSubvaultIcon}
+                      onChange={(e) => setCreateSubvaultIcon(e.target.value)}
+                      placeholder="Or type a custom emoji/text"
+                      maxLength={10}
+                      className="settings-input custom-emoji-input"
+                    />
+                  </div>
+                </div>
+
+                <label className="settings-field">
+                  <span>Privacy Tier</span>
+                  <select
+                    value={createSubvaultPrivacyTier}
+                    onChange={(e) => setCreateSubvaultPrivacyTier(e.target.value)}
+                    className="settings-select"
+                  >
+                    <option value="open">Open (No restriction)</option>
+                    <option value="local_only">Local Only (Never cloud synced)</option>
+                    <option value="locked">Locked (Requires unlock to access)</option>
+                    <option value="redacted">Redacted (Hidden metadata/title)</option>
+                  </select>
+                </label>
+              </div>
+              {createSubvaultError && <p className="redacted-lock-error">{createSubvaultError}</p>}
+              <div className="sidebar-auth-actions settings-modal-actions">
+                <button
+                  type="button"
+                  className="redacted-lock-button sidebar-auth-cancel"
+                  onClick={closeCreateSubvaultModal}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="redacted-lock-button"
+                  onClick={submitCreateSubvaultModal}
+                >
+                  Create
+                </button>
+              </div>
             </div>
           </div>,
           document.body

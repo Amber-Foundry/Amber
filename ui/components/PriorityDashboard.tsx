@@ -8,6 +8,12 @@ import {
 } from "../services/nodes";
 import type { Node } from "../ipc";
 import { AppError } from "../services/ipcResult";
+import { listVaults } from "../services/vaults";
+import {
+  getEffectivePrivacy,
+  getPrivacyDisplayLabel,
+  getVaultEffectivePrivacy,
+} from "../utils/privacy";
 import PriorityBar from "./PriorityBar";
 
 function parsePriorityJson(priority: string): Record<string, unknown> {
@@ -54,10 +60,12 @@ function getAccessCount(node: Node, key: string): number {
 
 type PriorityDashboardProps = {
   refreshKey: number;
+  isRedactedUnlocked: boolean;
 };
 
-function PriorityDashboard({ refreshKey }: PriorityDashboardProps) {
+function PriorityDashboard({ refreshKey, isRedactedUnlocked }: PriorityDashboardProps) {
   const [nodes, setNodes] = useState<Node[]>([]);
+  const [vaults, setVaults] = useState<Awaited<ReturnType<typeof listVaults>>>([]);
   const [status, setStatus] = useState("");
   const [profileOverrides, setProfileOverrides] = useState<Record<string, string>>({});
   const [frozenOverrides, setFrozenOverrides] = useState<Record<string, boolean>>({});
@@ -69,6 +77,8 @@ function PriorityDashboard({ refreshKey }: PriorityDashboardProps) {
       await refreshAllPriorityScores();
       const all = await getAllNodes();
       setNodes(all);
+      const allVaults = await listVaults();
+      setVaults(allVaults);
       const profiles: Record<string, string> = {};
       const frozen: Record<string, boolean> = {};
       for (const node of all) {
@@ -85,6 +95,29 @@ function PriorityDashboard({ refreshKey }: PriorityDashboardProps) {
         setStatus("Failed to load nodes.");
       }
     }
+  }
+
+  const vaultById = useMemo(() => {
+    const map: Record<string, Awaited<ReturnType<typeof listVaults>>[number]> = {};
+    for (const vault of vaults) {
+      map[vault.id] = vault;
+    }
+    return map;
+  }, [vaults]);
+
+  const vaultEffectivePrivacyById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const vault of vaults) {
+      map[vault.id] = getVaultEffectivePrivacy(vault.id, vaultById, map);
+    }
+    return map;
+  }, [vaultById, vaults]);
+
+  function getNodeEffectivePrivacy(node: Node): string {
+    const containerId = node.subVaultId ?? node.vaultId;
+    const containerTier =
+      vaultEffectivePrivacyById[containerId] ?? getVaultEffectivePrivacy(containerId, vaultById);
+    return getEffectivePrivacy(node.privacyTier, null, containerTier);
   }
 
   useEffect(() => {
@@ -224,9 +257,12 @@ function PriorityDashboard({ refreshKey }: PriorityDashboardProps) {
           const count90 = getAccessCount(node, "access_count_90active") || 0;
           const currentProfile = profileOverrides[node.id] ?? getPriorityProfile(node);
           const frozen = frozenOverrides[node.id] ?? isFrozen(node);
+          const effectiveTier = getNodeEffectivePrivacy(node);
           return (
             <div key={node.id} className={`dashboard-row ${frozen ? "dashboard-frozen" : ""}`}>
-              <div className="dashboard-title">{node.title}</div>
+              <div className="dashboard-title">
+                {getPrivacyDisplayLabel(node.title, effectiveTier, isRedactedUnlocked)}
+              </div>
               <PriorityBar score={score} />
               <span
                 className="dashboard-activity"

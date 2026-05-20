@@ -1,10 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Node } from "../ipc";
+import type { Node, Vault } from "../ipc";
 import { AppError } from "../services/ipcResult";
 import { getNode } from "../services/nodes";
+import { listVaults } from "../services/vaults";
+import {
+  getEffectivePrivacy,
+  getPrivacyDisplayLabel,
+  getVaultEffectivePrivacy,
+} from "../utils/privacy";
 
 type ActiveMemoryPanelProps = {
   selectedNodeIds: string[];
+  isRedactedUnlocked: boolean;
 };
 
 type NodePriorityMeta = {
@@ -29,8 +36,9 @@ function shortLabel(node: Node): string {
   return primary.length > 64 ? `${primary.slice(0, 63)}...` : primary;
 }
 
-function ActiveMemoryPanel({ selectedNodeIds }: ActiveMemoryPanelProps) {
+function ActiveMemoryPanel({ selectedNodeIds, isRedactedUnlocked }: ActiveMemoryPanelProps) {
   const [loadedNodes, setLoadedNodes] = useState<Node[]>([]);
+  const [vaults, setVaults] = useState<Vault[]>([]);
   const [status, setStatus] = useState("");
 
   useEffect(() => {
@@ -71,27 +79,70 @@ function ActiveMemoryPanel({ selectedNodeIds }: ActiveMemoryPanelProps) {
     };
   }, [selectedNodeIds]);
 
-  const nodeCards = useMemo(
-    () =>
-      loadedNodes.map((node) => {
-        const meta = parsePriorityMeta(node.priority);
-        return (
-          <article key={node.id} className="active-memory-item">
-            <div className="active-memory-item-top">
-              <strong>{shortLabel(node)}</strong>
-              <span className="active-memory-door-stub">🚪 0</span>
-            </div>
-            <div className="active-memory-item-meta">
-              <span className={`active-memory-rate-badge rate-${meta.profile}`}>
-                {meta.profile}
-              </span>
-              <span className="active-memory-usage">activity {meta.accessCount30Active}</span>
-            </div>
-          </article>
-        );
-      }),
-    [loadedNodes]
-  );
+  useEffect(() => {
+    let active = true;
+
+    void (async () => {
+      try {
+        const data = await listVaults();
+        if (!active) {
+          return;
+        }
+        setVaults(data);
+      } catch {
+        if (!active) {
+          return;
+        }
+        setVaults([]);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const vaultById = useMemo(() => {
+    const map: Record<string, (typeof vaults)[number]> = {};
+    for (const vault of vaults) {
+      map[vault.id] = vault;
+    }
+    return map;
+  }, [vaults]);
+
+  const vaultEffectivePrivacyById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const vault of vaults) {
+      map[vault.id] = getVaultEffectivePrivacy(vault.id, vaultById, map);
+    }
+    return map;
+  }, [vaultById, vaults]);
+
+  function getNodeEffectivePrivacy(node: Node): string {
+    const containerId = node.subVaultId ?? node.vaultId;
+    const containerTier =
+      vaultEffectivePrivacyById[containerId] ?? getVaultEffectivePrivacy(containerId, vaultById);
+    return getEffectivePrivacy(node.privacyTier, null, containerTier);
+  }
+
+  const nodeCards = loadedNodes.map((node) => {
+    const meta = parsePriorityMeta(node.priority);
+    const effectiveTier = getNodeEffectivePrivacy(node);
+    return (
+      <article key={node.id} className="active-memory-item">
+        <div className="active-memory-item-top">
+          <strong>
+            {getPrivacyDisplayLabel(shortLabel(node), effectiveTier, isRedactedUnlocked)}
+          </strong>
+          <span className="active-memory-door-stub">🚪 0</span>
+        </div>
+        <div className="active-memory-item-meta">
+          <span className={`active-memory-rate-badge rate-${meta.profile}`}>{meta.profile}</span>
+          <span className="active-memory-usage">activity {meta.accessCount30Active}</span>
+        </div>
+      </article>
+    );
+  });
 
   return (
     <section className="active-memory-panel">

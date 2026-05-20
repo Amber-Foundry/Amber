@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   listVaults,
   createVault,
@@ -10,6 +11,11 @@ import {
 import { listAllDoors } from "../services/doors";
 import { getNodes, createNode, deleteNode, updateNode } from "../services/nodes";
 import { sanitizeSvgText } from "../utils/svgSanitizer";
+import {
+  getEffectivePrivacy,
+  getPrivacyDisplayLabel,
+  getVaultEffectivePrivacy,
+} from "../utils/privacy";
 import type { Vault, Node, Door } from "../types/generated";
 import "../style/components/SpatialWorkspace.css";
 
@@ -26,6 +32,7 @@ interface SpatialWorkspaceProps {
   onNodeDeleted?: (id: string) => void;
   onNodeUpdated?: (id: string) => void;
   isRedactedUnlocked?: boolean;
+  onModalToggle?: (isOpen: boolean) => void;
 }
 
 interface PriorityMetadata {
@@ -43,6 +50,25 @@ const CURATED_PALETTE = [
   { id: "royal", name: "Amethyst Royal", hsl: "hsl(265, 65%, 52%)" },
   { id: "storm", name: "Slate Storm", hsl: "hsl(220, 20%, 42%)" },
   { id: "rose", name: "Rose Crypt", hsl: "hsl(354, 70%, 45%)" },
+];
+
+const VAULT_ICON_CHOICES = [
+  "💳",
+  "🪙",
+  "💪",
+  "📚",
+  "👤",
+  "💼",
+  "🏠",
+  "📱",
+  "💻",
+  "📝",
+  "🧠",
+  "💰",
+  "🔑",
+  "🎨",
+  "🚀",
+  "📂",
 ];
 
 // --- Curated Domain Themes & Emojis ---
@@ -172,6 +198,7 @@ export default function SpatialWorkspace({
   onNodeDeleted,
   onNodeUpdated,
   isRedactedUnlocked = false,
+  onModalToggle,
 }: SpatialWorkspaceProps) {
   // --- Data States ---
   const [vaults, setVaults] = useState<Vault[]>([]);
@@ -215,6 +242,15 @@ export default function SpatialWorkspace({
   const [addingType, setAddingType] = useState<"node" | "subvault" | "global-vault" | null>(null);
   const [addInputValue, setAddInputValue] = useState("");
   const [isAddingBusy, setIsAddingBusy] = useState(false);
+  const [vaultCreateModalOpen, setVaultCreateModalOpen] = useState(false);
+  const [vaultCreateMode, setVaultCreateMode] = useState<"global-vault" | "subvault" | null>(null);
+  const [vaultCreateParentId, setVaultCreateParentId] = useState<string | null>(null);
+  const [vaultCreateParentName, setVaultCreateParentName] = useState("");
+  const [vaultCreateName, setVaultCreateName] = useState("");
+  const [vaultCreateDescription, setVaultCreateDescription] = useState("");
+  const [vaultCreateIcon, setVaultCreateIcon] = useState("");
+  const [vaultCreatePrivacyTier, setVaultCreatePrivacyTier] = useState("open");
+  const [vaultCreateError, setVaultCreateError] = useState("");
 
   // --- Deletion Confirmation States ---
   const [deleteArmedId, setDeleteArmedId] = useState<string | null>(null);
@@ -285,6 +321,10 @@ export default function SpatialWorkspace({
     return () => window.clearTimeout(timer);
   }, [refreshKey, localRefresh]);
 
+  useEffect(() => {
+    onModalToggle?.(vaultCreateModalOpen);
+  }, [vaultCreateModalOpen, onModalToggle]);
+
   // Clean up delete arming timer
   useEffect(() => {
     return () => {
@@ -302,6 +342,9 @@ export default function SpatialWorkspace({
       target.closest(".spatial-bottom-bar-pill")
     ) {
       return;
+    }
+    if (selectedVaultId) {
+      onSelectVault(null);
     }
     setIsDragging(true);
     setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
@@ -347,8 +390,60 @@ export default function SpatialWorkspace({
   };
 
   const resetView = () => {
-    setZoom(0.85);
-    setPan({ x: 100, y: 80 });
+    const container = worldRef.current?.parentElement;
+    const cards = worldRef.current?.querySelectorAll<HTMLElement>(".spatial-vault-card");
+
+    if (!container || !cards || cards.length === 0) {
+      setZoom(0.85);
+      setPan({ x: 100, y: 80 });
+      return;
+    }
+
+    const margin = 80;
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    cards.forEach((card) => {
+      const left = card.offsetLeft;
+      const top = card.offsetTop;
+      const right = left + card.offsetWidth;
+      const bottom = top + card.offsetHeight;
+
+      minX = Math.min(minX, left);
+      minY = Math.min(minY, top);
+      maxX = Math.max(maxX, right);
+      maxY = Math.max(maxY, bottom);
+    });
+
+    if (
+      !Number.isFinite(minX) ||
+      !Number.isFinite(minY) ||
+      !Number.isFinite(maxX) ||
+      !Number.isFinite(maxY)
+    ) {
+      setZoom(0.85);
+      setPan({ x: 100, y: 80 });
+      return;
+    }
+
+    const contentWidth = Math.max(1, maxX - minX);
+    const contentHeight = Math.max(1, maxY - minY);
+    const availableWidth = Math.max(1, container.clientWidth - margin * 2);
+    const availableHeight = Math.max(1, container.clientHeight - margin * 2);
+    const fitZoom = Math.max(
+      0.25,
+      Math.min(1, availableWidth / contentWidth, availableHeight / contentHeight)
+    );
+
+    const contentCenterX = minX + contentWidth / 2;
+    const contentCenterY = minY + contentHeight / 2;
+    const targetPanX = Math.round(container.clientWidth / 2 - contentCenterX * fitZoom);
+    const targetPanY = Math.round(container.clientHeight / 2 - contentCenterY * fitZoom);
+
+    setZoom(fitZoom);
+    setPan({ x: targetPanX, y: targetPanY });
   };
 
   // --- Card Dragging MouseDown Handler ---
@@ -450,6 +545,71 @@ export default function SpatialWorkspace({
     }
   };
 
+  const openVaultCreateModal = (
+    mode: "global-vault" | "subvault",
+    parentId: string | null = null,
+    parentName = ""
+  ) => {
+    setVaultCreateMode(mode);
+    setVaultCreateParentId(parentId);
+    setVaultCreateParentName(parentName);
+    setVaultCreateName("");
+    setVaultCreateDescription("");
+    setVaultCreateIcon("");
+    setVaultCreatePrivacyTier("open");
+    setVaultCreateError("");
+    setVaultCreateModalOpen(true);
+  };
+
+  const closeVaultCreateModal = () => {
+    setVaultCreateModalOpen(false);
+    setVaultCreateMode(null);
+    setVaultCreateParentId(null);
+    setVaultCreateParentName("");
+    setVaultCreateName("");
+    setVaultCreateDescription("");
+    setVaultCreateIcon("");
+    setVaultCreatePrivacyTier("open");
+    setVaultCreateError("");
+  };
+
+  const submitVaultCreateModal = async () => {
+    const name = vaultCreateName.trim();
+    if (!name) {
+      setVaultCreateError("Enter a vault name.");
+      return;
+    }
+
+    setIsAddingBusy(true);
+    try {
+      if (vaultCreateMode === "global-vault") {
+        const created = await createVault({
+          name,
+          description: vaultCreateDescription.trim() || undefined,
+          icon: vaultCreateIcon.trim() || undefined,
+          privacyTier: vaultCreatePrivacyTier.trim() || undefined,
+        });
+        if (onVaultCreated) onVaultCreated(created.id);
+      } else if (vaultCreateMode === "subvault" && vaultCreateParentId) {
+        const created = await createVault({
+          name,
+          description: vaultCreateDescription.trim() || undefined,
+          icon: vaultCreateIcon.trim() || undefined,
+          privacyTier: vaultCreatePrivacyTier.trim() || undefined,
+          parentVaultId: vaultCreateParentId,
+        });
+        if (onVaultUpdated) onVaultUpdated(vaultCreateParentId);
+        if (onVaultCreated) onVaultCreated(created.id);
+      }
+      setLocalRefresh((prev) => prev + 1);
+      closeVaultCreateModal();
+    } catch (e) {
+      setVaultCreateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsAddingBusy(false);
+    }
+  };
+
   const handleAddKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
       handleAddSubmit();
@@ -501,11 +661,16 @@ export default function SpatialWorkspace({
   // Evaluates matching metrics for nodes
   const isNodeMatch = (n: Node) => {
     if (!query) return false;
-    // Redacted node titles are redacted, but backend privacy tier handles data leakage.
-    // If redacted and query doesn't match redacted string, let's skip.
-    const isRedacted = n.privacyTier === "redacted" && !isRedactedUnlocked;
-    const title = isRedacted ? "[redacted]" : n.title.toLowerCase();
-    const summary = isRedacted ? "" : n.summary.toLowerCase();
+    const sv = n.subVaultId ? vaults.find((v) => v.id === n.subVaultId) : null;
+    const v = vaults.find((vault) => vault.id === n.vaultId);
+    const effectiveTier = getEffectivePrivacy(n.privacyTier, sv?.privacyTier, v?.privacyTier);
+    const isRedacted = effectiveTier === "redacted" && !isRedactedUnlocked;
+    const isLocked = effectiveTier === "locked" && !isRedactedUnlocked;
+    const title = n.title.toLowerCase();
+    if (isRedacted || isLocked) {
+      return title.includes(query);
+    }
+    const summary = n.summary.toLowerCase();
     return title.includes(query) || summary.includes(query);
   };
 
@@ -535,6 +700,22 @@ export default function SpatialWorkspace({
   const topVaults = useMemo(() => {
     return vaults.filter((v) => !v.parentVaultId);
   }, [vaults]);
+
+  const vaultById = useMemo(() => {
+    const map: Record<string, Vault> = {};
+    for (const vault of vaults) {
+      map[vault.id] = vault;
+    }
+    return map;
+  }, [vaults]);
+
+  const vaultEffectivePrivacyById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const vault of vaults) {
+      map[vault.id] = getVaultEffectivePrivacy(vault.id, vaultById, map);
+    }
+    return map;
+  }, [vaultById, vaults]);
 
   // Compute subvault list for each top-level vault
   const getSubvaultsFor = (vaultId: string) => {
@@ -637,44 +818,44 @@ export default function SpatialWorkspace({
       const srcNode = nodes.find((n) => n.id === door.sourceNodeId);
       if (!srcNode) return;
 
+      const srcContainerId = srcNode.subVaultId ?? srcNode.vaultId;
+      const srcContainerTier =
+        vaultEffectivePrivacyById[srcContainerId] ?? vaultById[srcContainerId]?.privacyTier;
+      const srcEffectiveTier = getEffectivePrivacy(srcNode.privacyTier, null, srcContainerTier);
+      const srcIsRedactedLocked = srcEffectiveTier === "redacted" && !isRedactedUnlocked;
+      if (srcIsRedactedLocked) return;
+
       const srcPosObj = getNodeCenterPos(srcNode.vaultId, srcNode.subVaultId, srcNode.id);
       if (!srcPosObj) return;
 
       // Target node or target vault
       let tgtX = 0;
       let tgtY = 0;
-      let targetIsLockedOrRedacted = false;
+      let tgtEffectiveTier = "open";
 
       // Determine horizontal relationship to choose optimal anchors (left/right)
       const srcCardPos = cardPositions[srcNode.vaultId];
       let tgtCardPos = null;
       if (door.targetNodeId) {
         const tgtNode = nodes.find((n) => n.id === door.targetNodeId);
-        if (tgtNode) tgtCardPos = cardPositions[tgtNode.vaultId];
-      } else if (door.targetVaultId) {
-        tgtCardPos = cardPositions[door.targetVaultId];
-      }
-
-      // Check if target is locked or redacted
-      if (door.targetNodeId) {
-        const tgtNode = nodes.find((n) => n.id === door.targetNodeId);
-        if (
-          tgtNode &&
-          ((tgtNode.privacyTier === "redacted" && !isRedactedUnlocked) ||
-            tgtNode.privacyTier === "locked")
-        ) {
-          targetIsLockedOrRedacted = true;
+        if (tgtNode) {
+          tgtCardPos = cardPositions[tgtNode.vaultId];
+          const tgtContainerId = tgtNode.subVaultId ?? tgtNode.vaultId;
+          const tgtContainerTier =
+            vaultEffectivePrivacyById[tgtContainerId] ?? vaultById[tgtContainerId]?.privacyTier;
+          tgtEffectiveTier = getEffectivePrivacy(tgtNode.privacyTier, null, tgtContainerTier);
         }
       } else if (door.targetVaultId) {
         const tgtVault = vaults.find((v) => v.id === door.targetVaultId);
-        if (
-          tgtVault &&
-          ((tgtVault.privacyTier === "redacted" && !isRedactedUnlocked) ||
-            tgtVault.privacyTier === "locked")
-        ) {
-          targetIsLockedOrRedacted = true;
+        if (tgtVault) {
+          tgtCardPos = cardPositions[tgtVault.id];
+          tgtEffectiveTier =
+            vaultEffectivePrivacyById[tgtVault.id] ?? getEffectivePrivacy(tgtVault.privacyTier);
         }
       }
+
+      const tgtIsRedactedLocked = tgtEffectiveTier === "redacted" && !isRedactedUnlocked;
+      if (tgtIsRedactedLocked) return;
 
       // Determine horizontal direction of routing
       let routeDirection: "left-to-right" | "right-to-left" = "left-to-right";
@@ -749,12 +930,13 @@ export default function SpatialWorkspace({
       // Evaluate visual active indicator
       const active = selectedNodeId === srcNode.id || selectedNodeId === door.targetNodeId;
       const isLocked =
-        (srcNode.privacyTier === "redacted" && !isRedactedUnlocked) ||
-        srcNode.privacyTier === "locked" ||
-        targetIsLockedOrRedacted;
+        (srcEffectiveTier === "locked" || tgtEffectiveTier === "locked") && !isRedactedUnlocked;
+      const normalizedLabel = (door.label || "").trim();
+      const visibleLabel =
+        normalizedLabel && normalizedLabel.toLowerCase() !== "wikilink" ? normalizedLabel : "";
 
       // Calculate dynamic label and badge metrics
-      const labelText = isLocked ? "🔒 Locked" : sanitizeSvgText(door.label || "");
+      const labelText = isLocked ? "🔒 Locked" : sanitizeSvgText(visibleLabel);
       const badgeWidth = Math.max(80, labelText.length * 6.5 + 16);
       const badgeX = -badgeWidth / 2;
 
@@ -764,7 +946,7 @@ export default function SpatialWorkspace({
       paths.push({
         id: door.id,
         d,
-        label: door.label || "",
+        label: visibleLabel,
         isLocked,
         active,
         middlePoint: { x: midX, y: midY },
@@ -775,7 +957,18 @@ export default function SpatialWorkspace({
     });
 
     return paths;
-  }, [loading, topVaults, cardPositions, nodes, vaults, doors, selectedNodeId]);
+  }, [
+    loading,
+    topVaults,
+    cardPositions,
+    nodes,
+    vaults,
+    doors,
+    selectedNodeId,
+    isRedactedUnlocked,
+    vaultById,
+    vaultEffectivePrivacyById,
+  ]);
 
   if (loading) {
     return (
@@ -802,60 +995,13 @@ export default function SpatialWorkspace({
         <button
           className="spatial-header-btn"
           onClick={() => {
-            setAddingType("global-vault");
-            setAddInputValue("");
+            openVaultCreateModal("global-vault");
           }}
           title="Create a new top level vault card"
         >
           + Vault
         </button>
       </div>
-
-      {/* Global additions form inside header if active */}
-      {addingType === "global-vault" && (
-        <div
-          style={{
-            position: "absolute",
-            top: "70px",
-            left: "50%",
-            transform: "translateX(-50%)",
-            background: "rgba(253, 252, 250, 0.95)",
-            backdropFilter: "blur(12px)",
-            padding: "10px",
-            borderRadius: "16px",
-            border: "1.5px solid rgba(188, 108, 37, 0.25)",
-            zIndex: 100,
-            boxShadow: "0 10px 30px rgba(0,0,0,0.1)",
-            display: "flex",
-            gap: "8px",
-          }}
-        >
-          <input
-            className="spatial-add-inline-input"
-            autoFocus
-            placeholder="New Vault Name..."
-            value={addInputValue}
-            onChange={(e) => setAddInputValue(e.target.value)}
-            onKeyDown={handleAddKeyDown}
-            disabled={isAddingBusy}
-            style={{ width: "180px" }}
-          />
-          <button
-            className="spatial-add-confirm-btn"
-            onClick={handleAddSubmit}
-            disabled={isAddingBusy}
-          >
-            {isAddingBusy ? "..." : "Create"}
-          </button>
-          <button
-            className="spatial-add-cancel-btn"
-            onClick={() => setAddingType(null)}
-            disabled={isAddingBusy}
-          >
-            Cancel
-          </button>
-        </div>
-      )}
 
       {/* Primary Transform World Container */}
       <div
@@ -952,14 +1098,19 @@ export default function SpatialWorkspace({
           const pos = cardPositions[vault.id] || { x: 100, y: 100 };
           const subvaultsList = getSubvaultsFor(vault.id);
           const directNodesList = getNodesFor(vault.id, null);
+          const vaultEffectiveTier =
+            vaultEffectivePrivacyById[vault.id] ?? getEffectivePrivacy(vault.privacyTier);
 
           // Evaluate search matches
           const hasQuery = query.length > 0;
           const isVMatch = isVaultMatch(vault);
           const shouldDim = hasQuery && !isVMatch;
-          const isLocked =
-            vault.privacyTier === "locked" ||
-            (vault.privacyTier === "redacted" && !isRedactedUnlocked);
+          const isVaultRedactedLocked = vaultEffectiveTier === "redacted" && !isRedactedUnlocked;
+          const isVaultContentLocked = vaultEffectiveTier === "locked" && !isRedactedUnlocked;
+          const isVaultEditable =
+            vaultEffectiveTier === "open" ||
+            vaultEffectiveTier === "local_only" ||
+            isRedactedUnlocked;
 
           // Calculate total count of items in this vault card
           const totalItemCount =
@@ -989,12 +1140,14 @@ export default function SpatialWorkspace({
           if (selectedVaultId === vault.id) cardClasses += " active-selection";
           if (shouldDim) cardClasses += " spatial-dimmed";
           if (hasQuery && isVMatch) cardClasses += " spatial-glow";
-          if (isLocked) cardClasses += " spatial-locked-card";
+          if (isVaultRedactedLocked) cardClasses += " spatial-redacted-card";
+          if (isVaultContentLocked) cardClasses += " spatial-locked-card";
 
           return (
             <div
               key={vault.id}
               className={cardClasses}
+              data-vault-id={vault.id}
               style={{
                 left: `${pos.x}px`,
                 top: `${pos.y}px`,
@@ -1006,7 +1159,7 @@ export default function SpatialWorkspace({
               <div className="spatial-card-header">
                 <div className="spatial-card-title-area" onClick={() => onSelectVault(vault.id)}>
                   <span className="spatial-card-emoji">
-                    {getVaultEmoji(vault.icon, vault.name)}
+                    {isVaultRedactedLocked ? "⬛" : getVaultEmoji(vault.icon, vault.name)}
                   </span>
                   {editingItemId === vault.id ? (
                     <input
@@ -1021,24 +1174,27 @@ export default function SpatialWorkspace({
                     <span
                       className="spatial-card-name"
                       onDoubleClick={() => {
-                        if (isLocked) return;
+                        if (!isVaultEditable) return;
                         setEditingItemId(vault.id);
                         setEditingItemType("vault");
                         setEditValue(vault.name);
                       }}
                     >
-                      {vault.name}
+                      {getPrivacyDisplayLabel(vault.name, vaultEffectiveTier, isRedactedUnlocked)}
                     </span>
                   )}
                 </div>
 
                 <div className="spatial-card-header-right">
-                  {isLocked && <span className="spatial-card-lock-badge">locked</span>}
+                  {isVaultRedactedLocked && (
+                    <span className="spatial-card-lock-badge">redacted</span>
+                  )}
+                  {isVaultContentLocked && <span className="spatial-card-lock-badge">locked</span>}
                   <span className="spatial-card-count-badge">{totalItemCount}</span>
                 </div>
 
                 <div className="spatial-card-actions">
-                  {!isLocked && (
+                  {isVaultEditable && (
                     <button
                       className="spatial-card-action-btn"
                       onClick={() => {
@@ -1061,10 +1217,10 @@ export default function SpatialWorkspace({
                 </div>
               </div>
 
-              {selectedVaultId === vault.id && !isLocked && (
+              {selectedVaultId === vault.id && isVaultEditable && (
                 <div className="spatial-card-color-picker" onMouseDown={(e) => e.stopPropagation()}>
                   {CURATED_PALETTE.filter(
-                    (color) => color.id !== "rose" || vault.privacyTier === "redacted"
+                    (color) => color.id !== "rose" || vaultEffectiveTier === "redacted"
                   ).map((color) => (
                     <button
                       key={color.id}
@@ -1082,318 +1238,383 @@ export default function SpatialWorkspace({
               )}
 
               {/* Direct Node Rows list */}
-              <ul className="spatial-node-list">
-                {directNodesList.map((node) => {
-                  const nodeMatch = isNodeMatch(node);
-                  const isRedacted = node.privacyTier === "redacted" && !isRedactedUnlocked;
-                  const isNSelected = selectedNodeId === node.id;
+              {!isVaultRedactedLocked && (
+                <ul className="spatial-node-list">
+                  {directNodesList.map((node) => {
+                    const nodeMatch = isNodeMatch(node);
+                    const nodeEffectiveTier = getEffectivePrivacy(
+                      node.privacyTier,
+                      null,
+                      vaultEffectiveTier
+                    );
+                    const isRedacted = nodeEffectiveTier === "redacted" && !isRedactedUnlocked;
+                    const isNodeLocked = nodeEffectiveTier === "locked" && !isRedactedUnlocked;
+                    const isNodeEditable =
+                      nodeEffectiveTier === "open" ||
+                      nodeEffectiveTier === "local_only" ||
+                      isRedactedUnlocked;
+                    const isNSelected = selectedNodeId === node.id;
 
-                  const prio = parsePriorityJson(node.priority);
-                  const isPinned = prio.profile === "pinned" || prio.pinned === true;
-                  const isCtx =
-                    prio.profile === "fast" ||
-                    prio.profile === "standard" ||
-                    (prio.score ?? 0) > 0.8 ||
-                    selectedNodeId === node.id;
-                  const hasDoor = doors.some((d) => d.sourceNodeId === node.id);
-                  const priorityScore = Math.round(
-                    (typeof prio.score === "number" ? prio.score : 0.8) * 100
-                  );
+                    const prio = parsePriorityJson(node.priority);
+                    const isPinned =
+                      !isRedacted && (prio.profile === "pinned" || prio.pinned === true);
+                    const isCtx =
+                      !isRedacted &&
+                      (prio.profile === "fast" ||
+                        prio.profile === "standard" ||
+                        (prio.score ?? 0) > 0.8 ||
+                        selectedNodeId === node.id);
+                    const hasDoor = !isRedacted && doors.some((d) => d.sourceNodeId === node.id);
+                    const priorityScore = Math.round(
+                      (typeof prio.score === "number" ? prio.score : 0.8) * 100
+                    );
 
-                  let nodeClasses = "spatial-node-row";
-                  if (isNSelected) nodeClasses += " selected-node";
-                  if (hasQuery && nodeMatch) nodeClasses += " spatial-glow-node";
-                  if (isRedacted) nodeClasses += " spatial-redacted-node-row";
+                    let nodeClasses = "spatial-node-row";
+                    if (isNSelected) nodeClasses += " selected-node";
+                    if (hasQuery && nodeMatch) nodeClasses += " spatial-glow-node";
+                    if (isRedacted) nodeClasses += " spatial-redacted-node-row";
+                    if (isNodeLocked) nodeClasses += " spatial-locked-node-row";
 
-                  return (
-                    <li
-                      key={node.id}
-                      className={nodeClasses}
-                      onClick={() => !isRedacted && onSelectNode(node.id)}
-                    >
-                      <div className="spatial-node-title-area">
-                        <span className="spatial-node-dot" />
-                        {editingItemId === node.id ? (
-                          <input
-                            className="spatial-node-title-input"
-                            autoFocus
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={() => handleRenameSave(node.id, "node")}
-                            onKeyDown={(e) => handleRenameKeyDown(e, node.id, "node")}
-                          />
-                        ) : (
-                          <span
-                            className={`spatial-node-title ${isRedacted ? "spatial-redacted-label" : ""}`}
-                            onDoubleClick={() => {
-                              if (isRedacted || isLocked) return;
-                              setEditingItemId(node.id);
-                              setEditingItemType("node");
-                              setEditValue(node.title);
-                            }}
-                          >
-                            {isRedacted ? "[REDACTED]" : node.title}
-                          </span>
-                        )}
+                    return (
+                      <li
+                        key={node.id}
+                        className={nodeClasses}
+                        onClick={() => !isRedacted && onSelectNode(node.id)}
+                      >
+                        <div className="spatial-node-title-area">
+                          <span className="spatial-node-dot" />
+                          {editingItemId === node.id ? (
+                            <input
+                              className="spatial-node-title-input"
+                              autoFocus
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onBlur={() => handleRenameSave(node.id, "node")}
+                              onKeyDown={(e) => handleRenameKeyDown(e, node.id, "node")}
+                            />
+                          ) : (
+                            <span
+                              className={`spatial-node-title ${isRedacted ? "spatial-redacted-label" : ""}`}
+                              onDoubleClick={() => {
+                                if (!isNodeEditable) return;
+                                setEditingItemId(node.id);
+                                setEditingItemType("node");
+                                setEditValue(node.title);
+                              }}
+                            >
+                              {getPrivacyDisplayLabel(
+                                node.title,
+                                nodeEffectiveTier,
+                                isRedactedUnlocked
+                              )}
+                            </span>
+                          )}
 
-                        {/* State badges rendering */}
-                        {isPinned && <span className="spatial-node-badge badge-pin">pin</span>}
-                        {isCtx && !isPinned && (
-                          <span className="spatial-node-badge badge-ctx">ctx</span>
-                        )}
-                        {hasDoor && <span className="spatial-node-badge badge-door">door</span>}
-                      </div>
+                          {/* State badges rendering */}
+                          {isPinned && <span className="spatial-node-badge badge-pin">pin</span>}
+                          {isCtx && !isPinned && (
+                            <span className="spatial-node-badge badge-ctx">ctx</span>
+                          )}
+                          {hasDoor && <span className="spatial-node-badge badge-door">door</span>}
+                        </div>
 
-                      <div className="spatial-node-right-area">
-                        {isLocked && (
-                          <span style={{ fontSize: "0.75rem", marginRight: "4px" }}>🔒</span>
-                        )}
-                        <span className="spatial-node-score">{priorityScore}</span>
-                      </div>
+                        <div className="spatial-node-right-area">
+                          {isNodeLocked && (
+                            <span style={{ fontSize: "0.75rem", marginRight: "4px" }}>🔒</span>
+                          )}
+                          {!isRedacted && (
+                            <span className="spatial-node-score">{priorityScore}</span>
+                          )}
+                        </div>
 
-                      <div className="spatial-card-actions">
-                        {!isRedacted && !isLocked && (
-                          <button
-                            className="spatial-card-action-btn"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setEditingItemId(node.id);
-                              setEditingItemType("node");
-                              setEditValue(node.title);
-                            }}
-                          >
-                            ✏️
-                          </button>
-                        )}
-                        {!isRedacted && (
-                          <button
-                            className={`spatial-card-action-btn ${deleteArmedId === node.id ? "delete-armed" : ""}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleArmDelete(e, node.id);
-                            }}
-                          >
-                            {deleteArmedId === node.id ? "Ok?" : "🗑️"}
-                          </button>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
+                        <div className="spatial-card-actions">
+                          {isNodeEditable && (
+                            <button
+                              className="spatial-card-action-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingItemId(node.id);
+                                setEditingItemType("node");
+                                setEditValue(node.title);
+                              }}
+                            >
+                              ✏️
+                            </button>
+                          )}
+                          {isNodeEditable && (
+                            <button
+                              className={`spatial-card-action-btn ${deleteArmedId === node.id ? "delete-armed" : ""}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleArmDelete(e, node.id);
+                              }}
+                            >
+                              {deleteArmedId === node.id ? "Ok?" : "🗑️"}
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
 
               {/* Subvault Nesting Groups inside Card */}
-              {subvaultsList.map((subvault) => {
-                const subNodes = getNodesFor(vault.id, subvault.id);
-                const subvaultLocked =
-                  subvault.privacyTier === "locked" ||
-                  (subvault.privacyTier === "redacted" && !isRedactedUnlocked);
+              {!isVaultRedactedLocked &&
+                subvaultsList.map((subvault) => {
+                  const subNodes = getNodesFor(vault.id, subvault.id);
+                  const subvaultEffectiveTier =
+                    vaultEffectivePrivacyById[subvault.id] ??
+                    getEffectivePrivacy(subvault.privacyTier, null, vaultEffectiveTier);
+                  const subvaultRedactedLocked =
+                    subvaultEffectiveTier === "redacted" && !isRedactedUnlocked;
+                  const subvaultContentLocked =
+                    subvaultEffectiveTier === "locked" && !isRedactedUnlocked;
+                  const subvaultEditable =
+                    subvaultEffectiveTier === "open" ||
+                    subvaultEffectiveTier === "local_only" ||
+                    isRedactedUnlocked;
 
-                return (
-                  <div key={subvault.id} className="spatial-subvault-container">
-                    <div className="spatial-subvault-header">
-                      <div
-                        className="spatial-subvault-title-area"
-                        onClick={() => onSelectVault(subvault.id)}
-                      >
-                        {editingItemId === subvault.id ? (
-                          <input
-                            className="spatial-subvault-title-input"
-                            autoFocus
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={() => handleRenameSave(subvault.id, "subvault")}
-                            onKeyDown={(e) => handleRenameKeyDown(e, subvault.id, "subvault")}
-                          />
-                        ) : (
-                          <span>
-                            {getVaultEmoji(subvault.icon, subvault.name)} {subvault.name}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="spatial-card-actions">
-                        {subvaultLocked && <span>🔒</span>}
-                        {!subvaultLocked && (
-                          <button
-                            className="spatial-card-action-btn"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setEditingItemId(subvault.id);
-                              setEditingItemType("subvault");
-                              setEditValue(subvault.name);
-                            }}
-                          >
-                            ✏️
-                          </button>
-                        )}
-                        <button
-                          className={`spatial-card-action-btn ${deleteArmedId === subvault.id ? "delete-armed" : ""}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleArmDelete(e, subvault.id);
-                          }}
+                  return (
+                    <div key={subvault.id} className="spatial-subvault-container">
+                      <div className="spatial-subvault-header">
+                        <div
+                          className="spatial-subvault-title-area"
+                          onClick={() => onSelectVault(subvault.id)}
                         >
-                          {deleteArmedId === subvault.id ? "Ok?" : "🗑️"}
-                        </button>
-                      </div>
-                    </div>
-                    {/* Nodes under Subvault */}
-                    <ul className="spatial-node-list">
-                      {subNodes.map((node) => {
-                        const nodeMatch = isNodeMatch(node);
-                        const isRedacted = node.privacyTier === "redacted" && !isRedactedUnlocked;
-                        const isNSelected = selectedNodeId === node.id;
-
-                        const prio = parsePriorityJson(node.priority);
-                        const isPinned = prio.profile === "pinned" || prio.pinned === true;
-                        const isCtx =
-                          prio.profile === "fast" ||
-                          prio.profile === "standard" ||
-                          (prio.score ?? 0) > 0.8 ||
-                          selectedNodeId === node.id;
-                        const hasDoor = doors.some((d) => d.sourceNodeId === node.id);
-                        const priorityScore = Math.round(
-                          (typeof prio.score === "number" ? prio.score : 0.8) * 100
-                        );
-
-                        let nodeClasses = "spatial-node-row";
-                        if (isNSelected) nodeClasses += " selected-node";
-                        if (hasQuery && nodeMatch) nodeClasses += " spatial-glow-node";
-                        if (isRedacted) nodeClasses += " spatial-redacted-node-row";
-
-                        return (
-                          <li
-                            key={node.id}
-                            className={nodeClasses}
-                            onClick={() => !isRedacted && onSelectNode(node.id)}
-                          >
-                            <div className="spatial-node-title-area">
-                              <span className="spatial-node-dot" />
-                              {editingItemId === node.id ? (
-                                <input
-                                  className="spatial-node-title-input"
-                                  autoFocus
-                                  value={editValue}
-                                  onChange={(e) => setEditValue(e.target.value)}
-                                  onBlur={() => handleRenameSave(node.id, "node")}
-                                  onKeyDown={(e) => handleRenameKeyDown(e, node.id, "node")}
-                                />
-                              ) : (
-                                <span
-                                  className={`spatial-node-title ${isRedacted ? "spatial-redacted-label" : ""}`}
-                                  onDoubleClick={() => {
-                                    if (isRedacted || subvaultLocked || isLocked) return;
-                                    setEditingItemId(node.id);
-                                    setEditingItemType("node");
-                                    setEditValue(node.title);
-                                  }}
-                                >
-                                  {isRedacted ? "[REDACTED]" : node.title}
-                                </span>
-                              )}
-
-                              {/* State badges rendering */}
-                              {isPinned && (
-                                <span className="spatial-node-badge badge-pin">pin</span>
-                              )}
-                              {isCtx && !isPinned && (
-                                <span className="spatial-node-badge badge-ctx">ctx</span>
-                              )}
-                              {hasDoor && (
-                                <span className="spatial-node-badge badge-door">door</span>
-                              )}
-                            </div>
-
-                            <div className="spatial-node-right-area">
-                              {subvaultLocked && (
-                                <span style={{ fontSize: "0.75rem", marginRight: "4px" }}>🔒</span>
-                              )}
-                              <span className="spatial-node-score">{priorityScore}</span>
-                            </div>
-
-                            <div className="spatial-card-actions">
-                              {!isRedacted && !subvaultLocked && !isLocked && (
-                                <button
-                                  className="spatial-card-action-btn"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setEditingItemId(node.id);
-                                    setEditingItemType("node");
-                                    setEditValue(node.title);
-                                  }}
-                                >
-                                  ✏️
-                                </button>
-                              )}
-                              {!isRedacted && (
-                                <button
-                                  className={`spatial-card-action-btn ${deleteArmedId === node.id ? "delete-armed" : ""}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleArmDelete(e, node.id);
-                                  }}
-                                >
-                                  {deleteArmedId === node.id ? "Ok?" : "🗑️"}
-                                </button>
-                              )}
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ul>
-
-                    {/* Inline Node creation inside Subvault */}
-                    {!subvaultLocked && (
-                      <div style={{ marginTop: "4px" }}>
-                        {addingType === "node" && addingToSubvaultId === subvault.id ? (
-                          <div className="spatial-add-input-wrapper">
+                          {editingItemId === subvault.id ? (
                             <input
-                              className="spatial-add-inline-input"
+                              className="spatial-subvault-title-input"
                               autoFocus
-                              placeholder="Node title..."
-                              value={addInputValue}
-                              onChange={(e) => setAddInputValue(e.target.value)}
-                              onKeyDown={handleAddKeyDown}
-                              disabled={isAddingBusy}
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onBlur={() => handleRenameSave(subvault.id, "subvault")}
+                              onKeyDown={(e) => handleRenameKeyDown(e, subvault.id, "subvault")}
                             />
+                          ) : (
+                            <span>
+                              {subvaultRedactedLocked
+                                ? "⬛ [REDACTED]"
+                                : `${getVaultEmoji(subvault.icon, subvault.name)} ${getPrivacyDisplayLabel(
+                                    subvault.name,
+                                    subvaultEffectiveTier,
+                                    isRedactedUnlocked
+                                  )}`}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="spatial-card-actions">
+                          {subvaultRedactedLocked && <span>⬛</span>}
+                          {subvaultContentLocked && <span>🔒</span>}
+                          {subvaultEditable && (
                             <button
-                              className="spatial-add-confirm-btn"
-                              onClick={handleAddSubmit}
-                              disabled={isAddingBusy}
+                              className="spatial-card-action-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingItemId(subvault.id);
+                                setEditingItemType("subvault");
+                                setEditValue(subvault.name);
+                              }}
                             >
-                              {isAddingBusy ? "..." : "Add"}
+                              ✏️
                             </button>
+                          )}
+                          {subvaultEditable && (
                             <button
-                              className="spatial-add-cancel-btn"
-                              onClick={() => setAddingType(null)}
-                              disabled={isAddingBusy}
+                              className={`spatial-card-action-btn ${deleteArmedId === subvault.id ? "delete-armed" : ""}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleArmDelete(e, subvault.id);
+                              }}
                             >
-                              x
+                              {deleteArmedId === subvault.id ? "Ok?" : "🗑️"}
                             </button>
-                          </div>
-                        ) : (
-                          <button
-                            className="spatial-add-inline-btn"
-                            onClick={() => {
-                              setAddingType("node");
-                              setAddingToVaultId(vault.id);
-                              setAddingToSubvaultId(subvault.id);
-                              setAddInputValue("");
-                            }}
-                          >
-                            + node
-                          </button>
-                        )}
+                          )}
+                        </div>
                       </div>
-                    )}
-                  </div>
-                );
-              })}
+                      {/* Nodes under Subvault */}
+                      {!subvaultRedactedLocked && (
+                        <ul className="spatial-node-list">
+                          {subNodes.map((node) => {
+                            const nodeMatch = isNodeMatch(node);
+                            const nodeEffectiveTier = getEffectivePrivacy(
+                              node.privacyTier,
+                              null,
+                              subvaultEffectiveTier
+                            );
+                            const isRedacted =
+                              nodeEffectiveTier === "redacted" && !isRedactedUnlocked;
+                            const isNodeLocked =
+                              nodeEffectiveTier === "locked" && !isRedactedUnlocked;
+                            const isNodeEditable =
+                              nodeEffectiveTier === "open" ||
+                              nodeEffectiveTier === "local_only" ||
+                              isRedactedUnlocked;
+                            const isNSelected = selectedNodeId === node.id;
+
+                            const prio = parsePriorityJson(node.priority);
+                            const isPinned =
+                              !isRedacted && (prio.profile === "pinned" || prio.pinned === true);
+                            const isCtx =
+                              !isRedacted &&
+                              (prio.profile === "fast" ||
+                                prio.profile === "standard" ||
+                                (prio.score ?? 0) > 0.8 ||
+                                selectedNodeId === node.id);
+                            const hasDoor =
+                              !isRedacted && doors.some((d) => d.sourceNodeId === node.id);
+                            const priorityScore = Math.round(
+                              (typeof prio.score === "number" ? prio.score : 0.8) * 100
+                            );
+
+                            let nodeClasses = "spatial-node-row";
+                            if (isNSelected) nodeClasses += " selected-node";
+                            if (hasQuery && nodeMatch) nodeClasses += " spatial-glow-node";
+                            if (isRedacted) nodeClasses += " spatial-redacted-node-row";
+                            if (isNodeLocked) nodeClasses += " spatial-locked-node-row";
+
+                            return (
+                              <li
+                                key={node.id}
+                                className={nodeClasses}
+                                onClick={() => !isRedacted && onSelectNode(node.id)}
+                              >
+                                <div className="spatial-node-title-area">
+                                  <span className="spatial-node-dot" />
+                                  {editingItemId === node.id ? (
+                                    <input
+                                      className="spatial-node-title-input"
+                                      autoFocus
+                                      value={editValue}
+                                      onChange={(e) => setEditValue(e.target.value)}
+                                      onBlur={() => handleRenameSave(node.id, "node")}
+                                      onKeyDown={(e) => handleRenameKeyDown(e, node.id, "node")}
+                                    />
+                                  ) : (
+                                    <span
+                                      className={`spatial-node-title ${isRedacted ? "spatial-redacted-label" : ""}`}
+                                      onDoubleClick={() => {
+                                        if (!isNodeEditable) return;
+                                        setEditingItemId(node.id);
+                                        setEditingItemType("node");
+                                        setEditValue(node.title);
+                                      }}
+                                    >
+                                      {getPrivacyDisplayLabel(
+                                        node.title,
+                                        nodeEffectiveTier,
+                                        isRedactedUnlocked
+                                      )}
+                                    </span>
+                                  )}
+
+                                  {/* State badges rendering */}
+                                  {isPinned && (
+                                    <span className="spatial-node-badge badge-pin">pin</span>
+                                  )}
+                                  {isCtx && !isPinned && (
+                                    <span className="spatial-node-badge badge-ctx">ctx</span>
+                                  )}
+                                  {hasDoor && (
+                                    <span className="spatial-node-badge badge-door">door</span>
+                                  )}
+                                </div>
+
+                                <div className="spatial-node-right-area">
+                                  {isNodeLocked && (
+                                    <span style={{ fontSize: "0.75rem", marginRight: "4px" }}>
+                                      🔒
+                                    </span>
+                                  )}
+                                  {!isRedacted && (
+                                    <span className="spatial-node-score">{priorityScore}</span>
+                                  )}
+                                </div>
+
+                                <div className="spatial-card-actions">
+                                  {isNodeEditable && (
+                                    <button
+                                      className="spatial-card-action-btn"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditingItemId(node.id);
+                                        setEditingItemType("node");
+                                        setEditValue(node.title);
+                                      }}
+                                    >
+                                      ✏️
+                                    </button>
+                                  )}
+                                  {isNodeEditable && (
+                                    <button
+                                      className={`spatial-card-action-btn ${deleteArmedId === node.id ? "delete-armed" : ""}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleArmDelete(e, node.id);
+                                      }}
+                                    >
+                                      {deleteArmedId === node.id ? "Ok?" : "🗑️"}
+                                    </button>
+                                  )}
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+
+                      {/* Inline Node creation inside Subvault */}
+                      {subvaultEditable && (
+                        <div style={{ marginTop: "4px" }}>
+                          {addingType === "node" && addingToSubvaultId === subvault.id ? (
+                            <div className="spatial-add-input-wrapper">
+                              <input
+                                className="spatial-add-inline-input"
+                                autoFocus
+                                placeholder="Node title..."
+                                value={addInputValue}
+                                onChange={(e) => setAddInputValue(e.target.value)}
+                                onKeyDown={handleAddKeyDown}
+                                disabled={isAddingBusy}
+                              />
+                              <button
+                                className="spatial-add-confirm-btn"
+                                onClick={handleAddSubmit}
+                                disabled={isAddingBusy}
+                              >
+                                {isAddingBusy ? "..." : "Add"}
+                              </button>
+                              <button
+                                className="spatial-add-cancel-btn"
+                                onClick={() => setAddingType(null)}
+                                disabled={isAddingBusy}
+                              >
+                                x
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              className="spatial-add-inline-btn"
+                              onClick={() => {
+                                setAddingType("node");
+                                setAddingToVaultId(vault.id);
+                                setAddingToSubvaultId(subvault.id);
+                                setAddInputValue("");
+                              }}
+                            >
+                              + node
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
 
               {/* Bottom Actions Row containing '+ node' / '+ subvault' / 'open vault' */}
               <div className="spatial-card-bottom-actions">
-                {!isLocked && (
+                {isVaultEditable && (
                   <div style={{ display: "flex", gap: "8px", flex: 1 }}>
                     {addingType === "node" &&
                     addingToVaultId === vault.id &&
@@ -1467,9 +1688,7 @@ export default function SpatialWorkspace({
                           className="spatial-add-inline-btn"
                           style={{ flex: 1 }}
                           onClick={() => {
-                            setAddingType("subvault");
-                            setAddingToVaultId(vault.id);
-                            setAddInputValue("");
+                            openVaultCreateModal("subvault", vault.id, vault.name);
                           }}
                         >
                           + subvault
@@ -1487,6 +1706,109 @@ export default function SpatialWorkspace({
           );
         })}
       </div>
+
+      {vaultCreateModalOpen &&
+        createPortal(
+          <div className="sidebar-auth-overlay" onClick={closeVaultCreateModal}>
+            <div
+              className="vault-settings-modal sidebar-auth-modal spatial-create-modal"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="modal-title">
+                {vaultCreateMode === "subvault" ? "New Subvault" : "New Vault"}
+              </h3>
+              <p className="modal-subtitle">
+                {vaultCreateMode === "subvault" && vaultCreateParentName
+                  ? `Create a new subvault inside ${vaultCreateParentName}.`
+                  : "Create a new top-level vault in Spatial Workspace."}
+              </p>
+              <div className="settings-fields-grid">
+                <label className="settings-field">
+                  <span>{vaultCreateMode === "subvault" ? "Subvault Name" : "Vault Name"}</span>
+                  <input
+                    type="text"
+                    className="settings-input"
+                    value={vaultCreateName}
+                    onChange={(e) => setVaultCreateName(e.target.value)}
+                    placeholder={vaultCreateMode === "subvault" ? "e.g. Research" : "e.g. Finance"}
+                    autoFocus
+                  />
+                </label>
+
+                <label className="settings-field">
+                  <span>Description</span>
+                  <input
+                    type="text"
+                    className="settings-input"
+                    value={vaultCreateDescription}
+                    onChange={(e) => setVaultCreateDescription(e.target.value)}
+                    placeholder="e.g. Budgets, planning, and reports"
+                  />
+                </label>
+
+                <div className="settings-field">
+                  <span>Emoji / Icon</span>
+                  <div className="emoji-picker-container">
+                    <div className="emoji-picker-grid">
+                      {VAULT_ICON_CHOICES.map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          className={`emoji-choice-btn ${vaultCreateIcon === emoji ? "selected" : ""}`}
+                          onClick={() => setVaultCreateIcon(emoji)}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      type="text"
+                      value={vaultCreateIcon}
+                      onChange={(e) => setVaultCreateIcon(e.target.value)}
+                      placeholder="Or type a custom emoji/text"
+                      maxLength={10}
+                      className="settings-input custom-emoji-input"
+                    />
+                  </div>
+                </div>
+
+                <label className="settings-field">
+                  <span>Privacy Tier</span>
+                  <select
+                    value={vaultCreatePrivacyTier}
+                    onChange={(e) => setVaultCreatePrivacyTier(e.target.value)}
+                    className="settings-select"
+                  >
+                    <option value="open">Open (No restriction)</option>
+                    <option value="local_only">Local Only (Never cloud synced)</option>
+                    <option value="locked">Locked (Requires unlock to access)</option>
+                    <option value="redacted">Redacted (Hidden metadata/title)</option>
+                  </select>
+                </label>
+              </div>
+              {vaultCreateError && <p className="redacted-lock-error">{vaultCreateError}</p>}
+              <div className="sidebar-auth-actions settings-modal-actions">
+                <button
+                  type="button"
+                  className="redacted-lock-button sidebar-auth-cancel"
+                  onClick={closeVaultCreateModal}
+                  disabled={isAddingBusy}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="redacted-lock-button"
+                  onClick={submitVaultCreateModal}
+                  disabled={isAddingBusy}
+                >
+                  {isAddingBusy ? "Creating..." : "Create"}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
 
       {/* Exquisite premium bottom pill control bar matching Image 2 mockup */}
       <div className="spatial-bottom-bar-pill">

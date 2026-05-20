@@ -192,19 +192,42 @@
   background-color: rgba(188, 108, 37, 0.05) !important;
 }
 
-/* Privacy styling for Locked states (Red/Pink Warning: Cryptographic Wall) */
-.spatial-locked-card {
+/* Privacy styling for Redacted states (Red/Pink Warning: Cryptographic Wall) */
+.spatial-redacted-card {
   border-style: dashed !important;
   border-color: rgba(229, 62, 62, 0.45) !important;
   background: rgba(254, 237, 238, 0.95) !important;
   box-shadow: 0 4px 20px rgba(229, 62, 62, 0.05) !important;
 }
 
-.spatial-locked-card.active-selection {
+.spatial-redacted-card.active-selection {
   border-color: rgba(229, 62, 62, 0.85) !important;
   box-shadow:
     0 8px 30px rgba(229, 62, 62, 0.16),
     0 0 0 1px rgba(229, 62, 62, 0.1) !important;
+}
+
+/* Privacy styling for Locked states (Slate/Amber dashed theme) */
+.spatial-locked-card {
+  border-style: dashed !important;
+  border-color: rgba(188, 108, 37, 0.4) !important; /* Subtle amber */
+  background: rgba(245, 243, 240, 0.96) !important; /* Muted warm background */
+  box-shadow: 0 4px 16px rgba(125, 122, 117, 0.05) !important;
+}
+
+.spatial-locked-card.active-selection {
+  border-color: rgba(188, 108, 37, 0.75) !important;
+  box-shadow:
+    0 8px 24px rgba(188, 108, 37, 0.12),
+    0 0 0 1px rgba(188, 108, 37, 0.1) !important;
+}
+
+/* Privacy styling for Locked state nodes (Readable, slightly muted with lock) */
+.spatial-locked-node-row {
+  background: rgba(188, 108, 37, 0.02) !important;
+  border: 1px solid rgba(188, 108, 37, 0.1) !important;
+  color: #4a4844 !important;
+  opacity: 0.95;
 }
 
 /* Privacy styling for Redacted state nodes */
@@ -1096,6 +1119,20 @@
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* Final privacy override so locked/redacted cards always stay dashed,
+   even after theme/color classes apply their own border shorthand. */
+.spatial-vault-card.spatial-redacted-card,
+.spatial-vault-card.spatial-locked-card {
+  border-style: dashed !important;
+  border-width: 1.5px !important;
+}
+
+.spatial-vault-card.spatial-redacted-card.active-selection,
+.spatial-vault-card.spatial-locked-card.active-selection {
+  border-style: dashed !important;
+  border-width: 1.5px !important;
 }
 
 .spatial-color-dot {

@@ -64,6 +64,10 @@
   box-shadow: 0 2px 8px rgba(188, 108, 37, 0.06);
 }
 
+.hybrid-shell.modal-open .sidebar-toggle-btn {
+  display: none;
+}
+
 .sidebar-toggle-btn:hover {
   background: rgba(255, 255, 255, 1);
   border-color: var(--primary-color);

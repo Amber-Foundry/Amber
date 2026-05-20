@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   deleteNode,
   getAllNodes,
@@ -9,7 +10,7 @@ import {
 } from "../services/nodes";
 import type { Backlink, Door, Node, Tag, Vault } from "../ipc";
 import { AppError } from "../services/ipcResult";
-import { listVaults, resolveVaultPath } from "../services/vaults";
+import { listVaults } from "../services/vaults";
 import { addNodeTag, createTag, getNodeTags, listTags, removeNodeTag } from "../services/tags";
 import {
   createDoor,
@@ -19,7 +20,14 @@ import {
   repointDoor,
 } from "../services/doors";
 import { isAuthSetup, setMasterPassword, verifyMasterPassword } from "../services/auth";
-import { getEffectivePrivacy, getPrivacyRank } from "../utils/privacy";
+import {
+  getEffectivePrivacy,
+  getPrivacyDisplayLabel,
+  getPrivacyDisplaySummary,
+  getPrivacyRank,
+  getVaultDisplayPath,
+  getVaultEffectivePrivacy,
+} from "../utils/privacy";
 import { PrivacyBadge } from "./PrivacyBadge";
 import PriorityBar from "./PriorityBar";
 
@@ -102,6 +110,7 @@ type NodeEditorProps = {
   onSaveSuccess: () => void;
   isRedactedUnlocked: boolean;
   setIsRedactedUnlocked: (value: boolean) => void;
+  onModalToggle?: (isOpen: boolean) => void;
 };
 
 function NodeEditor({
@@ -111,6 +120,7 @@ function NodeEditor({
   onSaveSuccess,
   isRedactedUnlocked,
   setIsRedactedUnlocked,
+  onModalToggle,
 }: NodeEditorProps) {
   const [node, setNode] = useState<Node | null>(null);
   const [editTitle, setEditTitle] = useState("");
@@ -127,16 +137,25 @@ function NodeEditor({
   const [allNodes, setAllNodes] = useState<Node[]>([]);
   const [allNodesMap, setAllNodesMap] = useState<Record<string, Node>>({});
   const [vaults, setVaults] = useState<Vault[]>([]);
+  const vaultById = useMemo(() => {
+    const map: Record<string, Vault> = {};
+    for (const vault of vaults) {
+      map[vault.id] = vault;
+    }
+    return map;
+  }, [vaults]);
   const [isDoorPickerOpen, setIsDoorPickerOpen] = useState(false);
   const [doorSearchQuery, setDoorSearchQuery] = useState("");
   const [doorTargetId, setDoorTargetId] = useState<string | null>(null);
   const [doorLabelInput, setDoorLabelInput] = useState("");
   const [repointDoorId, setRepointDoorId] = useState<string | null>(null);
-  const [breadcrumbPath, setBreadcrumbPath] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [editPriorityProfile, setEditPriorityProfile] = useState("standard");
   const [editFrozen, setEditFrozen] = useState(false);
   const [status, setStatus] = useState<string>("");
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deletePasswordInput, setDeletePasswordInput] = useState("");
+  const [deleteModalError, setDeleteModalError] = useState("");
   const saveRunIdRef = useRef(0);
   const saveStatusTimeoutRef = useRef<number | null>(null);
 
@@ -236,7 +255,6 @@ function NodeEditor({
       const result = await createDoor({
         sourceNodeId,
         targetNodeId: targetId,
-        label: "wikilink",
       });
       return !result.error;
     });
@@ -267,7 +285,6 @@ function NodeEditor({
         setDoorTargetId(null);
         setDoorLabelInput("");
         setRepointDoorId(null);
-        setBreadcrumbPath("");
         setSaveStatus("idle");
       }, 0);
       return () => clearTimeout(clearTimer);
@@ -277,11 +294,12 @@ function NodeEditor({
 
     async function loadNode() {
       try {
-        const [node, tagsResult, outgoingResult, incomingResult] = await Promise.all([
+        const [node, tagsResult, outgoingResult, incomingResult, vaultsList] = await Promise.all([
           getNode(nodeId),
           getNodeTags(nodeId),
           listOutgoingDoors(nodeId),
           listIncomingDoors(nodeId),
+          listVaults(),
         ]);
         if (!node) {
           setNode(null);
@@ -291,6 +309,7 @@ function NodeEditor({
           setStatus("Node not found.");
           return;
         }
+        setVaults(vaultsList);
         setNode(node);
         if (tagsResult.error) {
           setStatus(tagsResult.error.message);
@@ -362,33 +381,32 @@ function NodeEditor({
     return () => window.clearTimeout(timer);
   }, [refreshKey]);
 
-  useEffect(() => {
+  const breadcrumbPath = useMemo(() => {
     if (!node) {
-      const timer = window.setTimeout(() => {
-        setBreadcrumbPath("");
-      }, 0);
-      return () => window.clearTimeout(timer);
+      return "";
     }
+    const containerVaultId = node.subVaultId ?? node.vaultId;
+    return getVaultDisplayPath(containerVaultId, vaultById, isRedactedUnlocked);
+  }, [node, vaultById, isRedactedUnlocked]);
 
-    const timer = window.setTimeout(() => {
-      void (async () => {
-        try {
-          const list = await listVaults();
-          setVaults(list);
-          setBreadcrumbPath(resolveVaultPath(node, list));
-        } catch (err) {
-          if (err instanceof AppError) {
-            setStatus(err.message);
-          } else {
-            setStatus("Failed to resolve node path.");
-          }
-          setBreadcrumbPath("");
-        }
-      })();
-    }, 0);
+  function getNodeEffectivePrivacy(nodeItem: Node): string {
+    const containerId = nodeItem.subVaultId ?? nodeItem.vaultId;
+    const containerTier = vaultById[containerId]
+      ? getVaultEffectivePrivacy(containerId, vaultById)
+      : undefined;
+    return getEffectivePrivacy(nodeItem.privacyTier, null, containerTier);
+  }
 
-    return () => window.clearTimeout(timer);
-  }, [node]);
+  function getNodeDisplayLabel(nodeItem: Node): string {
+    const tier = getNodeEffectivePrivacy(nodeItem);
+    return getPrivacyDisplayLabel(nodeItem.title, tier, isRedactedUnlocked);
+  }
+
+  function getNodeDisplaySummary(nodeItem: Node, maxLength = 50): string {
+    const tier = getNodeEffectivePrivacy(nodeItem);
+    const summary = nodeItem.summary.slice(0, maxLength);
+    return getPrivacyDisplaySummary(summary, tier, isRedactedUnlocked);
+  }
 
   useEffect(() => {
     const syncTimer = window.setTimeout(() => {
@@ -693,7 +711,6 @@ function NodeEditor({
       void createDoor({
         sourceNodeId: node.id,
         targetNodeId: targetNode.id,
-        label: "wikilink",
       }).then((result) => {
         if (!result.error && node) {
           void refreshDoors(node.id);
@@ -733,13 +750,16 @@ function NodeEditor({
     };
   }, [editPrivacy, node, vaults]);
 
-  const isLocked = effectivePrivacyTier === "redacted" && !isRedactedUnlocked;
+  const isRedactedLocked = effectivePrivacyTier === "redacted" && !isRedactedUnlocked;
+  const isContentLocked = effectivePrivacyTier === "locked" && !isRedactedUnlocked;
+  const isAnyLocked = isRedactedLocked || isContentLocked;
+
   const [authIsSetupState, setAuthIsSetupState] = useState<boolean | null>(null);
   const [lockPasswordInput, setLockPasswordInput] = useState("");
   const [lockError, setLockError] = useState("");
 
   useEffect(() => {
-    if (!isLocked) {
+    if (!isAnyLocked) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -755,7 +775,7 @@ function NodeEditor({
       })();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [isLocked]);
+  }, [isAnyLocked]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -763,7 +783,11 @@ function NodeEditor({
       setLockError("");
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [selectedNodeId, isLocked]);
+  }, [selectedNodeId, isAnyLocked]);
+
+  useEffect(() => {
+    onModalToggle?.(deleteModalOpen);
+  }, [deleteModalOpen, onModalToggle]);
 
   async function onLockSubmit() {
     const password = lockPasswordInput;
@@ -905,9 +929,36 @@ function NodeEditor({
     });
   }
 
-  async function onDelete() {
-    if (!selectedNodeId || !window.confirm("Are you sure?")) {
+  function openDeleteModal() {
+    setDeletePasswordInput("");
+    setDeleteModalError("");
+    setDeleteModalOpen(true);
+  }
+
+  function closeDeleteModal() {
+    setDeleteModalOpen(false);
+    setDeletePasswordInput("");
+    setDeleteModalError("");
+  }
+
+  async function submitDeleteModal() {
+    if (!selectedNodeId) {
       return;
+    }
+    if (isAnyLocked) {
+      if (!deletePasswordInput) {
+        setDeleteModalError("Enter your master password to continue.");
+        return;
+      }
+      const result = await verifyMasterPassword(deletePasswordInput);
+      if (result.error) {
+        setDeleteModalError(result.error.message);
+        return;
+      }
+      if (!result.data) {
+        setDeleteModalError("Incorrect password");
+        return;
+      }
     }
     try {
       const deleted = await deleteNode(selectedNodeId);
@@ -917,6 +968,7 @@ function NodeEditor({
       }
       onNodeDeleted(selectedNodeId);
       setStatus("Deleted.");
+      closeDeleteModal();
     } catch (err) {
       if (err instanceof AppError) {
         setStatus(err.message);
@@ -934,7 +986,7 @@ function NodeEditor({
           <span className={`save-status ${saveStatus}`}>
             {saveStatus === "saving" ? "Saving..." : saveStatus === "saved" ? "Saved!" : ""}
           </span>
-          <button type="button" onClick={onDelete} disabled={!selectedNodeId}>
+          <button type="button" onClick={openDeleteModal} disabled={!selectedNodeId}>
             Delete
           </button>
         </div>
@@ -947,10 +999,11 @@ function NodeEditor({
           <div className="editor-meta">
             <label className="editor-privacy">
               <span>Privacy</span>
-              {!isLocked && (
+              {!isRedactedLocked && (
                 <select
                   value={effectivePrivacyTier}
                   onChange={(e) => setEditPrivacy(e.target.value)}
+                  disabled={isAnyLocked}
                 >
                   <option
                     value="open"
@@ -982,12 +1035,13 @@ function NodeEditor({
                 (Effective: <PrivacyBadge tier={effectivePrivacyTier} />)
               </span>
             </label>
-            {!isLocked && (
+            {!isRedactedLocked && (
               <label className="editor-priority">
                 <PriorityBar score={priorityScore} />
                 <select
                   value={editPriorityProfile}
                   onChange={(e) => setEditPriorityProfile(e.target.value)}
+                  disabled={isAnyLocked}
                 >
                   <option value="standard">Standard</option>
                   <option value="slow">Slow</option>
@@ -997,7 +1051,8 @@ function NodeEditor({
                 <button
                   type="button"
                   className={`freeze-toggle ${editFrozen ? "frozen" : ""}`}
-                  onClick={() => setEditFrozen((prev) => !prev)}
+                  onClick={() => !isAnyLocked && setEditFrozen((prev) => !prev)}
+                  disabled={isAnyLocked}
                   title={
                     editFrozen
                       ? "Unfreeze — allow auto-optimize"
@@ -1009,7 +1064,7 @@ function NodeEditor({
               </label>
             )}
           </div>
-          {isLocked ? (
+          {isRedactedLocked ? (
             <div className="redacted-lock-screen">
               <span className="redacted-lock-icon" aria-hidden="true">
                 🔒
@@ -1018,7 +1073,7 @@ function NodeEditor({
               <p className="redacted-lock-subtitle">
                 {authIsSetupState === false
                   ? "Set a master password to lock and unlock redacted nodes."
-                  : "Enter your master password to view this node."}
+                  : "Highly Restricted - Redacted. Enter master password."}
               </p>
               {authIsSetupState !== null && (
                 <form
@@ -1050,36 +1105,41 @@ function NodeEditor({
                 value={editTitle}
                 onChange={(e) => setEditTitle(e.target.value)}
                 placeholder="Title"
+                disabled={isAnyLocked}
               />
               <div className="tag-wrapper">
                 <div className="tag-list">
                   {nodeTags.map((tag) => (
                     <span key={tag.id} className="tag-pill">
                       {tag.name}
-                      <button
-                        type="button"
-                        onClick={() => onRemoveTag(tag.id)}
-                        aria-label={`Remove ${tag.name}`}
-                      >
-                        ×
-                      </button>
+                      {!isAnyLocked && (
+                        <button
+                          type="button"
+                          onClick={() => onRemoveTag(tag.id)}
+                          aria-label={`Remove ${tag.name}`}
+                        >
+                          ×
+                        </button>
+                      )}
                     </span>
                   ))}
                 </div>
-                <input
-                  className="tag-input"
-                  placeholder="Add tag..."
-                  value={tagInput}
-                  onChange={(e) => {
-                    setTagInput(e.target.value);
-                    setIsDropdownOpen(true);
-                  }}
-                  onFocus={() => setIsDropdownOpen(true)}
-                  onBlur={() => {
-                    window.setTimeout(() => setIsDropdownOpen(false), 120);
-                  }}
-                />
-                {isDropdownOpen && (
+                {!isAnyLocked && (
+                  <input
+                    className="tag-input"
+                    placeholder="Add tag..."
+                    value={tagInput}
+                    onChange={(e) => {
+                      setTagInput(e.target.value);
+                      setIsDropdownOpen(true);
+                    }}
+                    onFocus={() => setIsDropdownOpen(true)}
+                    onBlur={() => {
+                      window.setTimeout(() => setIsDropdownOpen(false), 120);
+                    }}
+                  />
+                )}
+                {isDropdownOpen && !isAnyLocked && (
                   <div className="tag-dropdown">
                     {filteredTagOptions.map((tag) => (
                       <button
@@ -1103,75 +1163,118 @@ function NodeEditor({
                   </div>
                 )}
               </div>
-              <textarea
-                value={editSummary}
-                onChange={(e) => setEditSummary(e.target.value)}
-                placeholder="Summary"
-              />
-              <div className="wikilink-wrapper">
+              {!isContentLocked && (
                 <textarea
-                  ref={detailRef}
-                  className="editor-detail"
-                  value={editDetail}
-                  onChange={(e) => setEditDetail(e.target.value)}
-                  onKeyUp={onDetailKeyUp}
-                  onScroll={(e) => {
-                    if (wikilinkOpen) {
-                      const ta = e.currentTarget;
-                      const coords = getCaretCoordinates(ta, ta.selectionStart);
-                      setWikilinkDropdownPos(coords);
-                    }
-                  }}
-                  onBlur={() => {
-                    window.setTimeout(() => setWikilinkOpen(false), 150);
-                  }}
-                  placeholder="Detail — type [[ to link to another node"
+                  value={editSummary}
+                  onChange={(e) => setEditSummary(e.target.value)}
+                  placeholder="Summary"
+                  disabled={isAnyLocked}
                 />
-                {wikilinkOpen && wikilinkSuggestions.length > 0 && (
-                  <div
-                    className="wikilink-dropdown"
-                    style={
-                      wikilinkDropdownPos
-                        ? {
-                            position: "absolute",
-                            top: wikilinkDropdownPos.top,
-                            left: wikilinkDropdownPos.left,
-                          }
-                        : undefined
-                    }
-                  >
-                    <div className="wikilink-dropdown-header">Link to node</div>
-                    {wikilinkSuggestions.map((target) => (
-                      <button
-                        key={target.id}
-                        type="button"
-                        className="wikilink-option"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => insertWikilink(target)}
-                      >
-                        <span className="wikilink-option-icon">🔗</span>
-                        <span className="wikilink-option-text">
-                          <strong>{target.title}</strong>
-                          <small>{target.summary.slice(0, 50)}</small>
-                        </span>
+              )}
+              {isContentLocked ? (
+                <div className="redacted-lock-screen inline-content-lock">
+                  <span className="redacted-lock-icon" aria-hidden="true">
+                    🔒
+                  </span>
+                  <h4 className="redacted-lock-title">Content Protected</h4>
+                  <p className="redacted-lock-subtitle">
+                    {authIsSetupState === false
+                      ? "Set a master password to view details."
+                      : "Enter master password to view details."}
+                  </p>
+                  {authIsSetupState !== null && (
+                    <form
+                      className="redacted-lock-form inline-lock-form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void onLockSubmit();
+                      }}
+                    >
+                      <input
+                        className="redacted-lock-input"
+                        type="password"
+                        value={lockPasswordInput}
+                        onChange={(event) => setLockPasswordInput(event.target.value)}
+                        placeholder="Master password"
+                        autoFocus
+                      />
+                      <button type="submit" className="redacted-lock-button">
+                        Unlock
                       </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+                    </form>
+                  )}
+                  {lockError && <p className="redacted-lock-error">{lockError}</p>}
+                </div>
+              ) : (
+                <div className="wikilink-wrapper">
+                  <textarea
+                    ref={detailRef}
+                    className="editor-detail"
+                    value={editDetail}
+                    onChange={(e) => setEditDetail(e.target.value)}
+                    onKeyUp={onDetailKeyUp}
+                    onScroll={(e) => {
+                      if (wikilinkOpen) {
+                        const ta = e.currentTarget;
+                        const coords = getCaretCoordinates(ta, ta.selectionStart);
+                        setWikilinkDropdownPos(coords);
+                      }
+                    }}
+                    onBlur={() => {
+                      window.setTimeout(() => setWikilinkOpen(false), 150);
+                    }}
+                    placeholder="Detail — type [[ to link to another node"
+                  />
+                  {wikilinkOpen && wikilinkSuggestions.length > 0 && (
+                    <div
+                      className="wikilink-dropdown"
+                      style={
+                        wikilinkDropdownPos
+                          ? {
+                              position: "absolute",
+                              top: wikilinkDropdownPos.top,
+                              left: wikilinkDropdownPos.left,
+                            }
+                          : undefined
+                      }
+                    >
+                      <div className="wikilink-dropdown-header">Link to node</div>
+                      {wikilinkSuggestions.map((target) => (
+                        <button
+                          key={target.id}
+                          type="button"
+                          className="wikilink-option"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => insertWikilink(target)}
+                        >
+                          <span className="wikilink-option-icon">🔗</span>
+                          <span className="wikilink-option-text">
+                            <strong>{getNodeDisplayLabel(target)}</strong>
+                            <small>{getNodeDisplaySummary(target, 50)}</small>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="connections-section">
                 <div className="connections-header">
                   <h4>Connections</h4>
-                  <button type="button" onClick={onToggleDoorPicker}>
-                    + Add Connection
-                  </button>
+                  {!isAnyLocked && (
+                    <button type="button" onClick={onToggleDoorPicker}>
+                      + Add Connection
+                    </button>
+                  )}
                 </div>
                 <div className="door-list">
                   {outgoingDoors.map((door) => {
                     const targetNode = door.targetNodeId
                       ? allNodesMap[door.targetNodeId]
                       : undefined;
-                    const targetTitle = targetNode?.title ?? "Missing target node";
+                    const targetTitle = targetNode
+                      ? getNodeDisplayLabel(targetNode)
+                      : "Missing target node";
                     return (
                       <div
                         key={door.id}
@@ -1184,24 +1287,26 @@ function NodeEditor({
                           )}
                           {door.label && <span className="door-label">{door.label}</span>}
                         </div>
-                        <div className="door-actions">
-                          {door.status === "orphaned" && (
+                        {!isAnyLocked && (
+                          <div className="door-actions">
+                            {door.status === "orphaned" && (
+                              <button
+                                type="button"
+                                className="door-repoint"
+                                onClick={() => onStartRepoint(door.id)}
+                              >
+                                Re-point
+                              </button>
+                            )}
                             <button
                               type="button"
-                              className="door-repoint"
-                              onClick={() => onStartRepoint(door.id)}
+                              onClick={() => void onDoorDelete(door.id)}
+                              aria-label="Delete door"
                             >
-                              Re-point
+                              ×
                             </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => void onDoorDelete(door.id)}
-                            aria-label="Delete door"
-                          >
-                            ×
-                          </button>
-                        </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1211,7 +1316,7 @@ function NodeEditor({
                     .filter((backlink) => Boolean(allNodesMap[backlink.sourceNodeId]))
                     .map((backlink) => {
                       const sourceNode = allNodesMap[backlink.sourceNodeId];
-                      const sourceTitle = sourceNode.title;
+                      const sourceTitle = getNodeDisplayLabel(sourceNode);
                       return (
                         <div key={backlink.id} className="door-item">
                           <div className="door-main">
@@ -1238,8 +1343,8 @@ function NodeEditor({
                           type="button"
                           onClick={() => setDoorTargetId(target.id)}
                         >
-                          <strong>{target.title}</strong>
-                          <small>{target.summary.slice(0, 72)}</small>
+                          <strong>{getNodeDisplayLabel(target)}</strong>
+                          <small>{getNodeDisplaySummary(target, 72)}</small>
                         </button>
                       ))}
                     </div>
@@ -1263,6 +1368,47 @@ function NodeEditor({
           )}
         </div>
       )}
+      {deleteModalOpen &&
+        createPortal(
+          <div className="sidebar-auth-overlay" onClick={closeDeleteModal}>
+            <div
+              className="sidebar-auth-modal delete-confirm-modal"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="modal-title">Delete Node</h3>
+              <p className="modal-subtitle">
+                Delete {node?.title ?? "this node"}? This cannot be undone.
+              </p>
+              {isAnyLocked && (
+                <label className="settings-field">
+                  <span>Master Password</span>
+                  <input
+                    type="password"
+                    className="settings-input"
+                    value={deletePasswordInput}
+                    onChange={(e) => setDeletePasswordInput(e.target.value)}
+                    placeholder="Master password"
+                    autoFocus
+                  />
+                </label>
+              )}
+              {deleteModalError && <p className="redacted-lock-error">{deleteModalError}</p>}
+              <div className="sidebar-auth-actions settings-modal-actions">
+                <button
+                  type="button"
+                  className="redacted-lock-button sidebar-auth-cancel"
+                  onClick={closeDeleteModal}
+                >
+                  Cancel
+                </button>
+                <button type="button" className="redacted-lock-button" onClick={submitDeleteModal}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
       {status && <p className="pane-status">{status}</p>}
     </aside>
   );
