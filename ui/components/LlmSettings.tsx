@@ -177,18 +177,30 @@ function CloudSettings({
   const defaultModel = providerDef.presets[0] || "";
 
   const [apiKey, setApiKeyState] = useState("");
+  const [status, setStatus] = useState("");
   useEffect(() => {
     let canceled = false;
-    getApiKey(provider).then((key) => {
-      if (!canceled) setApiKeyState(key);
-    });
+    void (async () => {
+      try {
+        const key = await getApiKey(provider);
+        if (!canceled) {
+          setApiKeyState(key);
+          setStatus("");
+        }
+      } catch (err) {
+        if (!canceled) {
+          setApiKeyState("");
+          const message = err instanceof Error ? err.message : String(err);
+          setStatus(`Failed to load API key: ${message}`);
+        }
+      }
+    })();
     return () => {
       canceled = true;
     };
   }, [provider]);
 
   const [selectedModel, setSelectedModel] = useState(() => getLlmModel(provider) || defaultModel);
-  const [status, setStatus] = useState("");
 
   useEffect(() => {
     if (!getLlmModel(provider)) {
