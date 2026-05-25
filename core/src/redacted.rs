@@ -145,6 +145,9 @@ pub(crate) fn decrypt_json<T: DeserializeOwned>(
     let nonce_bytes = STANDARD
         .decode(envelope.nonce)
         .map_err(|err| format!("Failed decoding encrypted payload nonce: {err}"))?;
+    if nonce_bytes.len() != 12 {
+        return Err("Invalid nonce length for encrypted payload".to_string());
+    }
     let ciphertext = STANDARD
         .decode(envelope.ciphertext)
         .map_err(|err| format!("Failed decoding encrypted payload ciphertext: {err}"))?;
