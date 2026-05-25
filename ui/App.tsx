@@ -424,10 +424,7 @@ function App() {
                   onSelectVault={onSelectVault}
                   onNodeCreated={onNodeCreated}
                   onVaultCreated={onVaultCreated}
-                  onBack={() => {
-                    setSelectedVaultId(null);
-                    setSelectedNodeId(null);
-                  }}
+                  onBack={() => onSelectVault(null)}
                   refreshKey={nodeRefreshKey}
                   isRedactedUnlocked={isRedactedUnlocked}
                   onModalToggle={setSidebarModalOpen}
