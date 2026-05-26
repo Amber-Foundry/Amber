@@ -1,8 +1,41 @@
+const mockLocalStorage: Record<string, string> = {};
+const dispatchedEvents: Array<{ type: string; detail?: unknown }> = [];
+
+globalThis.window = {
+  localStorage: {
+    getItem: (key: string) => mockLocalStorage[key] ?? null,
+    setItem: (key: string, value: string) => {
+      mockLocalStorage[key] = value;
+    },
+    removeItem: (key: string) => {
+      delete mockLocalStorage[key];
+    },
+    clear: () => {
+      for (const key in mockLocalStorage) {
+        delete mockLocalStorage[key];
+      }
+    },
+  },
+  dispatchEvent: (event: { type: string; detail?: unknown }) => {
+    dispatchedEvents.push(event);
+    return true;
+  },
+  CustomEvent: class CustomEvent {
+    type: string;
+    detail?: unknown;
+    constructor(type: string, options?: { detail?: unknown }) {
+      this.type = type;
+      this.detail = options?.detail;
+    }
+  },
+} as unknown as Window & typeof globalThis;
+
 import { runPrivacyTests } from "../ui/utils/privacy.ts";
 import { AppError, toAppError, unwrapIpcResult } from "../ui/services/ipcResult.ts";
 import { resolveVaultPath, updateVaultPosition } from "../ui/services/vaults.ts";
 import { sanitizeSvgText } from "../ui/utils/svgSanitizer.ts";
 import { setMockInvoker } from "../ui/ipc.ts";
+import { getLlmMode, setLlmMode } from "../ui/utils/settings.ts";
 import type { Node, Vault } from "../ui/ipc.ts";
 
 function runDoorServiceTests() {
@@ -330,6 +363,83 @@ async function runVaultPositionDebounceTests() {
   setMockInvoker(null);
 }
 
+function runSettingsTests() {
+  // Clear mock local storage before starting
+  window.localStorage.clear();
+
+  // Test 1: Fallback case (when local storage is empty)
+  const mode1 = getLlmMode();
+  if (mode1 !== "local") {
+    throw new Error(`getLlmMode Test 1 Failed: Expected 'local', got '${mode1}'`);
+  }
+
+  // Test 2: Valid 'cloud' mode read
+  window.localStorage.setItem("mindvault.llm.mode", "cloud");
+  const mode2 = getLlmMode();
+  if (mode2 !== "cloud") {
+    throw new Error(`getLlmMode Test 2 Failed: Expected 'cloud', got '${mode2}'`);
+  }
+
+  // Test 3: Valid 'hybrid' mode read
+  window.localStorage.setItem("mindvault.llm.mode", "hybrid");
+  const mode3 = getLlmMode();
+  if (mode3 !== "hybrid") {
+    throw new Error(`getLlmMode Test 3 Failed: Expected 'hybrid', got '${mode3}'`);
+  }
+
+  // Test 4: Invalid fallback mode read
+  window.localStorage.setItem("mindvault.llm.mode", "super-ai");
+  const mode4 = getLlmMode();
+  if (mode4 !== "local") {
+    throw new Error(`getLlmMode Test 4 Failed: Expected 'local', got '${mode4}'`);
+  }
+
+  // Test 5: setLlmMode updates correctly
+  setLlmMode("cloud");
+  const mode5 = window.localStorage.getItem("mindvault.llm.mode");
+  if (mode5 !== "cloud") {
+    throw new Error(`setLlmMode Test 5 Failed: Expected 'cloud' in storage, got '${mode5}'`);
+  }
+
+  // Test 6: setLlmMode triggers dispatchEvent
+  dispatchedEvents.length = 0;
+  setLlmMode("hybrid");
+  if (dispatchedEvents.length !== 1) {
+    throw new Error(
+      `setLlmMode Test 6 Failed: Expected 1 event dispatched, got ${dispatchedEvents.length}`
+    );
+  }
+  if (dispatchedEvents[0].type !== "mindvault:llm-settings-changed") {
+    throw new Error(
+      `setLlmMode Test 6 Failed: Expected event type 'mindvault:llm-settings-changed', got '${dispatchedEvents[0].type}'`
+    );
+  }
+
+  // Test 7: setLlmMode("local") synchronizes provider to 'ollama' if current is cloud (e.g. 'openai')
+  window.localStorage.setItem("mindvault.llm.provider", "openai");
+  setLlmMode("local");
+  const localProvider = window.localStorage.getItem("mindvault.llm.provider");
+  if (localProvider !== "ollama") {
+    throw new Error(
+      `setLlmMode Test 7 Failed: Expected synchronized local provider 'ollama', got '${localProvider}'`
+    );
+  }
+
+  // Test 8: setLlmMode("cloud") synchronizes provider to 'openai' if current is local (e.g. 'ollama')
+  window.localStorage.setItem("mindvault.llm.provider", "ollama");
+  setLlmMode("cloud");
+  const cloudProvider = window.localStorage.getItem("mindvault.llm.provider");
+  if (cloudProvider !== "openai") {
+    throw new Error(
+      `setLlmMode Test 8 Failed: Expected synchronized cloud provider 'openai', got '${cloudProvider}'`
+    );
+  }
+
+  // Reset/clean up
+  window.localStorage.clear();
+  dispatchedEvents.length = 0;
+}
+
 try {
   runPrivacyTests();
   console.log("✓ All frontend privacy utility tests passed successfully!");
@@ -343,6 +453,8 @@ try {
   console.log("✓ All IPC result unwrapping utility tests passed successfully!");
   await runVaultPositionDebounceTests();
   console.log("✓ All vault position debounce utility tests passed successfully!");
+  runSettingsTests();
+  console.log("✓ All settings utility tests passed successfully!");
   process.exit(0);
 } catch (err) {
   console.error("Frontend utility self-test failed:", err);

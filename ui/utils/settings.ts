@@ -1,5 +1,5 @@
-import { settingsGet, settingsSet } from "../ipc";
-import { unwrapIpcResult } from "../services/ipcResult";
+import { settingsGet, settingsSet } from "../ipc.ts";
+import { unwrapIpcResult } from "../services/ipcResult.ts";
 
 const LLM_PROVIDER_KEY = "mindvault.llm.provider";
 const OLLAMA_ENDPOINT_KEY = "mindvault.llm.ollama.endpoint";
