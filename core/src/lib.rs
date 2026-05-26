@@ -2767,21 +2767,92 @@ fn onboarding_commit(
     into_ipc(execute_onboarding_commit(&proposals, &state.db_path))
 }
 
+struct ValidatedProposal<'a> {
+    vault_id: &'a str,
+    title: &'a str,
+    summary: &'a str,
+    detail: Option<String>,
+    node_type: &'a str,
+    source_type: &'a str,
+    tags: Option<&'a Vec<String>>,
+}
+
+fn insert_onboarding_node(
+    tx: &rusqlite::Transaction,
+    proposal: &ValidatedProposal,
+) -> Result<(), String> {
+    let vault = fetch_vault_by_id(tx, proposal.vault_id, None)?;
+    let (resolved_vault_id, resolved_sub_vault_id) = match vault.parent_vault_id {
+        Some(parent_id) => (parent_id, Some(vault.id)),
+        None => (vault.id, None),
+    };
+
+    let priority_json = priority::DEFAULT_PRIORITY_JSON;
+
+    let node_id = generate_id(tx, "node")?;
+
+    tx.execute(
+        "INSERT INTO nodes (
+            id, vault_id, sub_vault_id, node_type, title, summary, detail, source, source_type,
+            privacy_tier, priority, meta
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11);",
+        params![
+            node_id,
+            resolved_vault_id,
+            resolved_sub_vault_id,
+            proposal.node_type,
+            proposal.title,
+            proposal.summary,
+            proposal.detail,
+            Some("onboarding_wizard"),
+            proposal.source_type,
+            priority_json,
+            "{}"
+        ],
+    )
+    .map_err(|err| format!("Failed inserting onboarding node: {err}"))?;
+
+    if let Some(tags) = proposal.tags {
+        for tag_name in tags {
+            let clean_name = tag_name.trim();
+            if clean_name.is_empty() {
+                continue;
+            }
+
+            let tag_id = match tx.query_row(
+                "SELECT id FROM tags WHERE name = ?1;",
+                [clean_name],
+                |row| row.get::<_, String>(0),
+            ) {
+                Ok(id) => id,
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    let new_id = generate_id(tx, "tag")?;
+                    tx.execute(
+                        "INSERT INTO tags (id, name, color) VALUES (?1, ?2, NULL);",
+                        params![new_id, clean_name],
+                    )
+                    .map_err(|err| format!("Failed inserting tag: {err}"))?;
+                    new_id
+                }
+                Err(err) => return Err(format!("Failed querying tag: {err}")),
+            };
+
+            tx.execute(
+                "INSERT OR IGNORE INTO node_tags (node_id, tag_id) VALUES (?1, ?2);",
+                params![&node_id, &tag_id],
+            )
+            .map_err(|err| format!("Failed inserting node tag: {err}"))?;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn execute_onboarding_commit(
     proposals: &[OnboardingNodeCommitInput],
     db_path: &Path,
 ) -> Result<bool, String> {
     (|| {
-        struct ValidatedProposal<'a> {
-            vault_id: &'a str,
-            title: &'a str,
-            summary: &'a str,
-            detail: Option<String>,
-            node_type: &'a str,
-            source_type: &'a str,
-            tags: Option<&'a Vec<String>>,
-        }
-
         let mut conn = open_connection(db_path)?;
         let mut validated_proposals = Vec::with_capacity(proposals.len());
 
@@ -2878,70 +2949,7 @@ pub fn execute_onboarding_commit(
 
         // 3. Process and write
         for proposal in validated_proposals {
-            // ensure_onboarding_vault_exists already done above
-            let vault = fetch_vault_by_id(&tx, proposal.vault_id, None)?;
-            let (resolved_vault_id, resolved_sub_vault_id) = match vault.parent_vault_id {
-                Some(parent_id) => (parent_id, Some(vault.id)),
-                None => (vault.id, None),
-            };
-
-            let priority_json = priority::DEFAULT_PRIORITY_JSON;
-
-            let node_id = generate_id(&tx, "node")?;
-
-            tx.execute(
-                "INSERT INTO nodes (
-                    id, vault_id, sub_vault_id, node_type, title, summary, detail, source, source_type,
-                    privacy_tier, priority, meta
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11);",
-                params![
-                    node_id,
-                    resolved_vault_id,
-                    resolved_sub_vault_id,
-                    proposal.node_type,
-                    proposal.title,
-                    proposal.summary,
-                    proposal.detail,
-                    Some("onboarding_wizard"),
-                    proposal.source_type,
-                    priority_json,
-                    "{}"
-                ],
-            )
-            .map_err(|err| format!("Failed inserting onboarding node: {err}"))?;
-
-            if let Some(tags) = proposal.tags {
-                for tag_name in tags {
-                    let clean_name = tag_name.trim();
-                    if clean_name.is_empty() {
-                        continue;
-                    }
-
-                    let tag_id = match tx.query_row(
-                        "SELECT id FROM tags WHERE name = ?1;",
-                        [clean_name],
-                        |row| row.get::<_, String>(0),
-                    ) {
-                        Ok(id) => id,
-                        Err(rusqlite::Error::QueryReturnedNoRows) => {
-                            let new_id = generate_id(&tx, "tag")?;
-                            tx.execute(
-                                "INSERT INTO tags (id, name, color) VALUES (?1, ?2, NULL);",
-                                params![new_id, clean_name],
-                            )
-                            .map_err(|err| format!("Failed inserting tag: {err}"))?;
-                            new_id
-                        }
-                        Err(err) => return Err(format!("Failed querying tag: {err}")),
-                    };
-
-                    tx.execute(
-                        "INSERT OR IGNORE INTO node_tags (node_id, tag_id) VALUES (?1, ?2);",
-                        params![&node_id, &tag_id],
-                    )
-                    .map_err(|err| format!("Failed inserting node tag: {err}"))?;
-                }
-            }
+            insert_onboarding_node(&tx, &proposal)?;
         }
 
         tx.execute(
