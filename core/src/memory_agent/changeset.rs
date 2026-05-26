@@ -83,8 +83,16 @@ struct DbNode {
     vault_id: String,
     title: String,
     summary: String,
-    detail: Option<String>,
     node_type: String,
+}
+
+fn fetch_node_detail(conn: &Connection, node_id: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT detail FROM nodes WHERE id = ?1;",
+        [node_id],
+        |row| row.get(0),
+    )
+    .map_err(|err| format!("Failed to fetch node detail for {node_id}: {err}"))
 }
 
 /// Load non-deleted, non-archived nodes from the database and compare them against candidates
@@ -96,7 +104,7 @@ pub fn build_changeset(
 ) -> Result<PendingChangeset, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, vault_id, title, summary, detail, node_type
+            "SELECT id, vault_id, title, summary, node_type
              FROM nodes
              WHERE deleted_at IS NULL AND is_archived = 0;",
         )
@@ -109,8 +117,7 @@ pub fn build_changeset(
                 vault_id: row.get(1)?,
                 title: row.get(2)?,
                 summary: row.get(3)?,
-                detail: row.get(4)?,
-                node_type: row.get(5)?,
+                node_type: row.get(4)?,
             })
         })
         .map_err(|err| format!("Failed to execute nodes query: {err}"))?;
@@ -152,6 +159,7 @@ pub fn build_changeset(
             CandidateAction::Delete => {
                 if let Some((best_node, score)) = best_match {
                     if score >= 0.50 {
+                        let detail = fetch_node_detail(conn, &best_node.id)?;
                         let proposed = ProposedNodeData {
                             title: candidate.title.clone(),
                             summary: candidate.summary.clone(),
@@ -173,7 +181,7 @@ pub fn build_changeset(
                             vault_id: best_node.vault_id.clone(),
                             title: best_node.title.clone(),
                             summary: best_node.summary.clone(),
-                            detail: best_node.detail.clone(),
+                            detail,
                             node_type: best_node.node_type.clone(),
                         };
                         let existing_str = serde_json::to_string(&existing_ser).map_err(|err| {
@@ -230,8 +238,9 @@ pub fn build_changeset(
                         }
                         SimilarityClass::DuplicateFlag => {
                             // Substantial-change detection on detail alone
+                            let detail = fetch_node_detail(conn, &best_node.id)?;
                             let candidate_detail = candidate.detail.as_deref().unwrap_or("").trim();
-                            let existing_detail = best_node.detail.as_deref().unwrap_or("").trim();
+                            let existing_detail = detail.as_deref().unwrap_or("").trim();
 
                             let mut is_substantial = false;
                             if !candidate_detail.is_empty() || !existing_detail.is_empty() {
@@ -260,7 +269,7 @@ pub fn build_changeset(
                                 vault_id: best_node.vault_id.clone(),
                                 title: best_node.title.clone(),
                                 summary: best_node.summary.clone(),
-                                detail: best_node.detail.clone(),
+                                detail,
                                 node_type: best_node.node_type.clone(),
                             };
                             let existing_str =
@@ -302,6 +311,7 @@ pub fn build_changeset(
                             }
                         }
                         SimilarityClass::Update => {
+                            let detail = fetch_node_detail(conn, &best_node.id)?;
                             let proposed = ProposedNodeData {
                                 title: candidate.title.clone(),
                                 summary: candidate.summary.clone(),
@@ -323,7 +333,7 @@ pub fn build_changeset(
                                 vault_id: best_node.vault_id.clone(),
                                 title: best_node.title.clone(),
                                 summary: best_node.summary.clone(),
-                                detail: best_node.detail.clone(),
+                                detail,
                                 node_type: best_node.node_type.clone(),
                             };
                             let existing_str =
