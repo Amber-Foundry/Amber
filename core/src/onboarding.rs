@@ -23,13 +23,11 @@ pub struct ProposedNode {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ProposalEnvelope {
     proposals: Vec<RawProposedNode>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawProposedNode {
     title: String,
     summary: String,
@@ -385,6 +383,27 @@ mod tests {
         let parsed = parse_proposals_from_llm_output(raw).unwrap_or_else(|err| {
             panic!("parse fenced output: {err}");
         });
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].title, "Dev");
+    }
+
+    #[test]
+    fn parse_allows_unknown_fields() {
+        let payload = r#"{
+  "proposals": [
+    {
+      "title": "Dev",
+      "summary": "Ships features",
+      "category": "work",
+      "some_unsupported_field": "ignored"
+    }
+  ],
+  "unsupported_envelope_field": "ignored"
+}"#;
+        let parsed = match parse_proposals_json(payload) {
+            Ok(value) => value,
+            Err(err) => panic!("Expected unknown fields to be allowed: {err}"),
+        };
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].title, "Dev");
     }

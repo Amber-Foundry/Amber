@@ -58,13 +58,11 @@ pub struct CandidateNode {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct CandidateEnvelope {
     candidates: Vec<RawCandidateNode>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawCandidateNode {
     title: String,
     summary: String,
@@ -298,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_unknown_fields() {
+    fn parse_allows_unknown_fields() {
         let payload = r#"{
   "candidates": [
     {
@@ -309,11 +307,12 @@ mod tests {
     }
   ]
 }"#;
-        let err = match parse_candidates_json(payload) {
-            Ok(_) => panic!("expected unknown field payload to fail"),
-            Err(e) => e,
+        let parsed = match parse_candidates_json(payload) {
+            Ok(val) => val,
+            Err(err) => panic!("Expected unknown field payload to parse successfully: {err}"),
         };
-        assert!(err.contains("unknown field `unsupported_extra_field`"));
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].title, "Hiking");
     }
 
     #[test]
