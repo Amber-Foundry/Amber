@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useDeferredValue } from "react";
 import { createPortal } from "react-dom";
 import type { Node, Vault } from "../ipc";
 import { getAllNodes } from "../services/nodes";
@@ -75,6 +75,8 @@ function VaultSidebar({
   const [allNodes, setAllNodes] = useState<Node[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const resolvedQuery = searchQuery === "" ? "" : deferredSearchQuery;
   const [expandedVaults, setExpandedVaults] = useState<Record<string, boolean>>({});
   const [editingVault, setEditingVault] = useState<Vault | null>(null);
   const [editName, setEditName] = useState("");
@@ -657,7 +659,7 @@ function VaultSidebar({
     }));
   }
 
-  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const normalizedQuery = resolvedQuery.trim().toLowerCase();
   const isSearching = normalizedQuery.length > 0;
 
   // ---------------------------------------------------------------------------
