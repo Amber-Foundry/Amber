@@ -187,20 +187,11 @@ pub enum SimilarityClass {
     New,
 }
 
-/// Tokenize input text: convert to lowercase, split on punctuation, strip English stopwords.
 pub fn tokenize(text: &str) -> HashSet<String> {
-    text.chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .filter(|word| !STOPWORDS.contains(word))
-        .map(|s| s.to_string())
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| word.to_lowercase())
+        .filter(|word| !STOPWORDS.contains(&word.as_str()))
         .collect()
 }
 
