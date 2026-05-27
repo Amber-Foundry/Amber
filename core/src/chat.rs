@@ -118,11 +118,21 @@ pub fn edit_and_truncate(
         "Failed updating chat message".to_string()
     })?;
 
-    for id in delete_ids {
-        db.execute("DELETE FROM session_messages WHERE id = ?1;", params![id])
+    if !delete_ids.is_empty() {
+        let placeholders = vec!["?"; delete_ids.len()].join(", ");
+        let query_str = format!("DELETE FROM session_messages WHERE id IN ({placeholders});");
+        let mut stmt = db.prepare(&query_str).map_err(|err| {
+            eprintln!("Database error preparing delete query: {err}");
+            "Failed preparing delete query".to_string()
+        })?;
+        let params: Vec<&dyn rusqlite::ToSql> = delete_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        stmt.execute(rusqlite::params_from_iter(params))
             .map_err(|err| {
-                eprintln!("Database error deleting subsequent chat message {id}: {err}");
-                "Failed deleting subsequent chat message".to_string()
+                eprintln!("Database error deleting subsequent chat messages: {err}");
+                "Failed deleting subsequent chat messages".to_string()
             })?;
     }
 
