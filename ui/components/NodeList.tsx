@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useDeferredValue } from "react";
 import { createPortal } from "react-dom";
 import type { Node, Vault } from "../ipc";
 import { createNode, getNodes } from "../services/nodes";
@@ -61,6 +61,8 @@ function NodeList({
   const [vaults, setVaults] = useState<Vault[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const resolvedQuery = searchQuery === "" ? "" : deferredSearchQuery;
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [createModalName, setCreateModalName] = useState("");
@@ -192,7 +194,7 @@ function NodeList({
     ? `← Back to ${getVaultDisplayLabel(selectedVault.parentVaultId, vaultById, isRedactedUnlocked)}`
     : "← Back to Vaults";
 
-  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const normalizedQuery = resolvedQuery.trim().toLowerCase();
 
   const filteredNodes = useMemo(() => {
     const scoped = selectedVaultNodes;
@@ -475,7 +477,7 @@ function NodeList({
       )}
       {!selectedVault && <p className="pane-empty">Select a vault to view its contents.</p>}
       {selectedVault && filteredNodes.length === 0 && normalizedQuery && (
-        <p className="pane-empty">No nodes found matching '{searchQuery}'.</p>
+        <p className="pane-empty">No nodes found matching '{resolvedQuery}'.</p>
       )}
       {createModalOpen &&
         createPortal(
