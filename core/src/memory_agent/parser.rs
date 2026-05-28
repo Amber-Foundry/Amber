@@ -166,7 +166,7 @@ pub fn parse_candidates_json(raw_json: &str) -> Result<Vec<CandidateNode>, Strin
     let envelope: CandidateEnvelope =
         serde_json::from_str(raw_json).map_err(|err| format!("Invalid candidates JSON: {err}"))?;
 
-    envelope
+    let parsed: Vec<CandidateNode> = envelope
         .candidates
         .into_iter()
         .enumerate()
@@ -192,7 +192,14 @@ pub fn parse_candidates_json(raw_json: &str) -> Result<Vec<CandidateNode>, Strin
                 action: raw.action,
             })
         })
-        .collect()
+        .collect::<Result<Vec<CandidateNode>, String>>()?;
+
+    let filtered = parsed
+        .into_iter()
+        .filter(|node| node.confidence >= 0.3)
+        .collect();
+
+    Ok(filtered)
 }
 
 /// Normalizes raw LLM output (removing markdown code blocks/fences) and parses candidate nodes.
@@ -344,9 +351,14 @@ mod tests {
       "confidence": 2.5
     },
     {
-      "title": "Low confidence",
+      "title": "Too low confidence",
       "summary": "This is a rumor.",
-      "confidence": -0.5
+      "confidence": 0.25
+    },
+    {
+      "title": "Valid confidence",
+      "summary": "This is a plausible idea.",
+      "confidence": 0.35
     }
   ]
 }"#;
@@ -354,8 +366,12 @@ mod tests {
             Ok(val) => val,
             Err(err) => panic!("Expected confidence clamping candidates to parse: {err}"),
         };
+        // Expect 2 kept candidates: High confidence (clamped to 1.0) and Valid confidence (0.35)
+        // Too low confidence (0.25) is filtered out (< 0.3)
         assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].title, "High confidence");
         assert_eq!(parsed[0].confidence, 1.0);
-        assert_eq!(parsed[1].confidence, 0.0);
+        assert_eq!(parsed[1].title, "Valid confidence");
+        assert_eq!(parsed[1].confidence, 0.35);
     }
 }
