@@ -220,8 +220,8 @@ pub fn build_context(
                             format!(
                                 "<document title=\"{}\">\n{}\n\n{}\n</document>",
                                 escape_xml_attr(&node.title),
-                                node.summary,
-                                node.detail
+                                escape_xml_attr(&node.summary),
+                                escape_xml_attr(&node.detail)
                             )
                         } else {
                             generate_pointer_stub(&node.title, &node.id)
