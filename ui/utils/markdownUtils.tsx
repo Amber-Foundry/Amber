@@ -157,8 +157,8 @@ export function preprocessMathDelimiters(text: string): string {
   if (!text) return "";
   let processed = text;
   // Replace \\[ or \[ with $$
-  processed = processed.replace(/\\\\\[/g, "$$\n").replace(/\\\[/g, "$$\n");
-  processed = processed.replace(/\\\\\]/g, "\n$$").replace(/\\\]/g, "\n$$");
+  processed = processed.replace(/\\\\\[/g, "$$$$\n").replace(/\\\[/g, "$$$$\n");
+  processed = processed.replace(/\\\\\]/g, "\n$$$$").replace(/\\\]/g, "\n$$$$");
   // Replace \\( or \( with $
   processed = processed.replace(/\\\\\(/g, "$").replace(/\\\(/g, "$");
   processed = processed.replace(/\\\\\)/g, "$").replace(/\\\)/g, "$");

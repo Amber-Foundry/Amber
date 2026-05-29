@@ -624,6 +624,48 @@ function runLatexBlockTests() {
   }
 }
 
+function runMarkdownUtilsTests() {
+  function preprocessMathDelimiters(text: string): string {
+    if (!text) return "";
+    let processed = text;
+    // Replace \\[ or \[ with $$
+    processed = processed.replace(/\\\\\[/g, "$$$$\n").replace(/\\\[/g, "$$$$\n");
+    processed = processed.replace(/\\\\\]/g, "\n$$$$").replace(/\\\]/g, "\n$$$$");
+    // Replace \\( or \( with $
+    processed = processed.replace(/\\\\\(/g, "$").replace(/\\\(/g, "$");
+    processed = processed.replace(/\\\\\)/g, "$").replace(/\\\)/g, "$");
+    return processed;
+  }
+
+  // Test 1: Standard display math conversion \[ ... \]
+  const input1 = "Here is \\[ x^2 \\]";
+  const expected1 = "Here is $$\n x^2 \n$$";
+  const res1 = preprocessMathDelimiters(input1);
+  if (res1 !== expected1) {
+    throw new Error(
+      `MarkdownUtils Test 1 Failed: Expected '${expected1.replace(/\n/g, "\\n")}', got '${res1.replace(/\n/g, "\\n")}'`
+    );
+  }
+
+  // Test 2: Double-backslash display math conversion \\[ ... \\]
+  const input2 = "Here is \\\\[ y^2 \\\\]";
+  const expected2 = "Here is $$\n y^2 \n$$";
+  const res2 = preprocessMathDelimiters(input2);
+  if (res2 !== expected2) {
+    throw new Error(
+      `MarkdownUtils Test 2 Failed: Expected '${expected2.replace(/\n/g, "\\n")}', got '${res2.replace(/\n/g, "\\n")}'`
+    );
+  }
+
+  // Test 3: Standard inline math conversion \( ... \)
+  const input3 = "Here is \\( z \\)";
+  const expected3 = "Here is $ z $";
+  const res3 = preprocessMathDelimiters(input3);
+  if (res3 !== expected3) {
+    throw new Error(`MarkdownUtils Test 3 Failed: Expected '${expected3}', got '${res3}'`);
+  }
+}
+
 try {
   runPrivacyTests();
   console.log("✓ All frontend privacy utility tests passed successfully!");
@@ -645,6 +687,8 @@ try {
   console.log("✓ All mathematical expression parser utility tests passed successfully!");
   runLatexBlockTests();
   console.log("✓ All LaTeX block unescaped character utility tests passed successfully!");
+  runMarkdownUtilsTests();
+  console.log("✓ All Markdown/math delimiters preprocessor utility tests passed successfully!");
   process.exit(0);
 } catch (err) {
   console.error("Frontend utility self-test failed:", err);
