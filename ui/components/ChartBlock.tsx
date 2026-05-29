@@ -1,4 +1,4 @@
-import React, { Suspense, useState, useMemo } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { Mafs, Coordinates, Plot } from "mafs";
 import "mafs/core.css";
 import { preprocessExpression, tokenize, parseToRpn, evaluateRpn } from "../utils/mathParser";
@@ -42,6 +42,9 @@ const PLOTLY_TRACE_TYPES = new Set([
   "barpolar",
   "scatter3d",
 ]);
+
+const DEFAULT_DOMAIN_X: [number, number] = [-5, 5];
+const DEFAULT_DOMAIN_Y: [number, number] = [-5, 5];
 
 interface ChartBlockProps {
   language: string;
@@ -240,70 +243,28 @@ export default function ChartBlock({ language, code }: ChartBlockProps) {
   }, [debouncedCode]);
 
   // Domain bounding boxes
-  const domainX = parsedData?.domainX || [-5, 5];
-  const domainY = parsedData?.domainY || [-5, 5];
+  const domainX = parsedData?.domainX || DEFAULT_DOMAIN_X;
+  const domainY = parsedData?.domainY || DEFAULT_DOMAIN_Y;
+  const domainXMin = domainX[0];
+  const domainXMax = domainX[1];
+  const domainYMin = domainY[0];
+  const domainYMax = domainY[1];
 
   // Controlled viewport state
   const [viewBoxX, setViewBoxX] = useState<[number, number]>(domainX);
   const [viewBoxY, setViewBoxY] = useState<[number, number]>(domainY);
   const [resetKey, setResetKey] = useState(0);
   const [activeMode, setActiveMode] = useState<"pan" | "zoomArea" | "selectBox" | "lasso">("pan");
-  const [prevCode, setPrevCode] = useState(code);
 
-  // Sync state during render when code changes as recommended by React
-  if (code !== prevCode) {
-    setPrevCode(code);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      setViewBoxX([domainXMin, domainXMax]);
+      setViewBoxY([domainYMin, domainYMax]);
+      setResetKey((prev) => prev + 1);
+    });
 
-    const isHardChange =
-      Math.abs(code.length - prevCode.length) > 15 ||
-      !code.startsWith(prevCode.slice(0, Math.min(prevCode.length, 10)));
-
-    if (isHardChange) {
-      setDebouncedCode(code);
-
-      // Instantly parse the new domains during a hard switch to prevent layout jump or race condition mismatches
-      let newDomainX: [number, number] = [-5, 5];
-      let newDomainY: [number, number] = [-5, 5];
-      const extractDomains = (jsonStr: string) => {
-        try {
-          const jsonObj = JSON.parse(jsonStr);
-          if (jsonObj && typeof jsonObj === "object") {
-            const obj = jsonObj as Record<string, unknown>;
-            if (Array.isArray(obj.domainX) && obj.domainX.length === 2) {
-              newDomainX = [Number(obj.domainX[0]), Number(obj.domainX[1])];
-            }
-            if (Array.isArray(obj.domainY) && obj.domainY.length === 2) {
-              newDomainY = [Number(obj.domainY[0]), Number(obj.domainY[1])];
-            }
-          }
-        } catch {
-          // ignore
-        }
-      };
-
-      extractDomains(code);
-      if (
-        newDomainX[0] === -5 &&
-        newDomainX[1] === 5 &&
-        newDomainY[0] === -5 &&
-        newDomainY[1] === 5
-      ) {
-        // Fallback: Attempt parsing with jsonrepair
-        try {
-          const repaired = jsonrepair(code);
-          extractDomains(repaired);
-        } catch {
-          // ignore
-        }
-      }
-
-      setViewBoxX(newDomainX);
-      setViewBoxY(newDomainY);
-    } else {
-      setViewBoxX(domainX);
-      setViewBoxY(domainY);
-    }
-  }
+    return () => cancelAnimationFrame(frame);
+  }, [domainXMin, domainXMax, domainYMin, domainYMax]);
 
   // Fallback rendering structure (rendered exactly like MindVault's CodeBlock)
   if (error) {
