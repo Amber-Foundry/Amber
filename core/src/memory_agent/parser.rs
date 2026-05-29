@@ -115,25 +115,21 @@ fn validate_node_type(value: Option<String>, index: usize) -> Option<String> {
     }
 }
 
-fn validate_target_vault_key(
-    value: Option<String>,
-    index: usize,
-) -> Result<Option<String>, String> {
-    let Some(raw_value) = value else {
-        return Ok(None);
-    };
+fn validate_target_vault_key(value: Option<String>, index: usize) -> Option<String> {
+    let raw_value = value?;
     let normalized = raw_value.trim().to_lowercase();
     if normalized.is_empty() {
-        return Ok(None);
+        return None;
     }
     if ALLOWED_VAULT_KEYS.contains(&normalized.as_str()) {
-        Ok(Some(normalized))
+        Some(normalized)
     } else {
-        Err(format!(
-            "Candidate {} has unsupported target_vault_key '{}'",
+        eprintln!(
+            "Warning: Candidate {} has unsupported target_vault_key '{}'; falling back to None.",
             index + 1,
             raw_value
-        ))
+        );
+        None
     }
 }
 
@@ -174,7 +170,7 @@ pub fn parse_candidates_json(raw_json: &str) -> Result<Vec<CandidateNode>, Strin
             let summary = normalize_required(raw.summary, "summary", index)?;
             let detail = normalize_non_empty(raw.detail);
             let node_type = validate_node_type(raw.node_type, index);
-            let target_vault_key = validate_target_vault_key(raw.target_vault_key, index)?;
+            let target_vault_key = validate_target_vault_key(raw.target_vault_key, index);
             let tags = normalize_tags(raw.tags, index)?;
 
             // Clamp confidence score to 0.0 - 1.0
@@ -406,5 +402,27 @@ mod tests {
         assert_eq!(parsed[0].confidence, 1.0);
         assert_eq!(parsed[1].title, "Valid confidence");
         assert_eq!(parsed[1].confidence, 0.35);
+    }
+
+    #[test]
+    fn parse_invalid_target_vault_key() {
+        let payload = r#"{
+  "candidates": [
+    {
+      "title": "Hiking",
+      "summary": "Enjoys outdoor hiking.",
+      "target_vault_key": "super_fancy_vault",
+      "confidence": 0.9
+    }
+  ]
+}"#;
+        let parsed = match parse_candidates_json(payload) {
+            Ok(val) => val,
+            Err(err) => {
+                panic!("expected invalid target vault key to fall back to None, not fail: {err}")
+            }
+        };
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].target_vault_key, None);
     }
 }
