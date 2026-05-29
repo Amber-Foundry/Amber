@@ -105,7 +105,7 @@ pub fn check_rate_limit(key: &str) -> Result<(), String> {
                 None => {
                     // Fall back to a standard rate limit of 1 per second in the impossible event
                     // that with_period fails, avoiding expect/unwrap entirely for Clippy.
-                    let fallback_nonzero = unsafe { std::num::NonZeroU32::new_unchecked(1) };
+                    let fallback_nonzero = std::num::NonZeroU32::MIN;
                     governor::Quota::per_second(fallback_nonzero)
                 }
             };
