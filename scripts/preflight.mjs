@@ -25,6 +25,30 @@ const fixFromNpmArgv = (() => {
 })();
 const fix = fixFromArgs || fixFromNpmArgv;
 const help = args.has("--help") || args.has("-h");
+const MIN_NODE_VERSION = [22, 6, 0];
+
+function compareVersions(actual, minimum) {
+  for (let index = 0; index < minimum.length; index++) {
+    const actualPart = actual[index] ?? 0;
+    const minimumPart = minimum[index] ?? 0;
+    if (actualPart > minimumPart) return 1;
+    if (actualPart < minimumPart) return -1;
+  }
+  return 0;
+}
+
+function assertNodeVersion() {
+  const actual = process.versions.node.split(".").map((part) => Number(part));
+  if (compareVersions(actual, MIN_NODE_VERSION) < 0) {
+    const required = MIN_NODE_VERSION.join(".");
+    const detected = process.versions.node;
+    console.error(
+      `Node.js ${required}+ is required for preflight because it uses --experimental-strip-types. ` +
+        `Detected ${detected}. Please upgrade Node.js or run the individual checks manually.`
+    );
+    process.exit(1);
+  }
+}
 
 if (help) {
   // Keep this intentionally short and copy-paste friendly.
@@ -40,6 +64,8 @@ What it runs:
 `);
   process.exit(0);
 }
+
+assertNodeVersion();
 
 function run(command, { cwd } = {}) {
   return new Promise((resolve) => {
