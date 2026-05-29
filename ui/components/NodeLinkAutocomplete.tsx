@@ -1,5 +1,4 @@
-import { useEffect, useState, useRef } from "react";
-import { searchNodes } from "../services/nodes";
+import { useEffect, useMemo, useState, useRef } from "react";
 import type { Node } from "../types/generated/Node";
 
 type NodeLinkAutocompleteProps = {
@@ -7,6 +6,7 @@ type NodeLinkAutocompleteProps = {
   position: { top: number; left: number };
   onSelect: (node: Node) => void;
   onClose: () => void;
+  nodes?: Node[];
 };
 
 export default function NodeLinkAutocomplete({
@@ -14,19 +14,42 @@ export default function NodeLinkAutocomplete({
   position,
   onSelect,
   onClose,
+  nodes: preloadedNodes,
 }: NodeLinkAutocompleteProps) {
-  const [nodes, setNodes] = useState<Node[]>([]);
+  const [asyncNodes, setAsyncNodes] = useState<Node[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  const filteredPreloadedNodes = useMemo(() => {
+    if (!preloadedNodes) {
+      return null;
+    }
+
+    const normalizedQuery = query.trim().toLowerCase();
+    const results = !normalizedQuery
+      ? preloadedNodes
+      : preloadedNodes.filter(
+          (node) =>
+            node.title.toLowerCase().includes(normalizedQuery) ||
+            (node.summary && node.summary.toLowerCase().includes(normalizedQuery))
+        );
+
+    return results.slice(0, 8);
+  }, [query, preloadedNodes]);
+
   useEffect(() => {
+    if (preloadedNodes) {
+      return;
+    }
+
     let active = true;
     async function fetchMatches() {
       try {
+        const { searchNodes } = await import("../services/nodes");
         const results = await searchNodes(query);
         if (active) {
           // Limit to top 8 matches for visual sanity and quick lists
-          setNodes(results.slice(0, 8));
+          setAsyncNodes(results.slice(0, 8));
           setSelectedIndex(0);
         }
       } catch (err) {
@@ -37,7 +60,9 @@ export default function NodeLinkAutocomplete({
     return () => {
       active = false;
     };
-  }, [query]);
+  }, [query, preloadedNodes]);
+
+  const nodes = filteredPreloadedNodes ?? asyncNodes;
 
   useEffect(() => {
     if (nodes.length === 0) return;

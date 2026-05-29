@@ -1220,6 +1220,7 @@ export default function NodeEditorExpanded({
                     position={wikilinkDropdownPos}
                     onSelect={handleSelectAutocomplete}
                     onClose={() => setWikilinkOpen(false)}
+                    nodes={allNodes}
                   />
                 )}
               </div>
