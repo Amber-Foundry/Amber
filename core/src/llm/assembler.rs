@@ -82,6 +82,13 @@ fn escape_xml_attr(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+fn escape_xml_body(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn fetch_requested_nodes(
     db: &Connection,
     node_ids: &[String],
@@ -200,8 +207,8 @@ pub fn build_context(
                         format!(
                             "<document title=\"{}\">\n{}\n\n{}\n</document>",
                             escape_xml_attr(&node.title),
-                            escape_xml_attr(&node.summary),
-                            escape_xml_attr(&node.detail)
+                            escape_xml_body(&node.summary),
+                            escape_xml_body(&node.detail)
                         )
                     }
                     "locked" => generate_pointer_stub(&node.title, &node.id),
@@ -217,8 +224,8 @@ pub fn build_context(
                         format!(
                             "<document title=\"{}\">\n{}\n\n{}\n</document>",
                             escape_xml_attr(&node.title),
-                            escape_xml_attr(&node.summary),
-                            escape_xml_attr(&node.detail)
+                            escape_xml_body(&node.summary),
+                            escape_xml_body(&node.detail)
                         )
                     }
                     "locked" => {
@@ -226,8 +233,8 @@ pub fn build_context(
                             format!(
                                 "<document title=\"{}\">\n{}\n\n{}\n</document>",
                                 escape_xml_attr(&node.title),
-                                escape_xml_attr(&node.summary),
-                                escape_xml_attr(&node.detail)
+                                escape_xml_body(&node.summary),
+                                escape_xml_body(&node.detail)
                             )
                         } else {
                             generate_pointer_stub(&node.title, &node.id)
@@ -245,8 +252,8 @@ pub fn build_context(
                         format!(
                             "<document title=\"{}\">\n{}\n\n{}\n</document>",
                             escape_xml_attr(&node.title),
-                            escape_xml_attr(&node.summary),
-                            escape_xml_attr(&node.detail)
+                            escape_xml_body(&node.summary),
+                            escape_xml_body(&node.detail)
                         )
                     }
                     _ => {
@@ -611,5 +618,49 @@ mod tests {
             pos_locked < pos_local,
             "Locked Node should come before Local Only Node to preserve relevance ordering!"
         );
+    }
+
+    #[test]
+    fn test_xml_escaping_behavior() {
+        let conn = setup_in_memory_db();
+        // Insert a node with special characters in title, summary, and detail
+        if let Err(err) = conn.execute(
+            "INSERT INTO nodes (
+                id, vault_id, sub_vault_id, title, summary, detail, privacy_tier, priority, is_archived, deleted_at
+            ) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, 0, NULL);",
+            [
+                "node_escaping_test",
+                "vault_a",
+                "Testing \"Quotes\" & <Tags> 'Single'",
+                "Summary with & < > \"Quotes\" and 'Single'",
+                "Detail with & < > \"Quotes\" and 'Single'",
+                "open",
+                "{\"score\":0.5}",
+            ],
+        ) {
+            panic!("failed inserting extra node for escaping test: {err}");
+        }
+
+        let context = build_context(
+            &conn,
+            vec!["node_escaping_test".to_string()],
+            AssemblerConfig {
+                scope: "local".to_string(),
+                max_tokens: 4000,
+                is_unlocked: false,
+            },
+        )
+        .unwrap();
+
+        // Title is an attribute and must be fully escaped (including quotes)
+        assert!(context.contains(
+            "title=\"Testing &quot;Quotes&quot; &amp; &lt;Tags&gt; &apos;Single&apos;\""
+        ));
+
+        // Summary is in the body: &, <, > must be escaped; quotes must NOT be escaped
+        assert!(context.contains("Summary with &amp; &lt; &gt; \"Quotes\" and 'Single'"));
+
+        // Detail is in the body: &, <, > must be escaped; quotes must NOT be escaped
+        assert!(context.contains("Detail with &amp; &lt; &gt; \"Quotes\" and 'Single'"));
     }
 }
