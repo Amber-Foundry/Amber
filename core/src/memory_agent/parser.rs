@@ -62,6 +62,10 @@ struct CandidateEnvelope {
     candidates: Vec<RawCandidateNode>,
 }
 
+fn default_confidence() -> f64 {
+    1.0
+}
+
 #[derive(Debug, Deserialize)]
 struct RawCandidateNode {
     title: String,
@@ -74,6 +78,7 @@ struct RawCandidateNode {
     target_vault_key: Option<String>,
     #[serde(default)]
     tags: Option<Vec<String>>,
+    #[serde(default = "default_confidence")]
     confidence: f64,
     #[serde(default)]
     action: CandidateAction,
@@ -315,6 +320,25 @@ mod tests {
         };
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].title, "Hiking");
+    }
+
+    #[test]
+    fn parse_omitted_confidence_defaults_to_one() {
+        let payload = r#"{
+  "candidates": [
+    {
+      "title": "Hiking",
+      "summary": "Enjoys outdoor hiking."
+    }
+  ]
+}"#;
+        let parsed = match parse_candidates_json(payload) {
+            Ok(val) => val,
+            Err(err) => panic!("Expected omitted confidence payload to parse successfully: {err}"),
+        };
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].title, "Hiking");
+        assert_eq!(parsed[0].confidence, 1.0);
     }
 
     #[test]
