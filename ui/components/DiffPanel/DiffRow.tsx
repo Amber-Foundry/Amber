@@ -1,7 +1,9 @@
 import { type ChangesetItem } from "../../ipc";
+import ItemActions from "./ItemActions";
 
 interface DiffRowProps {
   item: ChangesetItem;
+  onCommitItem: (itemId: string, action: "accept" | "dismiss", editedData: unknown | null) => void;
 }
 
 interface ProposedData {
@@ -71,7 +73,7 @@ function diffWords(oldStr: string, newStr: string): DiffToken[] {
   return tokens.reverse();
 }
 
-export default function DiffRow({ item }: DiffRowProps) {
+export default function DiffRow({ item, onCommitItem }: DiffRowProps) {
   // Safe JSON parsing
   const parseJSON = (str: string | null) => {
     if (!str) return {};
@@ -148,10 +150,16 @@ export default function DiffRow({ item }: DiffRowProps) {
     <div className="diff-row-container">
       {/* DiffRow Header */}
       <div className="diff-row-header">
-        <span className={`changeset-item-badge ${badgeClass}`}>
-          {typeUpper === "REPOINT_DOOR" ? "ORPHAN" : typeUpper}
-        </span>
-        <span className="changeset-item-status">Status: {item.status}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <span className={`changeset-item-badge ${badgeClass}`}>
+            {typeUpper === "REPOINT_DOOR" ? "ORPHAN" : typeUpper}
+          </span>
+          <span className="changeset-item-status">Status: {item.status}</span>
+        </div>
+        <ItemActions
+          item={item}
+          onCommitItem={(action, editedData) => onCommitItem(item.id, action, editedData)}
+        />
       </div>
 
       {/* Comparison Viewports */}

@@ -598,3 +598,26 @@
   font-size: 0.86rem;
   line-height: 1.5;
 }
+
+/* Bulk Action Link Buttons in details header */
+.diff-panel-bulk-btn {
+  background: transparent;
+  border: none;
+  font-weight: 700;
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  transition:
+    opacity 0.2s ease,
+    transform 0.1s ease;
+  user-select: none;
+}
+
+.diff-panel-bulk-btn:hover {
+  opacity: 0.8;
+  transform: translateY(-0.5px);
+}
+
+.diff-panel-bulk-btn:active {
+  transform: translateY(0);
+}

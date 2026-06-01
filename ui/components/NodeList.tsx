@@ -73,7 +73,7 @@ function NodeList({
 
   async function loadNodes() {
     try {
-      const data = await getNodes();
+      const data = await getNodes(isRedactedUnlocked);
       setNodes(data);
       setError(null);
     } catch (err) {

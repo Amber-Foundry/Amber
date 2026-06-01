@@ -278,7 +278,7 @@ function VaultSidebar({
     const timer = setTimeout(() => {
       void (async () => {
         try {
-          const nodes = await getAllNodes();
+          const nodes = await getAllNodes(isRedactedUnlocked);
           setAllNodes(nodes);
         } catch (err) {
           if (err instanceof AppError) {

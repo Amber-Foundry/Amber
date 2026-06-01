@@ -17,9 +17,11 @@ import {
 import { unwrapIpcResult } from "./ipcResult";
 
 let cachedNodes: Node[] | null = null;
+let cachedUnlockState: boolean | null = null;
 
 export function clearNodesCache(): void {
   cachedNodes = null;
+  cachedUnlockState = null;
 }
 
 export async function createNode(input: NodeCreateInput): Promise<Node> {
@@ -31,7 +33,11 @@ export async function getNode(nodeId: string): Promise<Node | null> {
   return unwrapIpcResult(nodeGet(nodeId));
 }
 
-export async function getNodes(): Promise<Node[]> {
+export async function getNodes(isRedactedUnlocked?: boolean): Promise<Node[]> {
+  if (isRedactedUnlocked !== undefined && cachedUnlockState !== isRedactedUnlocked) {
+    cachedNodes = null;
+    cachedUnlockState = isRedactedUnlocked;
+  }
   if (cachedNodes) {
     return cachedNodes;
   }
@@ -40,8 +46,8 @@ export async function getNodes(): Promise<Node[]> {
   return nodes;
 }
 
-export async function getAllNodes(): Promise<Node[]> {
-  return getNodes();
+export async function getAllNodes(isRedactedUnlocked?: boolean): Promise<Node[]> {
+  return getNodes(isRedactedUnlocked);
 }
 
 export async function updateNode(input: NodeUpdateInput): Promise<Node> {

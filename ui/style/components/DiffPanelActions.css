@@ -1,0 +1,143 @@
+/* Item Actions & Buttons */
+.diff-item-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.action-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: transparent;
+}
+
+.accept-btn {
+  color: #059669;
+}
+.accept-btn:hover {
+  background: rgba(5, 150, 105, 0.1);
+  border-color: rgba(5, 150, 105, 0.2);
+}
+
+.dismiss-btn {
+  color: #dc2626;
+}
+.dismiss-btn:hover {
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.2);
+}
+
+.edit-btn {
+  color: #d97706;
+}
+.edit-btn:hover {
+  background: rgba(217, 119, 6, 0.1);
+  border-color: rgba(217, 119, 6, 0.2);
+}
+
+/* Edit Modal */
+.diff-edit-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(27, 26, 23, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.diff-edit-modal {
+  background: #fdfcfa;
+  border: 1px solid rgba(188, 108, 37, 0.2);
+  border-radius: 16px;
+  padding: 32px;
+  width: 520px;
+  max-width: 95vw;
+  box-shadow: 0 24px 48px rgba(27, 26, 23, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.edit-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.edit-form-group label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #7d7a75;
+  letter-spacing: 0.02em;
+}
+
+.edit-form-group input,
+.edit-form-group select,
+.edit-form-group textarea {
+  padding: 10px 14px;
+  border: 1px solid rgba(188, 108, 37, 0.25);
+  border-radius: 8px;
+  background: #fcfbf9;
+  color: #1b1a17;
+  font-family: inherit;
+  font-size: 0.95rem;
+  resize: vertical;
+  transition: all 0.2s ease;
+}
+
+.edit-form-group input:focus,
+.edit-form-group select:focus,
+.edit-form-group textarea:focus {
+  outline: none;
+  border-color: #bc6c25;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(188, 108, 37, 0.12);
+}
+
+.edit-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.edit-cancel-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(188, 108, 37, 0.2);
+  background: transparent;
+  color: #7d7a75;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.edit-cancel-btn:hover {
+  background: rgba(188, 108, 37, 0.05);
+}
+
+.edit-save-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  background: linear-gradient(135deg, #bc6c25 0%, #b56a37 100%);
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.edit-save-btn:hover {
+  box-shadow: 0 4px 12px rgba(188, 108, 37, 0.2);
+  transform: translateY(-1px);
+}

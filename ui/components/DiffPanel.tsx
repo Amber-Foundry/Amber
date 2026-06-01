@@ -3,10 +3,13 @@ import {
   listPendingChangesets,
   listResolvedChangesets,
   listChangesetItems,
+  commitChangeset,
 } from "../services/memoryAgent";
-import { type Changeset, type ChangesetItem } from "../ipc";
+import { verifyMasterPassword } from "../services/auth";
+import { type Changeset, type ChangesetItem, type ChangesetCommitInput } from "../ipc";
 import DiffRow from "./DiffPanel/DiffRow";
 import "../style/components/DiffPanel.css";
+import "../style/components/DiffPanelActions.css";
 
 interface DiffPanelProps {
   onClose: () => void;
@@ -44,6 +47,77 @@ export default function DiffPanel({
   });
   const [isResizing, setIsResizing] = useState(false);
 
+  // Vault locked handling
+  const [lockedActionQueue, setLockedActionQueue] = useState<(() => Promise<void>) | null>(null);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+
+  const executeCommit = async (input: ChangesetCommitInput) => {
+    try {
+      await commitChangeset(input);
+      setRefreshTrigger((prev) => prev + 1);
+    } catch (err) {
+      if (String(err).includes("VAULT_LOCKED")) {
+        setLockedActionQueue(() => async () => {
+          await executeCommit(input);
+        });
+        setShowPasswordModal(true);
+      } else {
+        setError(String(err));
+      }
+    }
+  };
+
+  const handleCommitItem = (
+    itemId: string,
+    action: "accept" | "dismiss",
+    editedData: unknown | null
+  ) => {
+    if (!activeChangesetId) return;
+    void executeCommit({
+      changesetId: activeChangesetId,
+      itemActions: [{ itemId, action, editedData }],
+    });
+  };
+
+  const handleBulkAccept = () => {
+    if (!activeChangesetId) return;
+    const actions = items
+      .filter((i) => i.status === "pending")
+      .map((i) => ({ itemId: i.id, action: "accept", editedData: null }));
+    if (actions.length === 0) return;
+    void executeCommit({ changesetId: activeChangesetId, itemActions: actions });
+  };
+
+  const handleBulkDismiss = () => {
+    if (!activeChangesetId) return;
+    const actions = items
+      .filter((i) => i.status === "pending")
+      .map((i) => ({ itemId: i.id, action: "dismiss", editedData: null }));
+    if (actions.length === 0) return;
+    void executeCommit({ changesetId: activeChangesetId, itemActions: actions });
+  };
+
+  const handlePasswordSubmit = async () => {
+    setPasswordError("");
+    const result = await verifyMasterPassword(passwordInput);
+    if (result.error) {
+      setPasswordError(result.error.message);
+      return;
+    }
+    if (result.data) {
+      setShowPasswordModal(false);
+      setPasswordInput("");
+      if (lockedActionQueue) {
+        await lockedActionQueue();
+        setLockedActionQueue(null);
+      }
+    } else {
+      setPasswordError("Invalid password");
+    }
+  };
+
   const handleClose = () => {
     setIsClosing(true);
     setTimeout(() => {
@@ -69,14 +143,6 @@ export default function DiffPanel({
 
     const handleMouseUp = () => {
       setIsResizing(false);
-      setDrawerWidth((currentWidth) => {
-        try {
-          localStorage.setItem("mindvault-diff-panel-width", String(currentWidth));
-        } catch {
-          // Ignored
-        }
-        return currentWidth;
-      });
     };
 
     document.addEventListener("mousemove", handleMouseMove);
@@ -89,6 +155,17 @@ export default function DiffPanel({
       document.body.style.userSelect = "";
     };
   }, [isResizing]);
+
+  // Save width to localStorage when it changes, debounced or just when not resizing
+  useEffect(() => {
+    if (!isResizing) {
+      try {
+        localStorage.setItem("mindvault-diff-panel-width", String(drawerWidth));
+      } catch {
+        // Ignored
+      }
+    }
+  }, [isResizing, drawerWidth]);
 
   // Listen to external seed updates for dynamic UI refresh
   useEffect(() => {
@@ -164,7 +241,7 @@ export default function DiffPanel({
     return () => {
       active = false;
     };
-  }, [activeChangesetId]);
+  }, [activeChangesetId, refreshTrigger]);
 
   // Handle Tab Switching
   const handleTabChange = (tab: "pending" | "history") => {
@@ -200,6 +277,11 @@ export default function DiffPanel({
     const matchSearch =
       cs.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (cs.modelUsed && cs.modelUsed.toLowerCase().includes(searchQuery.toLowerCase()));
+
+    if (activeTab === "pending") {
+      // Must have actual pending proposals left to review
+      return matchSearch && cs.itemCount > 0 && cs.itemCount > cs.acceptedCount + cs.dismissedCount;
+    }
     return matchSearch;
   });
 
@@ -241,21 +323,41 @@ export default function DiffPanel({
           <span className="diff-panel-title">
             {activeChangesetId ? "Changeset Details" : "Memory Proposals"}
           </span>
-          <button className="diff-panel-close-btn" onClick={handleClose} aria-label="Close panel">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            {activeChangesetId && items.some((i) => i.status === "pending") && (
+              <>
+                <button
+                  className="diff-panel-bulk-btn"
+                  style={{ color: "#dc2626" }}
+                  onClick={handleBulkDismiss}
+                >
+                  Dismiss All
+                </button>
+                <button
+                  className="diff-panel-bulk-btn"
+                  style={{ color: "#059669" }}
+                  onClick={handleBulkAccept}
+                >
+                  Accept All
+                </button>
+              </>
+            )}
+            <button className="diff-panel-close-btn" onClick={handleClose} aria-label="Close panel">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         {/* Tab Buttons (Only shown if not drilling down into a changeset) */}
@@ -437,7 +539,16 @@ export default function DiffPanel({
                       {/* Detailed diff cards will render here in Commit 4. 
                           For Commit 3, we render a highly polished list summary with type badges. */}
                       {filteredItems.map((item) => (
-                        <DiffRow key={item.id} item={item} />
+                        <div
+                          key={item.id}
+                          className={item.status !== "pending" ? "diff-row-resolved" : ""}
+                          style={{
+                            transition: "opacity 0.5s ease-out, transform 0.5s ease-out",
+                            opacity: item.status !== "pending" ? 0.4 : 1,
+                          }}
+                        >
+                          <DiffRow item={item} onCommitItem={handleCommitItem} />
+                        </div>
                       ))}
                     </div>
                   )}
@@ -447,6 +558,44 @@ export default function DiffPanel({
           )}
         </div>
       </div>
+
+      {showPasswordModal && (
+        <div className="diff-edit-modal-backdrop" onClick={() => setShowPasswordModal(false)}>
+          <div className="diff-edit-modal" onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 16px 0", color: "#dc2626" }}>Vault Locked</h3>
+            <p style={{ margin: "0 0 16px 0", fontSize: "0.9rem", color: "#7d7a75" }}>
+              This proposal targets a redacted vault that is currently locked. Please enter your
+              master password to complete the commit.
+            </p>
+            <div className="edit-form-group">
+              <label>Master Password</label>
+              <input
+                type="password"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                placeholder="Enter your master password..."
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handlePasswordSubmit();
+                }}
+                autoFocus
+              />
+            </div>
+            {passwordError && (
+              <div style={{ color: "#dc2626", fontSize: "0.85rem", marginTop: "4px" }}>
+                {passwordError}
+              </div>
+            )}
+            <div className="edit-modal-actions">
+              <button className="edit-cancel-btn" onClick={() => setShowPasswordModal(false)}>
+                Cancel
+              </button>
+              <button className="edit-save-btn" onClick={handlePasswordSubmit}>
+                Unlock & Commit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
