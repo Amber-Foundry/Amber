@@ -621,3 +621,51 @@
 .diff-panel-bulk-btn:active {
   transform: translateY(0);
 }
+
+/* Anomaly highlight styling */
+.diff-row-container.anomaly {
+  border: 2px solid rgba(239, 68, 68, 0.45);
+  background: rgba(254, 242, 242, 0.5); /* Shaded crimson glassmorphic border and background */
+  box-shadow: 0 8px 24px rgba(239, 68, 68, 0.05);
+}
+
+.anomaly-warning-banner {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  background: rgba(239, 68, 68, 0.05);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+.anomaly-warning-icon {
+  color: #dc2626;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.anomaly-warning-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.anomaly-warning-badge {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #dc2626;
+  letter-spacing: 0.02em;
+}
+
+.anomaly-warning-text {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #991b1b;
+  line-height: 1.45;
+}
