@@ -267,19 +267,20 @@ pub fn commit_changeset_transaction(
     // 1. Redacted Lock Check
     for item_action in &input.item_actions {
         if item_action.action == "accept" || item_action.action == "edit" {
-            let parsed_props: Option<serde_json::Value> =
-                if let Some(ref edited) = item_action.edited_data {
-                    Some(edited.clone())
-                } else {
-                    let proposed_data_str: Option<String> = conn
+            let parsed_props: Option<serde_json::Value> = if let Some(ref edited) =
+                item_action.edited_data
+            {
+                Some(edited.clone())
+            } else {
+                let proposed_data_str: Option<String> = conn
                         .query_row(
-                            "SELECT proposed_data FROM changeset_items WHERE id = ?1 LIMIT 1;",
-                            [&item_action.item_id],
+                            "SELECT proposed_data FROM changeset_items WHERE id = ?1 AND changeset_id = ?2 AND status = 'pending' LIMIT 1;",
+                            params![&item_action.item_id, &input.changeset_id],
                             |row| row.get(0),
                         )
                         .ok();
-                    proposed_data_str.and_then(|s| serde_json::from_str(&s).ok())
-                };
+                proposed_data_str.and_then(|s| serde_json::from_str(&s).ok())
+            };
 
             if let Some(props) = parsed_props {
                 let target_vault_id = props
@@ -318,11 +319,11 @@ pub fn commit_changeset_transaction(
     let mut dismissed_diff = 0i64;
 
     for item_action in &input.item_actions {
-        let current_status: String = tx
+        let (current_status, item_changeset_id): (String, String) = tx
             .query_row(
-                "SELECT status FROM changeset_items WHERE id = ?1 LIMIT 1;",
+                "SELECT status, changeset_id FROM changeset_items WHERE id = ?1 LIMIT 1;",
                 [&item_action.item_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|err| {
                 format!(
@@ -330,6 +331,13 @@ pub fn commit_changeset_transaction(
                     item_action.item_id
                 )
             })?;
+
+        if item_changeset_id != input.changeset_id {
+            return Err(format!(
+                "Changeset item '{}' does not belong to changeset '{}' (belongs to '{}')",
+                item_action.item_id, input.changeset_id, item_changeset_id
+            ));
+        }
 
         if current_status != "pending" {
             return Err(format!(
@@ -340,11 +348,17 @@ pub fn commit_changeset_transaction(
 
         match item_action.action.as_str() {
             "dismiss" => {
-                tx.execute(
-                    "UPDATE changeset_items SET status = 'dismissed', reviewed_at = datetime('now') WHERE id = ?1;",
-                    [&item_action.item_id],
+                let rows = tx.execute(
+                    "UPDATE changeset_items SET status = 'dismissed', reviewed_at = datetime('now') WHERE id = ?1 AND changeset_id = ?2 AND status = 'pending';",
+                    params![&item_action.item_id, &input.changeset_id],
                 )
                 .map_err(|err| format!("Failed dismissing changeset item: {err}"))?;
+                if rows == 0 {
+                    return Err(format!(
+                        "Failed to dismiss changeset item '{}' (no rows affected)",
+                        item_action.item_id
+                    ));
+                }
                 dismissed_diff += 1;
             }
             "accept" | "edit" => {
@@ -355,8 +369,8 @@ pub fn commit_changeset_transaction(
                     Option<String>,
                 ) = tx
                     .query_row(
-                        "SELECT item_type, proposed_data, target_node_id, merge_with_id FROM changeset_items WHERE id = ?1 LIMIT 1;",
-                        [&item_action.item_id],
+                        "SELECT item_type, proposed_data, target_node_id, merge_with_id FROM changeset_items WHERE id = ?1 AND changeset_id = ?2 AND status = 'pending' LIMIT 1;",
+                        params![&item_action.item_id, &input.changeset_id],
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .map_err(|err| format!("Failed fetching changeset item: {err}"))?;
@@ -522,8 +536,8 @@ pub fn commit_changeset_transaction(
                     "repoint_door" | "orphan_alert" => {
                         let door_id: Option<String> = tx
                             .query_row(
-                                "SELECT door_id FROM changeset_items WHERE id = ?1 LIMIT 1;",
-                                [&item_action.item_id],
+                                "SELECT door_id FROM changeset_items WHERE id = ?1 AND changeset_id = ?2 AND status = 'pending' LIMIT 1;",
+                                params![&item_action.item_id, &input.changeset_id],
                                 |row| row.get(0),
                             )
                             .ok()
@@ -554,11 +568,17 @@ pub fn commit_changeset_transaction(
                     _ => {}
                 }
 
-                tx.execute(
-                    "UPDATE changeset_items SET status = 'accepted', reviewed_at = datetime('now') WHERE id = ?1;",
-                    [&item_action.item_id],
+                let rows = tx.execute(
+                    "UPDATE changeset_items SET status = 'accepted', reviewed_at = datetime('now') WHERE id = ?1 AND changeset_id = ?2 AND status = 'pending';",
+                    params![&item_action.item_id, &input.changeset_id],
                 )
                 .map_err(|err| format!("Failed accepting changeset item: {err}"))?;
+                if rows == 0 {
+                    return Err(format!(
+                        "Failed to accept changeset item '{}' (no rows affected)",
+                        item_action.item_id
+                    ));
+                }
                 accepted_diff += 1;
             }
             _ => {}
@@ -1094,6 +1114,69 @@ mod tests {
 
         assert_eq!(vault_id, "vault_parent");
         assert_eq!(sub_vault_id, Some("vault_sub".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_commit_cross_changeset_item_fails() -> Result<(), Box<dyn Error>> {
+        let mut conn = setup_test_db()?;
+        let db_path = Path::new("test.db");
+
+        // Seed vault
+        conn.execute(
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_open', 'Open', 'open');",
+            [],
+        )?;
+
+        // Seed changesets cs_a and cs_b
+        conn.execute(
+            "INSERT INTO changesets (id, status, item_count) VALUES ('cs_a', 'pending', 1);",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changesets (id, status, item_count) VALUES ('cs_b', 'pending', 1);",
+            [],
+        )?;
+
+        // Seed item_b belonging to cs_b
+        conn.execute(
+            "INSERT INTO changeset_items (id, changeset_id, item_type, proposed_data, status)
+             VALUES ('item_b', 'cs_b', 'add', '{\"title\":\"Item B\",\"vaultId\":\"vault_open\"}', 'pending');",
+            [],
+        )?;
+
+        // Try to commit cs_a but passing item_b
+        let input = ChangesetCommitInput {
+            changeset_id: "cs_a".to_string(),
+            item_actions: vec![ItemReviewAction {
+                item_id: "item_b".to_string(),
+                action: "accept".to_string(),
+                edited_data: None,
+            }],
+        };
+
+        let result = commit_changeset_transaction(&mut conn, &input, db_path, None);
+        let err_msg = result
+            .err()
+            .ok_or("Expected error due to cross-changeset item boundary")?;
+        assert!(err_msg.contains("does not belong to changeset"));
+
+        // Verify item_b is still pending
+        let status: String = conn.query_row(
+            "SELECT status FROM changeset_items WHERE id = 'item_b';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(status, "pending");
+
+        // Verify no node was created
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM nodes WHERE title = 'Item B';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 0);
 
         Ok(())
     }
