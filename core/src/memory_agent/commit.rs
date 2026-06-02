@@ -38,12 +38,11 @@ fn insert_changeset_node(
 ) -> Result<String, String> {
     let parent_vault_id: Option<String> = tx
         .query_row(
-            "SELECT parent_vault_id FROM vaults WHERE id = ?1 LIMIT 1;",
+            "SELECT vault_id FROM sub_vaults WHERE id = ?1 LIMIT 1;",
             [vault_id],
             |row| row.get(0),
         )
-        .ok()
-        .flatten();
+        .ok();
 
     let (resolved_vault_id, resolved_sub_vault_id) = match parent_vault_id {
         Some(parent_id) => (parent_id, Some(vault_id.to_string())),
@@ -153,12 +152,11 @@ fn update_changeset_node(
 ) -> Result<(), String> {
     let parent_vault_id: Option<String> = tx
         .query_row(
-            "SELECT parent_vault_id FROM vaults WHERE id = ?1 LIMIT 1;",
+            "SELECT vault_id FROM sub_vaults WHERE id = ?1 LIMIT 1;",
             [vault_id],
             |row| row.get(0),
         )
-        .ok()
-        .flatten();
+        .ok();
 
     let (resolved_vault_id, resolved_sub_vault_id) = match parent_vault_id {
         Some(parent_id) => (parent_id, Some(vault_id.to_string())),
@@ -624,7 +622,6 @@ mod tests {
         let ddl = "
             CREATE TABLE IF NOT EXISTS vaults (
                 id TEXT PRIMARY KEY,
-                parent_vault_id TEXT,
                 name TEXT NOT NULL,
                 privacy_tier TEXT NOT NULL
             );
@@ -1039,6 +1036,64 @@ mod tests {
         let title: String =
             conn.query_row("SELECT title FROM nodes LIMIT 1;", [], |row| row.get(0))?;
         assert_eq!(title, "Edited Title");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_commit_node_to_subvault_resolves_correct_parent() -> Result<(), Box<dyn Error>> {
+        let mut conn = setup_test_db()?;
+        let db_path = Path::new("test.db");
+
+        // Seed parent vault
+        conn.execute(
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_parent', 'Parent Vault', 'open');",
+            [],
+        )?;
+
+        // Seed sub-vault mapping
+        conn.execute(
+            "INSERT INTO sub_vaults (id, vault_id, privacy_tier) VALUES ('vault_sub', 'vault_parent', 'open');",
+            [],
+        )?;
+
+        // Seed changeset
+        conn.execute(
+            "INSERT INTO changesets (id, session_id, status, item_count) VALUES ('cs_subvault', NULL, 'pending', 1);",
+            [],
+        )?;
+
+        // Seed changeset item targeting sub-vault
+        conn.execute(
+            "INSERT INTO changeset_items (id, changeset_id, item_type, proposed_data, status)
+             VALUES ('item_subvault', 'cs_subvault', 'add', '{\"title\":\"Subvault Item\",\"vaultId\":\"vault_sub\"}', 'pending');",
+            [],
+        )?;
+
+        let input = ChangesetCommitInput {
+            changeset_id: "cs_subvault".to_string(),
+            item_actions: vec![ItemReviewAction {
+                item_id: "item_subvault".to_string(),
+                action: "accept".to_string(),
+                edited_data: None,
+            }],
+        };
+
+        // Commit transaction
+        let result = commit_changeset_transaction(&mut conn, &input, db_path, None)?;
+        assert!(result);
+
+        // Verify the node was created with:
+        // vault_id = 'vault_parent' (parent vault)
+        // sub_vault_id = 'vault_sub' (sub vault)
+        let (vault_id, sub_vault_id): (String, Option<String>) = conn.query_row(
+            "SELECT vault_id, sub_vault_id FROM nodes WHERE title = 'Subvault Item' LIMIT 1;",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        assert_eq!(vault_id, "vault_parent");
+        assert_eq!(sub_vault_id, Some("vault_sub".to_string()));
 
         Ok(())
     }
