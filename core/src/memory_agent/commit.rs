@@ -269,18 +269,19 @@ pub fn commit_changeset_transaction(
     // 1. Redacted Lock Check
     for item_action in &input.item_actions {
         if item_action.action == "accept" || item_action.action == "edit" {
-            let parsed_props: Option<serde_json::Value> = if item_action.action == "edit" {
-                item_action.edited_data.clone()
-            } else {
-                let proposed_data_str: Option<String> = conn
-                    .query_row(
-                        "SELECT proposed_data FROM changeset_items WHERE id = ?1 LIMIT 1;",
-                        [&item_action.item_id],
-                        |row| row.get(0),
-                    )
-                    .ok();
-                proposed_data_str.and_then(|s| serde_json::from_str(&s).ok())
-            };
+            let parsed_props: Option<serde_json::Value> =
+                if let Some(ref edited) = item_action.edited_data {
+                    Some(edited.clone())
+                } else {
+                    let proposed_data_str: Option<String> = conn
+                        .query_row(
+                            "SELECT proposed_data FROM changeset_items WHERE id = ?1 LIMIT 1;",
+                            [&item_action.item_id],
+                            |row| row.get(0),
+                        )
+                        .ok();
+                    proposed_data_str.and_then(|s| serde_json::from_str(&s).ok())
+                };
 
             if let Some(props) = parsed_props {
                 let target_vault_id = props
@@ -362,11 +363,8 @@ pub fn commit_changeset_transaction(
                     )
                     .map_err(|err| format!("Failed fetching changeset item: {err}"))?;
 
-                let parsed_props = if item_action.action == "edit" {
-                    item_action
-                        .edited_data
-                        .clone()
-                        .ok_or_else(|| "Missing edited data for edit action".to_string())?
+                let parsed_props = if let Some(ref edited) = item_action.edited_data {
+                    edited.clone()
                 } else {
                     serde_json::from_str(&proposed_data)
                         .map_err(|err| format!("Failed to parse proposed properties: {err}"))?
@@ -994,6 +992,53 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(count, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_commit_accept_with_edited_data_succeeds() -> Result<(), Box<dyn Error>> {
+        let mut conn = setup_test_db()?;
+        let db_path = Path::new("test.db");
+
+        // Seed vaults and changeset
+        conn.execute(
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_open', 'Open', 'open');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changesets (id, session_id, status, item_count) VALUES ('cs_accept_edit', NULL, 'pending', 1);",
+            [],
+        )?;
+
+        // Seed item with original proposed data
+        conn.execute(
+            "INSERT INTO changeset_items (id, changeset_id, item_type, proposed_data, status)
+             VALUES ('item_accept_edit', 'cs_accept_edit', 'add', '{\"title\":\"Original Title\",\"vaultId\":\"vault_open\"}', 'pending');",
+            [],
+        )?;
+
+        // Action is 'accept' but edited_data is populated with different values
+        let input = ChangesetCommitInput {
+            changeset_id: "cs_accept_edit".to_string(),
+            item_actions: vec![ItemReviewAction {
+                item_id: "item_accept_edit".to_string(),
+                action: "accept".to_string(),
+                edited_data: Some(serde_json::json!({
+                    "title": "Edited Title",
+                    "vaultId": "vault_open"
+                })),
+            }],
+        };
+
+        // Try to commit - should succeed and use the edited title
+        let result = commit_changeset_transaction(&mut conn, &input, db_path, None)?;
+        assert!(result);
+
+        // Verify the node is actually created with 'Edited Title', NOT 'Original Title'
+        let title: String =
+            conn.query_row("SELECT title FROM nodes LIMIT 1;", [], |row| row.get(0))?;
+        assert_eq!(title, "Edited Title");
 
         Ok(())
     }
