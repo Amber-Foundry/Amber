@@ -282,7 +282,7 @@ export default function DiffPanel({
 
   // Prefetch first item of changesets to build friendly human-readable names
   useEffect(() => {
-    const active = true;
+    let active = true;
     const fetchFriendlyNames = async () => {
       const names: Record<string, string> = {};
       for (const cs of changesets) {
@@ -320,6 +320,9 @@ export default function DiffPanel({
     if (changesets.length > 0) {
       void fetchFriendlyNames();
     }
+    return () => {
+      active = false;
+    };
   }, [changesets, getItemTitle]);
 
   // Filter Changesets
