@@ -523,3 +523,74 @@ fn test_enforce_backup_retention_disk_cap() -> Result<(), Box<dyn Error>> {
     let _ = fs::remove_dir_all(&test_backups_dir);
     Ok(())
 }
+
+#[test]
+fn test_changeset_commit_repoint_door_missing_fields_fail() -> Result<(), Box<dyn Error>> {
+    let (mut conn, db_path) = setup_test_db()?;
+
+    // Pre-insert dummy node and door to satisfy foreign key constraints
+    conn.execute("INSERT INTO nodes (id, vault_id, title, summary, detail, node_type) VALUES ('some_node', 'vault_personal', 'Title', 'Summary', 'Detail', 'concept');", [])?;
+    conn.execute("INSERT INTO doors (id, source_node_id, target_node_id, status) VALUES ('some_door', 'some_node', NULL, 'orphaned');", [])?;
+
+    // 1. Missing door_id case
+    let changeset_id = "cs_missing_door".to_string();
+    conn.execute(
+        "INSERT INTO changesets (id, session_id, status, item_count, accepted_count, dismissed_count) VALUES (?1, 'test-session', 'pending', 1, 0, 0);",
+        [&changeset_id],
+    )?;
+    let item_id_1 = "csi_missing_door".to_string();
+    // target_node_id is provided but door_id is NULL
+    conn.execute(
+        "INSERT INTO changeset_items (id, changeset_id, item_type, door_id, target_node_id, proposed_data, status) VALUES (?1, ?2, 'repoint_door', NULL, 'some_node', '{}', 'pending');",
+        [&item_id_1, &changeset_id],
+    )?;
+
+    let input_1 = ChangesetCommitInput {
+        changeset_id: changeset_id.clone(),
+        item_actions: vec![ItemReviewAction {
+            item_id: item_id_1,
+            action: "accept".to_string(),
+            edited_data: None,
+        }],
+    };
+
+    let result_1 = commit_changeset_transaction(&mut conn, &input_1, &db_path, None);
+    assert!(result_1.is_err(), "Expected failure due to missing door_id");
+    let err_msg_1 = match result_1 {
+        Err(e) => e,
+        Ok(_) => return Err("Expected Err, got Ok".into()),
+    };
+    assert!(err_msg_1.contains("Missing door_id"));
+
+    // 2. Missing target_node_id case
+    let item_id_2 = "csi_missing_target".to_string();
+    // door_id is provided but target_node_id is NULL
+    conn.execute(
+        "INSERT INTO changeset_items (id, changeset_id, item_type, door_id, target_node_id, proposed_data, status) VALUES (?1, ?2, 'repoint_door', 'some_door', NULL, '{}', 'pending');",
+        [&item_id_2, &changeset_id],
+    )?;
+
+    let input_2 = ChangesetCommitInput {
+        changeset_id,
+        item_actions: vec![ItemReviewAction {
+            item_id: item_id_2,
+            action: "accept".to_string(),
+            edited_data: None,
+        }],
+    };
+
+    let result_2 = commit_changeset_transaction(&mut conn, &input_2, &db_path, None);
+    assert!(
+        result_2.is_err(),
+        "Expected failure due to missing target_node_id"
+    );
+    let err_msg_2 = match result_2 {
+        Err(e) => e,
+        Ok(_) => return Err("Expected Err, got Ok".into()),
+    };
+    assert!(err_msg_2.contains("Missing target_node_id"));
+
+    let parent_dir = db_path.parent().ok_or("No parent dir")?;
+    let _ = fs::remove_dir_all(parent_dir);
+    Ok(())
+}

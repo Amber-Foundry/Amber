@@ -510,17 +510,27 @@ pub fn commit_changeset_transaction(
                             .ok()
                             .flatten();
 
-                        if let Some(ref did) = door_id {
-                            if let Some(ref nid) = target_node_id {
-                                tx.execute(
-                                    "UPDATE doors SET target_node_id = ?1, status = 'active', updated_at = datetime('now') WHERE id = ?2;",
-                                    params![nid, did],
-                                )
-                                .map_err(|err| format!("Failed repointing door: {err}"))?;
+                        let did = door_id.ok_or_else(|| {
+                            format!(
+                                "Missing door_id for changeset item '{}' of type '{}'",
+                                item_action.item_id, item_type
+                            )
+                        })?;
 
-                                // Backlink triggers will auto-sync backlinks
-                            }
-                        }
+                        let nid = target_node_id.as_ref().ok_or_else(|| {
+                            format!(
+                                "Missing target_node_id for changeset item '{}' of type '{}'",
+                                item_action.item_id, item_type
+                            )
+                        })?;
+
+                        tx.execute(
+                            "UPDATE doors SET target_node_id = ?1, status = 'active', updated_at = datetime('now') WHERE id = ?2;",
+                            params![nid, did],
+                        )
+                        .map_err(|err| format!("Failed repointing door: {err}"))?;
+
+                        // Backlink triggers will auto-sync backlinks
                     }
                     _ => {}
                 }
