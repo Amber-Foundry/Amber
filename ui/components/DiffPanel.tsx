@@ -273,7 +273,7 @@ export default function DiffPanel({
     const data = parseJSON(item.proposedData);
     if (
       item.itemType.toLowerCase() === "repoint_door" ||
-      item.itemType.toLowerCase() === "orphan"
+      item.itemType.toLowerCase() === "orphan_alert"
     ) {
       return `Repoint door #${item.doorId || "unknown"}`;
     }
@@ -350,7 +350,11 @@ export default function DiffPanel({
       detail.includes(searchQuery.toLowerCase());
 
     const matchCategory =
-      !selectedCategory || item.itemType.toLowerCase() === selectedCategory.toLowerCase();
+      !selectedCategory ||
+      (selectedCategory === "repoint_door"
+        ? item.itemType.toLowerCase() === "repoint_door" ||
+          item.itemType.toLowerCase() === "orphan_alert"
+        : item.itemType.toLowerCase() === selectedCategory.toLowerCase());
 
     return matchSearch && matchCategory;
   });
@@ -489,7 +493,7 @@ export default function DiffPanel({
                 DELETE
               </button>
               <button
-                className={`category-filter-btn ${selectedCategory === "repoint_door" || selectedCategory === "orphan" ? "active" : ""}`}
+                className={`category-filter-btn ${selectedCategory === "repoint_door" || selectedCategory === "orphan_alert" ? "active" : ""}`}
                 onClick={() => setSelectedCategory("repoint_door")}
               >
                 ORPHAN

@@ -100,7 +100,7 @@ export default function ItemActions({ item, onCommitItem }: ItemActionsProps) {
       </button>
 
       {item.itemType.toLowerCase() !== "delete" &&
-        item.itemType.toLowerCase() !== "orphan" &&
+        item.itemType.toLowerCase() !== "orphan_alert" &&
         item.itemType.toLowerCase() !== "repoint_door" && (
           <button
             className="action-btn edit-btn"

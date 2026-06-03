@@ -97,7 +97,8 @@ export default function DiffRow({ item, onCommitItem }: DiffRowProps) {
   if (typeUpper === "UPDATE") badgeClass = "badge-update";
   else if (typeUpper === "MERGE") badgeClass = "badge-merge";
   else if (typeUpper === "DELETE") badgeClass = "badge-delete";
-  else if (typeUpper === "REPOINT_DOOR" || typeUpper === "ORPHAN") badgeClass = "badge-orphan";
+  else if (typeUpper === "REPOINT_DOOR" || typeUpper === "ORPHAN_ALERT")
+    badgeClass = "badge-orphan";
 
   // Safe Tag Diff calculation
   const getTagsDiff = (oldTagsList?: string[], newTagsList?: string[]) => {
@@ -156,7 +157,7 @@ export default function DiffRow({ item, onCommitItem }: DiffRowProps) {
       <div className="diff-row-header">
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <span className={`changeset-item-badge ${badgeClass}`}>
-            {typeUpper === "REPOINT_DOOR" ? "ORPHAN" : typeUpper}
+            {typeUpper === "REPOINT_DOOR" || typeUpper === "ORPHAN_ALERT" ? "ORPHAN" : typeUpper}
           </span>
           <span className="changeset-item-status">Status: {item.status}</span>
         </div>
@@ -411,7 +412,7 @@ export default function DiffRow({ item, onCommitItem }: DiffRowProps) {
         )}
 
         {/* REPOINT_DOOR / ORPHAN OPERATION */}
-        {(typeUpper === "REPOINT_DOOR" || typeUpper === "ORPHAN") && (
+        {(typeUpper === "REPOINT_DOOR" || typeUpper === "ORPHAN_ALERT") && (
           <div className="diff-card proposed" style={{ gridColumn: "span 2" }}>
             <div
               className="diff-card-label"
