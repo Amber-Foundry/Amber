@@ -273,6 +273,7 @@ pub struct Changeset {
     pub model_used: Option<String>,
     pub created_at: String,
     pub reviewed_at: Option<String>,
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

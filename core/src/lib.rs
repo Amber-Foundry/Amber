@@ -583,26 +583,7 @@ pub async fn execute_memory_extraction_pipeline(
                 .map_err(|err| format!("Failed to commit transaction: {err}"))?;
 
             // Retrieve the newly persisted empty changeset
-            let cs = conn.query_row(
-                "SELECT id, session_id, status, item_count, accepted_count, dismissed_count, model_used, created_at, reviewed_at
-                 FROM changesets
-                 WHERE id = ?1 LIMIT 1;",
-                [changeset_id],
-                |row| {
-                    Ok(Changeset {
-                        id: row.get(0)?,
-                        session_id: row.get(1)?,
-                        status: row.get(2)?,
-                        item_count: row.get(3)?,
-                        accepted_count: row.get(4)?,
-                        dismissed_count: row.get(5)?,
-                        model_used: row.get(6)?,
-                        created_at: row.get(7)?,
-                        reviewed_at: row.get(8)?,
-                    })
-                },
-            )
-            .map_err(|err| format!("Failed to retrieve persisted empty changeset: {err}"))?;
+            let cs = memory_agent::persistence::get_changeset_by_id(&conn, &changeset_id)?;
 
             return Ok(cs);
         }
@@ -628,26 +609,7 @@ pub async fn execute_memory_extraction_pipeline(
     };
 
     // 8. Retrieve the newly persisted Changeset (reusing same connection)
-    let cs = conn.query_row(
-        "SELECT id, session_id, status, item_count, accepted_count, dismissed_count, model_used, created_at, reviewed_at
-         FROM changesets
-         WHERE id = ?1 LIMIT 1;",
-        [changeset_id],
-        |row| {
-            Ok(Changeset {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                status: row.get(2)?,
-                item_count: row.get(3)?,
-                accepted_count: row.get(4)?,
-                dismissed_count: row.get(5)?,
-                model_used: row.get(6)?,
-                created_at: row.get(7)?,
-                reviewed_at: row.get(8)?,
-            })
-        },
-    )
-    .map_err(|err| format!("Failed to retrieve persisted changeset: {err}"))?;
+    let cs = memory_agent::persistence::get_changeset_by_id(&conn, &changeset_id)?;
 
     Ok(cs)
 }

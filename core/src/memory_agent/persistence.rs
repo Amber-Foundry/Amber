@@ -65,33 +65,99 @@ pub fn count_pending_items(conn: &Connection) -> Result<i64, String> {
     .map_err(|err| format!("Failed counting pending changeset items: {err}"))
 }
 
+fn map_changeset_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<crate::ipc_types::Changeset> {
+    let id: String = row.get(0)?;
+    let session_id: Option<String> = row.get(1)?;
+    let status: String = row.get(2)?;
+    let item_count: i64 = row.get(3)?;
+    let accepted_count: i64 = row.get(4)?;
+    let dismissed_count: i64 = row.get(5)?;
+    let model_used: Option<String> = row.get(6)?;
+    let created_at: String = row.get(7)?;
+    let reviewed_at: Option<String> = row.get(8)?;
+
+    let item_type: Option<String> = row.get(9)?;
+    let door_id: Option<String> = row.get(10)?;
+    let proposed_data: Option<String> = row.get(11)?;
+
+    let summary = if let Some(item_type) = item_type {
+        let item_type_lower = item_type.to_lowercase();
+        let primary_title = if item_type_lower == "repoint_door"
+            || item_type_lower == "orphan_alert"
+        {
+            format!(
+                "Repoint door #{}",
+                door_id.unwrap_or_else(|| "unknown".to_string())
+            )
+        } else if let Some(ref data_str) = proposed_data {
+            let parsed: serde_json::Value = serde_json::from_str(data_str).unwrap_or_default();
+            parsed
+                .get("title")
+                .or_else(|| parsed.get("summary"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("Proposal #{}", id.chars().take(8).collect::<String>()))
+        } else {
+            format!("Proposal #{}", id.chars().take(8).collect::<String>())
+        };
+
+        if item_count > 1 {
+            let others = item_count - 1;
+            Some(format!(
+                "{} & {} other{}",
+                primary_title,
+                others,
+                if others > 1 { "s" } else { "" }
+            ))
+        } else {
+            Some(primary_title)
+        }
+    } else {
+        Some(format!(
+            "Empty Changeset #{}",
+            id.chars().take(8).collect::<String>()
+        ))
+    };
+
+    Ok(crate::ipc_types::Changeset {
+        id,
+        session_id,
+        status,
+        item_count,
+        accepted_count,
+        dismissed_count,
+        model_used,
+        created_at,
+        reviewed_at,
+        summary,
+    })
+}
+
 /// Lists all pending changesets ordered by creation time descending.
 pub fn list_pending_changesets(
     conn: &Connection,
 ) -> Result<Vec<crate::ipc_types::Changeset>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, session_id, status, item_count, accepted_count, dismissed_count, model_used, created_at, reviewed_at
-             FROM changesets
-             WHERE status = 'pending'
-             ORDER BY created_at DESC;",
+            "SELECT c.id, c.session_id, c.status, c.item_count, c.accepted_count, c.dismissed_count, c.model_used, c.created_at, c.reviewed_at,
+                    ci.item_type, ci.door_id, ci.proposed_data
+             FROM changesets c
+             LEFT JOIN changeset_items ci ON ci.id = (
+                 SELECT ci2.id
+                 FROM changeset_items ci2
+                 WHERE ci2.changeset_id = c.id
+                 ORDER BY CASE WHEN ci2.item_type IN ('add', 'update', 'merge', 'ADD', 'UPDATE', 'MERGE') THEN 0 ELSE 1 END ASC,
+                          ci2.sort_order ASC,
+                          ci2.id ASC
+                 LIMIT 1
+             )
+             WHERE c.status = 'pending'
+             ORDER BY c.created_at DESC;",
         )
         .map_err(|err| format!("Failed to prepare list pending changesets query: {err}"))?;
 
     let rows = stmt
-        .query_map([], |row| {
-            Ok(crate::ipc_types::Changeset {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                status: row.get(2)?,
-                item_count: row.get(3)?,
-                accepted_count: row.get(4)?,
-                dismissed_count: row.get(5)?,
-                model_used: row.get(6)?,
-                created_at: row.get(7)?,
-                reviewed_at: row.get(8)?,
-            })
-        })
+        .query_map([], map_changeset_row)
         .map_err(|err| format!("Failed to execute list pending changesets query: {err}"))?;
 
     let mut list = Vec::new();
@@ -274,27 +340,25 @@ pub fn list_resolved_changesets(
 ) -> Result<Vec<crate::ipc_types::Changeset>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, session_id, status, item_count, accepted_count, dismissed_count, model_used, created_at, reviewed_at
-             FROM changesets
-             WHERE status IN ('accepted', 'dismissed', 'partial')
-             ORDER BY reviewed_at DESC;",
+            "SELECT c.id, c.session_id, c.status, c.item_count, c.accepted_count, c.dismissed_count, c.model_used, c.created_at, c.reviewed_at,
+                    ci.item_type, ci.door_id, ci.proposed_data
+             FROM changesets c
+             LEFT JOIN changeset_items ci ON ci.id = (
+                 SELECT ci2.id
+                 FROM changeset_items ci2
+                 WHERE ci2.changeset_id = c.id
+                 ORDER BY CASE WHEN ci2.item_type IN ('add', 'update', 'merge', 'ADD', 'UPDATE', 'MERGE') THEN 0 ELSE 1 END ASC,
+                          ci2.sort_order ASC,
+                          ci2.id ASC
+                 LIMIT 1
+             )
+             WHERE c.status IN ('accepted', 'dismissed', 'partial')
+             ORDER BY c.reviewed_at DESC;",
         )
         .map_err(|err| format!("Failed to prepare list resolved changesets query: {err}"))?;
 
     let rows = stmt
-        .query_map([], |row| {
-            Ok(crate::ipc_types::Changeset {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                status: row.get(2)?,
-                item_count: row.get(3)?,
-                accepted_count: row.get(4)?,
-                dismissed_count: row.get(5)?,
-                model_used: row.get(6)?,
-                created_at: row.get(7)?,
-                reviewed_at: row.get(8)?,
-            })
-        })
+        .query_map([], map_changeset_row)
         .map_err(|err| format!("Failed to execute list resolved changesets query: {err}"))?;
 
     let mut list = Vec::new();
@@ -302,6 +366,31 @@ pub fn list_resolved_changesets(
         list.push(r.map_err(|e| format!("Failed decoding changeset row: {e}"))?);
     }
     Ok(list)
+}
+
+/// Fetches a single changeset by ID with its summary.
+pub fn get_changeset_by_id(
+    conn: &Connection,
+    changeset_id: &str,
+) -> Result<crate::ipc_types::Changeset, String> {
+    conn.query_row(
+        "SELECT c.id, c.session_id, c.status, c.item_count, c.accepted_count, c.dismissed_count, c.model_used, c.created_at, c.reviewed_at,
+                ci.item_type, ci.door_id, ci.proposed_data
+         FROM changesets c
+         LEFT JOIN changeset_items ci ON ci.id = (
+             SELECT ci2.id
+             FROM changeset_items ci2
+             WHERE ci2.changeset_id = c.id
+             ORDER BY CASE WHEN ci2.item_type IN ('add', 'update', 'merge', 'ADD', 'UPDATE', 'MERGE') THEN 0 ELSE 1 END ASC,
+                      ci2.sort_order ASC,
+                      ci2.id ASC
+             LIMIT 1
+         )
+         WHERE c.id = ?1 LIMIT 1;",
+        [changeset_id],
+        map_changeset_row,
+    )
+    .map_err(|err| format!("Failed to fetch changeset by ID: {err}"))
 }
 
 #[cfg(test)]
@@ -416,6 +505,10 @@ mod tests {
         assert_eq!(changesets[0].status, "pending");
         assert_eq!(changesets[0].item_count, 2);
         assert_eq!(changesets[0].model_used, Some("llama3".to_string()));
+        assert_eq!(
+            changesets[0].summary,
+            Some("Rust fact & 1 other".to_string())
+        );
 
         // 5. Verify list changeset items
         let items = list_changeset_items(&conn, &cs_id)?;

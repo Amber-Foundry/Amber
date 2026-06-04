@@ -10,4 +10,5 @@ export type Changeset = {
   modelUsed: string | null;
   createdAt: string;
   reviewedAt: string | null;
+  summary: string | null;
 };

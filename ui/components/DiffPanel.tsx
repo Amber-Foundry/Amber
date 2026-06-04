@@ -33,7 +33,6 @@ export default function DiffPanel({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [changesets, setChangesets] = useState<Changeset[]>([]);
-  const [changesetNames, setChangesetNames] = useState<Record<string, string>>({});
   const [items, setItems] = useState<ChangesetItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -280,66 +279,6 @@ export default function DiffPanel({
     return data.title || data.summary || `Proposal #${item.id.slice(0, 8)}`;
   }, []);
 
-  // Prefetch first item of changesets to build friendly human-readable names
-  useEffect(() => {
-    let active = true;
-    const fetchFriendlyNames = async () => {
-      try {
-        const results = await Promise.all(
-          changesets.map(async (cs) => {
-            try {
-              const itemsList = await listChangesetItems(cs.id);
-              return { id: cs.id, itemsList, error: null };
-            } catch (err) {
-              return { id: cs.id, itemsList: [], error: err };
-            }
-          })
-        );
-
-        if (!active) return;
-
-        const names: Record<string, string> = {};
-        for (const { id, itemsList, error } of results) {
-          if (error) {
-            console.error("Failed to load items for changeset friendly name:", error);
-            names[id] = `Changeset #${id.slice(0, 8)}`;
-          } else if (itemsList.length > 0) {
-            // Find content proposals first (ADD, UPDATE, MERGE)
-            const contentItem = itemsList.find(
-              (i) =>
-                i.itemType.toLowerCase() === "add" ||
-                i.itemType.toLowerCase() === "update" ||
-                i.itemType.toLowerCase() === "merge"
-            );
-            const primaryItem = contentItem || itemsList[0];
-            const primaryTitle = getItemTitle(primaryItem);
-
-            if (itemsList.length > 1) {
-              names[id] = `${primaryTitle} & ${itemsList.length - 1} other${
-                itemsList.length - 1 > 1 ? "s" : ""
-              }`;
-            } else {
-              names[id] = primaryTitle;
-            }
-          } else {
-            names[id] = `Empty Changeset #${id.slice(0, 8)}`;
-          }
-        }
-
-        setChangesetNames(names);
-      } catch (err) {
-        console.error("Failed to batch load friendly names:", err);
-      }
-    };
-
-    if (changesets.length > 0) {
-      void fetchFriendlyNames();
-    }
-    return () => {
-      active = false;
-    };
-  }, [changesets, getItemTitle]);
-
   // Filter Changesets
   const filteredChangesets = changesets.filter((cs) => {
     const matchSearch =
@@ -561,7 +500,7 @@ export default function DiffPanel({
                             className="changeset-card-id"
                             style={{ fontSize: "0.95rem", fontWeight: "700" }}
                           >
-                            {changesetNames[cs.id] || `Changeset #${cs.id.slice(0, 8)}`}
+                            {cs.summary || `Changeset #${cs.id.slice(0, 8)}`}
                           </span>
                           <span
                             className={`changeset-card-status status-${cs.status.toLowerCase()}`}
