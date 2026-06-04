@@ -284,12 +284,26 @@ export default function DiffPanel({
   useEffect(() => {
     let active = true;
     const fetchFriendlyNames = async () => {
-      const names: Record<string, string> = {};
-      for (const cs of changesets) {
-        if (!active) break;
-        try {
-          const itemsList = await listChangesetItems(cs.id);
-          if (itemsList.length > 0) {
+      try {
+        const results = await Promise.all(
+          changesets.map(async (cs) => {
+            try {
+              const itemsList = await listChangesetItems(cs.id);
+              return { id: cs.id, itemsList, error: null };
+            } catch (err) {
+              return { id: cs.id, itemsList: [], error: err };
+            }
+          })
+        );
+
+        if (!active) return;
+
+        const names: Record<string, string> = {};
+        for (const { id, itemsList, error } of results) {
+          if (error) {
+            console.error("Failed to load items for changeset friendly name:", error);
+            names[id] = `Changeset #${id.slice(0, 8)}`;
+          } else if (itemsList.length > 0) {
             // Find content proposals first (ADD, UPDATE, MERGE)
             const contentItem = itemsList.find(
               (i) =>
@@ -301,23 +315,23 @@ export default function DiffPanel({
             const primaryTitle = getItemTitle(primaryItem);
 
             if (itemsList.length > 1) {
-              names[cs.id] =
-                `${primaryTitle} & ${itemsList.length - 1} other${itemsList.length - 1 > 1 ? "s" : ""}`;
+              names[id] = `${primaryTitle} & ${itemsList.length - 1} other${
+                itemsList.length - 1 > 1 ? "s" : ""
+              }`;
             } else {
-              names[cs.id] = primaryTitle;
+              names[id] = primaryTitle;
             }
           } else {
-            names[cs.id] = `Empty Changeset #${cs.id.slice(0, 8)}`;
+            names[id] = `Empty Changeset #${id.slice(0, 8)}`;
           }
-        } catch (err) {
-          console.error("Failed to load items for changeset friendly name:", err);
-          names[cs.id] = `Changeset #${cs.id.slice(0, 8)}`;
         }
-      }
-      if (active) {
+
         setChangesetNames(names);
+      } catch (err) {
+        console.error("Failed to batch load friendly names:", err);
       }
     };
+
     if (changesets.length > 0) {
       void fetchFriendlyNames();
     }
