@@ -617,8 +617,10 @@ export default function DiffPanel({
                           >
                             <span>
                               📂 backups/mindvault-pre-changeset-
-                              {parseSQLiteDate(cs.reviewedAt || cs.createdAt).getTime()}
-                              .db
+                              {Math.floor(
+                                parseSQLiteDate(cs.reviewedAt || cs.createdAt).getTime() / 1000
+                              )}
+                              *.db
                             </span>
                           </div>
                         )}

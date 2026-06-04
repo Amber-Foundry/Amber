@@ -801,8 +801,7 @@ pub fn minimal_pre_write_backup(
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| format!("System clock before UNIX_EPOCH: {err}"))?
-        .as_secs()
-        * 1000;
+        .as_millis();
     let backup_path = backups_dir.join(format!("mindvault-pre-{reason}-{now_unix}.db"));
 
     let mut backup_conn = Connection::open(&backup_path)
