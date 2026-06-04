@@ -349,9 +349,10 @@ fn test_changeset_commit_repoint_door_resolves_orphan() -> Result<(), Box<dyn Er
     conn.execute("INSERT INTO nodes (id, vault_id, title, summary, detail, node_type) VALUES ('node_src', 'vault_personal', 'Source', 'Summary', 'Detail', 'concept');", [])?;
     conn.execute("INSERT INTO nodes (id, vault_id, title, summary, detail, node_type) VALUES ('node_dest', 'vault_personal', 'Dest', 'Summary', 'Detail', 'concept');", [])?;
 
-    // Pre-insert door
+    // Pre-insert door with orphan properties
     conn.execute(
-        "INSERT INTO doors (id, source_node_id, target_node_id, status) VALUES ('door_test', 'node_src', NULL, 'orphaned');",
+        "INSERT INTO doors (id, source_node_id, target_node_id, status, orphan_reason, orphan_since)
+         VALUES ('door_test', 'node_src', NULL, 'orphaned', 'target_deleted', '2026-06-04 12:00:00');",
         [],
     )?;
 
@@ -379,13 +380,15 @@ fn test_changeset_commit_repoint_door_resolves_orphan() -> Result<(), Box<dyn Er
     let ok = commit_changeset_transaction(&mut conn, &input, &db_path, None)?;
     assert!(ok);
 
-    let (target_node_id, status): (Option<String>, String) = conn.query_row(
-        "SELECT target_node_id, status FROM doors WHERE id = 'door_test';",
+    let (target_node_id, status, orphan_reason, orphan_since): (Option<String>, String, Option<String>, Option<String>) = conn.query_row(
+        "SELECT target_node_id, status, orphan_reason, orphan_since FROM doors WHERE id = 'door_test';",
         [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     assert_eq!(target_node_id, Some("node_dest".to_string()));
     assert_eq!(status, "active");
+    assert!(orphan_reason.is_none());
+    assert!(orphan_since.is_none());
 
     let parent_dir = db_path.parent().ok_or("No parent dir")?;
     let _ = fs::remove_dir_all(parent_dir);

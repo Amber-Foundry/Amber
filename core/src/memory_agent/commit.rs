@@ -767,11 +767,18 @@ pub fn commit_changeset_transaction(
                             )
                         })?;
 
-                        let rows_affected = tx.execute(
-                            "UPDATE doors SET target_node_id = ?1, status = 'active', updated_at = datetime('now') WHERE id = ?2;",
-                            params![nid, did],
-                        )
-                        .map_err(|err| format!("Failed repointing door: {err}"))?;
+                        let rows_affected = tx
+                            .execute(
+                                "UPDATE doors
+                             SET target_node_id = ?1,
+                                 status = 'active',
+                                 orphan_reason = NULL,
+                                 orphan_since = NULL,
+                                 updated_at = datetime('now')
+                             WHERE id = ?2;",
+                                params![nid, did],
+                            )
+                            .map_err(|err| format!("Failed repointing door: {err}"))?;
                         if rows_affected == 0 {
                             return Err(format!("Door '{}' not found (0 rows updated)", did));
                         }
