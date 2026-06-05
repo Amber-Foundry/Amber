@@ -42,6 +42,8 @@ export default function ItemActions({ item, onCommitItem }: ItemActionsProps) {
     }
   };
 
+  const [validationError, setValidationError] = useState<string | null>(null);
+
   const handleOpenEdit = () => {
     const data = parseJSON(item.proposedData);
     setEditForm({
@@ -51,13 +53,20 @@ export default function ItemActions({ item, onCommitItem }: ItemActionsProps) {
       tags: (data.tags || []).join(", "),
       vaultId: data.vaultId || "",
     });
+    setValidationError(null);
     setIsEditing(true);
   };
 
   const handleSaveEdit = () => {
+    const trimmedTitle = editForm.title.trim();
+    if (!trimmedTitle) {
+      setValidationError("Title is required and cannot be empty.");
+      return;
+    }
+
     const updatedData = {
       ...parseJSON(item.proposedData),
-      title: editForm.title.trim() || undefined,
+      title: trimmedTitle,
       summary: editForm.summary.trim() || undefined,
       detail: editForm.detail.trim(),
       tags: editForm.tags
@@ -151,12 +160,39 @@ export default function ItemActions({ item, onCommitItem }: ItemActionsProps) {
             <div className="diff-edit-modal" onClick={(e) => e.stopPropagation()}>
               <h3 style={{ margin: "0 0 16px 0", color: "#bc6c25" }}>Edit Proposed Data</h3>
 
+              {validationError && (
+                <div className="edit-validation-error">
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{ flexShrink: 0 }}
+                  >
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                  </svg>
+                  {validationError}
+                </div>
+              )}
+
               <div className="edit-form-group">
                 <label>Title</label>
                 <input
                   type="text"
                   value={editForm.title}
-                  onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+                  onChange={(e) => {
+                    setEditForm({ ...editForm, title: e.target.value });
+                    if (e.target.value.trim()) {
+                      setValidationError(null);
+                    }
+                  }}
+                  className={validationError ? "has-error" : ""}
                   placeholder="Node Title"
                 />
               </div>

@@ -141,3 +141,35 @@
   box-shadow: 0 4px 12px rgba(188, 108, 37, 0.2);
   transform: translateY(-1px);
 }
+
+.edit-validation-error {
+  padding: 8px 12px;
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.2);
+  border-radius: 8px;
+  color: #dc2626;
+  font-size: 0.85rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  animation: shake 0.2s ease-in-out;
+}
+
+.edit-form-group input.has-error {
+  border-color: #dc2626;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12);
+}
+
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
