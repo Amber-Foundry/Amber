@@ -51,7 +51,7 @@ export default function ItemActions({ item, onCommitItem }: ItemActionsProps) {
       summary: data.summary || "",
       detail: data.detail || "",
       tags: (data.tags || []).join(", "),
-      vaultId: data.vaultId || "",
+      vaultId: data.vaultId || data.vault_id || "",
     });
     setValidationError(null);
     setIsEditing(true);
