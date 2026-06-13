@@ -114,6 +114,7 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({
                 <button
                   type="button"
                   className="chat-bubble-edit-btn cancel"
+                  aria-label="Cancel edit"
                   onClick={onCancelEdit}
                 >
                   Cancel
@@ -121,6 +122,7 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({
                 <button
                   type="button"
                   className="chat-bubble-edit-btn save"
+                  aria-label="Save edit"
                   onClick={() => void onSaveEdit(index, editingContent)}
                 >
                   Save
@@ -147,6 +149,9 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({
                 <button
                   type="button"
                   className="chat-show-more-btn"
+                  aria-label={
+                    isCollapsed ? "Show more message content" : "Show less message content"
+                  }
                   onClick={() => setIsCollapsed(!isCollapsed)}
                 >
                   {isCollapsed ? "Show more" : "Show less"}
@@ -163,6 +168,7 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({
               className="chat-action-btn"
               onClick={() => onCopyMessage(message.content, message.id)}
               title="Copy message"
+              aria-label={isCopied ? "Copied message" : "Copy message"}
             >
               {isCopied ? (
                 <svg
@@ -198,6 +204,7 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({
               className="chat-action-btn"
               onClick={() => onRetryMessage(index)}
               title="Retry response"
+              aria-label="Retry response"
             >
               <svg
                 width="15"
@@ -222,6 +229,7 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({
               className="chat-action-btn"
               onClick={() => onCopyMessage(message.content, message.id)}
               title="Copy message"
+              aria-label={isCopied ? "Copied message" : "Copy message"}
             >
               {isCopied ? (
                 <svg
@@ -257,6 +265,7 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({
               className="chat-action-btn"
               onClick={() => onStartEdit(message.id, message.content)}
               title="Edit message"
+              aria-label="Edit message"
             >
               <svg
                 width="15"
@@ -277,6 +286,7 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({
               className="chat-action-btn"
               onClick={() => onRetryMessage(index)}
               title="Retry response"
+              aria-label="Retry response"
             >
               <svg
                 width="15"

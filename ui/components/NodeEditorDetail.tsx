@@ -194,6 +194,7 @@ export default function NodeEditorDetail({
             className={`charts-toggle-btn ${chartsEnabled ? "active" : ""}`}
             onClick={() => setNodeEditorChartsEnabled(!chartsEnabled)}
             title="Toggle interactive charts render workspace assets"
+            aria-label="Toggle interactive charts"
           >
             📊 Charts: {chartsEnabled ? "ON" : "OFF"}
           </button>
@@ -203,6 +204,7 @@ export default function NodeEditorDetail({
               className="detail-expand-btn"
               onClick={onExpand}
               title="Expand editor to full center canvas focus"
+              aria-label="Expand editor"
             >
               <span className="expand-icon">⛶</span> Focus Canvas
             </button>
