@@ -26,7 +26,7 @@ import {
 import { chatWithScope } from "../services/nodes";
 import { getSetting } from "../services/settings";
 import { listVaults } from "../services/vaults";
-import { extractMemoryIfReady } from "../services/memoryAgent";
+import { extractMemoryIfReady, extractMemoryForce } from "../services/memoryAgent";
 import {
   getLlmModel,
   getLlmProvider,
@@ -344,6 +344,8 @@ function ChatPanel({
   const setChatChartsEnabled = useUIStore((state) => state.setChatChartsEnabled);
   const [showChartsConfirmModal, setShowChartsConfirmModal] = useState(false);
 
+  const [isExtracting, setIsExtracting] = useState(false);
+
   useEffect(() => {
     onModalToggle?.(showChartsConfirmModal);
   }, [showChartsConfirmModal, onModalToggle]);
@@ -358,6 +360,39 @@ function ChatPanel({
       setShowChartsConfirmModal(true);
     }
   }, [chartsEnabled, setChatChartsEnabled]);
+
+  async function resolveLlmConfig(): Promise<{
+    provider: string;
+    endpoint: string;
+    model: string;
+  }> {
+    const provider = getLlmProvider();
+    let endpoint = "";
+    if (provider === "lmstudio") {
+      endpoint = getLmStudioEndpoint();
+    } else if (provider === "ollama") {
+      endpoint = getOllamaEndpoint();
+    } else if (["openai", "anthropic", "google", "xai"].includes(provider)) {
+      endpoint = await getApiKey(provider);
+    }
+    const model = getLlmModel();
+    return { provider, endpoint, model };
+  }
+
+  const handleForceExtract = useCallback(async () => {
+    if (isExtracting || isSending) return;
+    setIsExtracting(true);
+    try {
+      const { provider, endpoint, model } = await resolveLlmConfig();
+      await extractMemoryForce(provider, endpoint, model);
+      onRefreshPendingCount?.();
+    } catch (err) {
+      console.error("Manual extraction failed:", err);
+      setStatus(String(err));
+    } finally {
+      setIsExtracting(false);
+    }
+  }, [isExtracting, isSending, onRefreshPendingCount]);
 
   const threadEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -820,6 +855,14 @@ function ChatPanel({
             >
               ➔
             </button>
+            <button
+              className="extract-now-btn"
+              onClick={handleForceExtract}
+              disabled={isExtracting || isSending}
+              title="Extract memories now"
+            >
+              {isExtracting ? "⏳" : "✨"}
+            </button>
           </div>
 
           <div className="zen-pills-row">
@@ -988,6 +1031,19 @@ function ChatPanel({
                   </button>
                 </div>
               )}
+            </div>
+
+            {/* Pill 4: Extract Memory */}
+            <div className="zen-pill-container">
+              <button
+                type="button"
+                className={`zen-pill extract-pill ${isExtracting ? "active" : ""}`}
+                onClick={() => void handleForceExtract()}
+                disabled={isExtracting || isSending}
+              >
+                <span className="zen-pill-icon">{isExtracting ? "⏳" : "🧠"}</span>
+                <span className="zen-pill-label">{isExtracting ? "Extracting..." : "Extract"}</span>
+              </button>
             </div>
           </div>
           {status && <p className="chat-status">{status}</p>}
@@ -1247,7 +1303,18 @@ function ChatPanel({
               </div>
             )}
           </div>
-
+          {/* Pill 4: Extract Memory */}
+          <div className="zen-pill-container">
+            <button
+              type="button"
+              className={`zen-pill extract-pill ${isExtracting ? "active" : ""}`}
+              onClick={() => void handleForceExtract()}
+              disabled={isExtracting || isSending}
+            >
+              <span className="zen-pill-icon">{isExtracting ? "⏳" : "🧠"}</span>
+              <span className="zen-pill-label">{isExtracting ? "Extracting..." : "Extract"}</span>
+            </button>
+          </div>
           {/* Overflow dropdown trigger */}
           <div
             className="zen-pill-container overflow-container"

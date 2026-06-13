@@ -2234,3 +2234,22 @@
 .chat-message-user .chat-show-more-btn:hover {
   color: #ffffff;
 }
+
+.extract-pill {
+  border-color: rgba(123, 97, 255, 0.25);
+}
+
+.extract-pill:hover:not(:disabled) {
+  border-color: rgba(123, 97, 255, 0.5);
+  background: rgba(123, 97, 255, 0.08);
+}
+
+.extract-pill:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.extract-pill.active {
+  background: rgba(123, 97, 255, 0.12);
+  border-color: rgba(123, 97, 255, 0.45);
+}

@@ -3569,6 +3569,7 @@ pub fn run() {
             save_markdown_file,
             memory_extract,
             memory_extract_if_ready,
+            memory_extract_force,
             changeset_count_pending,
             changeset_list_pending,
             changeset_list_items,
@@ -3581,4 +3582,41 @@ pub fn run() {
             eprintln!("error while running tauri application: {err}");
             std::process::exit(1);
         });
+}
+
+#[tauri::command]
+async fn memory_extract_force(
+    provider: String,
+    endpoint: String,
+    model: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Changeset, String> {
+    check_rate_limit("memory_agent")?;
+    let db_path = state.db_path.clone();
+    let conn = open_connection(&db_path)?;
+
+    // Verify minimum message threshold (at least 3 messages)
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM session_messages WHERE session_id = 'default-session';",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|err| format!("Failed querying message count: {err}"))?;
+    if count < 3 {
+        return Err("Need at least 3 messages to extract memory.".to_string());
+    }
+
+    drop(conn);
+
+    // Execute pipeline (always as correction=true to enable amendment)
+    let result =
+        execute_memory_extraction_pipeline(provider, endpoint, model, db_path.clone(), Some(true))
+            .await;
+
+    // Mark extraction complete
+    let conn = open_connection(&db_path)?;
+    memory_agent::trigger::mark_extraction_complete(&conn, count)?;
+
+    result
 }

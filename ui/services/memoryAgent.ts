@@ -10,6 +10,7 @@ import {
   type ChangesetCommitInput,
   changesetListResolved,
   debugSeedChangeset,
+  memoryExtractForce,
 } from "../ipc";
 import { clearNodesCache } from "./nodes";
 import { unwrapIpcResult } from "./ipcResult";
@@ -39,6 +40,20 @@ export async function extractMemoryIfReady(
   if (result) {
     clearNodesCache();
   }
+  return result;
+}
+
+/**
+ * Forces an immediate memory extraction, bypassing the debounce gate.
+ * Used by the manual "Extract Now" chat toolbar button.
+ */
+export async function extractMemoryForce(
+  provider: string,
+  endpoint: string,
+  model: string
+): Promise<Changeset> {
+  const result = await unwrapIpcResult(memoryExtractForce(provider, endpoint, model));
+  clearNodesCache();
   return result;
 }
 
