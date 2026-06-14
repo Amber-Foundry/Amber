@@ -855,14 +855,6 @@ function ChatPanel({
             >
               ➔
             </button>
-            <button
-              className="extract-now-btn"
-              onClick={handleForceExtract}
-              disabled={isExtracting || isSending}
-              title="Extract memories now"
-            >
-              {isExtracting ? "⏳" : "✨"}
-            </button>
           </div>
 
           <div className="zen-pills-row">

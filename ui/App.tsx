@@ -24,6 +24,11 @@ import DiffPanel from "./components/DiffPanel";
 import styles from "./style/components/MemoryBadge.module.css";
 import { countPendingChangesetItems } from "./services/memoryAgent";
 import "./style/MonoStyles.css";
+import ChatHistoryPanel from "./components/ChatHistoryPanel";
+
+const SIDEBAR_RAIL_WIDTH = 48;
+
+type RightPanelView = "notes" | "dashboard" | "settings";
 
 function App() {
   const [onboardingResolved, setOnboardingResolved] = useState<boolean>(false);
@@ -33,6 +38,7 @@ function App() {
   const [pendingProposalCount, setPendingProposalCount] = useState<number>(0);
   const [isDiffPanelOpen, setIsDiffPanelOpen] = useState<boolean>(false);
   const [selectedChangesetId, setSelectedChangesetId] = useState<string | null>(null);
+  const [leftPanelView, setLeftPanelView] = useState<"browse" | "history">("browse");
 
   useEffect(() => {
     let active = true;
@@ -175,8 +181,7 @@ function App() {
   const [nodeRefreshKey, setNodeRefreshKey] = useState<number>(0);
   const [isRedactedUnlocked, setIsRedactedUnlocked] = useState<boolean>(false);
   const [selectedVaultRequiresUnlock, setSelectedVaultRequiresUnlock] = useState<boolean>(false);
-  const [showDashboard, setShowDashboard] = useState<boolean>(false);
-  const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [rightPanelView, setRightPanelView] = useState<RightPanelView>("notes");
   const [sidebarModalOpen, setSidebarModalOpen] = useState<boolean>(false);
   const [editorModalOpen, setEditorModalOpen] = useState<boolean>(false);
   const [spatialModalOpen, setSpatialModalOpen] = useState<boolean>(false);
@@ -190,7 +195,8 @@ function App() {
     }
     setViewMode(newMode);
   };
-  const leftPaneExpanded = leftPanePinned && !selectedVaultRequiresUnlock;
+  const leftPaneExpanded =
+    leftPanePinned && (leftPanelView !== "browse" || !selectedVaultRequiresUnlock);
   const rightPaneExpanded = rightPanePinned;
   const scopeNodeIds = useMemo(() => (selectedNodeId ? [selectedNodeId] : []), [selectedNodeId]);
   const [assemblerScope, setAssemblerScope] = useState<ContextAssemblerScope>("local");
@@ -321,6 +327,27 @@ function App() {
     setRightResizing(true);
   };
 
+  function onLeftRailToggle(view: "browse" | "history") {
+    if (view === "browse" && selectedVaultRequiresUnlock) {
+      return;
+    }
+    if (leftPanePinned && leftPanelView === view) {
+      setLeftPanePinned(false);
+      return;
+    }
+    setLeftPanelView(view);
+    setLeftPanePinned(true);
+  }
+
+  function onRightRailToggle(view: RightPanelView) {
+    if (rightPanePinned && rightPanelView === view) {
+      setRightPanePinned(false);
+      return;
+    }
+    setRightPanelView(view);
+    setRightPanePinned(true);
+  }
+
   function closeAllPanes() {
     // The left pane is meant to be persistently pinned in spatial view,
     // so clicking the canvas layout does not clear leftPanePinned.
@@ -336,8 +363,8 @@ function App() {
   function onSelectVault(vaultId: string | null) {
     setSelectedVaultId(vaultId);
     setSelectedNodeId(null);
-    setShowDashboard(false);
-    setShowSettings(false);
+    setRightPanelView("notes");
+    setLeftPanelView("browse");
     setLeftPanePinned(Boolean(vaultId));
     setNodeRefreshKey((value) => value + 1);
   }
@@ -345,8 +372,8 @@ function App() {
   function onFocusVault(vaultId: string | null) {
     setSelectedVaultId(vaultId);
     setSelectedNodeId(null);
-    setShowDashboard(false);
-    setShowSettings(false);
+    setRightPanelView("notes");
+    setLeftPanelView("browse");
     setNodeRefreshKey((value) => value + 1);
   }
 
@@ -371,15 +398,13 @@ function App() {
 
   function onSelectNode(nodeId: string) {
     setSelectedNodeId(nodeId);
-    setShowDashboard(false);
-    setShowSettings(false);
+    setRightPanelView("notes");
     setRightPanePinned(true);
   }
 
   function onNodeCreated(nodeId: string) {
     setSelectedNodeId(nodeId);
-    setShowDashboard(false);
-    setShowSettings(false);
+    setRightPanelView("notes");
     setRightPanePinned(true);
     setNodeRefreshKey((value) => value + 1);
   }
@@ -398,15 +423,13 @@ function App() {
 
   function onOpenDashboard() {
     setSelectedNodeId(null);
-    setShowDashboard(true);
-    setShowSettings(false);
+    setRightPanelView("dashboard");
     setRightPanePinned(true);
   }
 
   function onOpenSettings() {
     setSelectedNodeId(null);
-    setShowDashboard(false);
-    setShowSettings(true);
+    setRightPanelView("settings");
     setRightPanePinned(true);
   }
 
@@ -429,24 +452,15 @@ function App() {
     }
   }
 
-  const leftToggleStyle = {
-    left: leftPaneExpanded || sidebarModalOpen ? `${leftPaneWidth + 16}px` : "16px",
-    zIndex: 1005,
-  };
-
-  const rightToggleStyle = {
-    right: rightPaneExpanded ? `${rightPaneWidth + 48}px` : "48px",
-    zIndex: 1005,
-  };
-
   const zenCanvasStyle = {
     left:
       viewMode === "editor"
         ? "0px"
-        : leftPaneExpanded || sidebarModalOpen
-          ? `${leftPaneWidth}px`
-          : "0px",
-    right: viewMode === "editor" ? "0px" : rightPaneExpanded ? `${rightPaneWidth}px` : "0px",
+        : `${SIDEBAR_RAIL_WIDTH + (leftPaneExpanded || sidebarModalOpen ? leftPaneWidth : 0)}px`,
+    right:
+      viewMode === "editor"
+        ? "0px"
+        : `${SIDEBAR_RAIL_WIDTH + (rightPaneExpanded ? rightPaneWidth : 0)}px`,
   };
 
   return (
@@ -595,7 +609,9 @@ function App() {
                   className={`pane-wrap left ${leftPaneExpanded || sidebarModalOpen ? "show" : ""}`}
                   style={{ width: `${leftPaneWidth}px` }}
                 >
-                  {!selectedVaultId ? (
+                  {leftPanelView === "history" ? (
+                    <ChatHistoryPanel />
+                  ) : !selectedVaultId ? (
                     <VaultSidebar
                       selectedVaultId={selectedVaultId}
                       onSelectVault={onSelectVault}
@@ -639,12 +655,12 @@ function App() {
                   className={`pane-wrap right ${rightPaneExpanded ? "show" : ""}`}
                   style={{ width: `${rightPaneWidth}px` }}
                 >
-                  {showDashboard ? (
+                  {rightPanelView === "dashboard" ? (
                     <PriorityDashboard
                       refreshKey={nodeRefreshKey}
                       isRedactedUnlocked={isRedactedUnlocked}
                     />
-                  ) : showSettings ? (
+                  ) : rightPanelView === "settings" ? (
                     <LlmSettings />
                   ) : (
                     <div className="right-pane-stack">
@@ -678,76 +694,132 @@ function App() {
                 </div>
               )}
 
-              {/* Left Sidebar Toggle Button */}
+              {/* Left Sidebar Icon Rail */}
+              {/* Left Sidebar Icon Rail */}
               {viewMode !== "editor" && (
-                <button
-                  className={`sidebar-toggle-btn left ${leftPaneExpanded || sidebarModalOpen ? "open" : ""}`}
-                  onClick={() => {
-                    if (selectedVaultRequiresUnlock) {
-                      return;
+                <nav className="icon-rail icon-rail-left" aria-label="Left panel views">
+                  <button
+                    type="button"
+                    className={`icon-rail-btn ${leftPaneExpanded && leftPanelView === "browse" ? "active" : ""}`}
+                    onClick={() => onLeftRailToggle("browse")}
+                    disabled={selectedVaultRequiresUnlock}
+                    title={
+                      selectedVaultRequiresUnlock
+                        ? "Unlock redacted vault first"
+                        : leftPaneExpanded && leftPanelView === "browse"
+                          ? "Collapse browser panel"
+                          : "Open browser panel"
                     }
-                    setLeftPanePinned(!leftPanePinned);
-                  }}
-                  style={leftToggleStyle}
-                  title={
-                    selectedVaultRequiresUnlock
-                      ? "Unlock redacted vault first"
-                      : leftPanePinned
-                        ? "Collapse Left Panel"
-                        : "Pin Left Panel"
-                  }
-                  aria-label="Toggle left panel"
-                  disabled={selectedVaultRequiresUnlock}
-                >
-                  <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
+                    aria-label="Toggle vault and node browser panel"
                   >
-                    <rect x="3" y="3" width="18" height="18" rx="2" />
-                    <path d="M9 3v18" />
-                    {leftPaneExpanded ? (
-                      <polygon points="16,9 12,12 16,15" fill="currentColor" />
-                    ) : (
-                      <polygon points="12,9 16,12 12,15" fill="currentColor" />
-                    )}
-                  </svg>
-                </button>
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="3" y="3" width="18" height="18" rx="2" />
+                      <path d="M9 3v18" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className={`icon-rail-btn ${leftPaneExpanded && leftPanelView === "history" ? "active" : ""}`}
+                    onClick={() => onLeftRailToggle("history")}
+                    title="Chat History"
+                    aria-label="Toggle chat history panel"
+                  >
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M12 7v5l3 3" />
+                    </svg>
+                  </button>
+                </nav>
               )}
 
-              {/* Right Sidebar Toggle Button */}
+              {/* Right Sidebar Icon Rail */}
               {viewMode !== "editor" && (
-                <button
-                  className={`sidebar-toggle-btn right ${rightPaneExpanded ? "open" : ""}`}
-                  onClick={() => setRightPanePinned(!rightPanePinned)}
-                  style={rightToggleStyle}
-                  title={rightPanePinned ? "Collapse Right Panel" : "Pin Right Panel"}
-                  aria-label="Toggle right panel"
-                >
-                  <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
+                <nav className="icon-rail icon-rail-right" aria-label="Right panel views">
+                  <button
+                    type="button"
+                    className={`icon-rail-btn ${rightPanePinned && rightPanelView === "notes" ? "active" : ""}`}
+                    onClick={() => onRightRailToggle("notes")}
+                    title="Notes & Memory"
+                    aria-label="Toggle notes and memory panel"
                   >
-                    <rect x="3" y="3" width="18" height="18" rx="2" />
-                    <path d="M15 3v18" />
-                    {rightPaneExpanded ? (
-                      <polygon points="8,9 12,12 8,15" fill="currentColor" />
-                    ) : (
-                      <polygon points="12,9 8,12 12,15" fill="currentColor" />
-                    )}
-                  </svg>
-                </button>
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <path d="M14 2v6h6" />
+                      <path d="M9 13h6" />
+                      <path d="M9 17h6" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className={`icon-rail-btn ${rightPanePinned && rightPanelView === "dashboard" ? "active" : ""}`}
+                    onClick={() => onRightRailToggle("dashboard")}
+                    title="Priority Dashboard"
+                    aria-label="Toggle priority dashboard panel"
+                  >
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="3" y="12" width="4" height="9" />
+                      <rect x="10" y="6" width="4" height="15" />
+                      <rect x="17" y="9" width="4" height="12" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className={`icon-rail-btn ${rightPanePinned && rightPanelView === "settings" ? "active" : ""}`}
+                    onClick={() => onRightRailToggle("settings")}
+                    title="Settings"
+                    aria-label="Toggle settings panel"
+                  >
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <circle cx="12" cy="12" r="3" />
+                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                    </svg>
+                  </button>
+                </nav>
               )}
             </div>
             {isDiffPanelOpen && (

@@ -40,8 +40,6 @@ export default function DiffPanel({
   const [error, setError] = useState<string | null>(null);
   const [isClosing, setIsClosing] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [isAmended, setIsAmended] = useState(false);
-  const [amendedAt, setAmendedAt] = useState<string | null>(null);
   const [drawerWidth, setDrawerWidth] = useState<number>(() => {
     try {
       const saved = localStorage.getItem("mindvault-diff-panel-width");
@@ -303,8 +301,6 @@ export default function DiffPanel({
     const parsed = parseJSON(item.proposedData);
     const summary = (parsed.summary || "").toLowerCase();
     const detail = (parsed.detail || "").toLowerCase();
-    setIsAmended(parsed._amended != null);
-    setAmendedAt(isAmended ? parsed._amended.at : null);
     const matchSearch =
       title.includes(searchQuery.toLowerCase()) ||
       summary.includes(searchQuery.toLowerCase()) ||
@@ -593,23 +589,31 @@ export default function DiffPanel({
                     <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                       {/* Detailed diff cards will render here in Commit 4. 
                           For Commit 3, we render a highly polished list summary with type badges. */}
-                      {filteredItems.map((item) => (
-                        <div
-                          key={item.id}
-                          className={item.status !== "pending" ? "diff-row-resolved" : ""}
-                          style={{
-                            transition: "opacity 0.5s ease-out, transform 0.5s ease-out",
-                            opacity: item.status !== "pending" ? 0.4 : 1,
-                          }}
-                        >
-                          <DiffRow item={item} onCommitItem={handleCommitItem} />
-                          {isAmended && (
-                            <span className="diff-amended-badge" title={`Amended at ${amendedAt}`}>
-                              (amended)
-                            </span>
-                          )}
-                        </div>
-                      ))}
+                      {filteredItems.map((item) => {
+                        const parsedData = parseJSON(item.proposedData);
+                        const itemIsAmended = parsedData._amended != null;
+                        const itemAmendedAt = itemIsAmended ? parsedData._amended.at : null;
+                        return (
+                          <div
+                            key={item.id}
+                            className={item.status !== "pending" ? "diff-row-resolved" : ""}
+                            style={{
+                              transition: "opacity 0.5s ease-out, transform 0.5s ease-out",
+                              opacity: item.status !== "pending" ? 0.4 : 1,
+                            }}
+                          >
+                            <DiffRow item={item} onCommitItem={handleCommitItem} />
+                            {itemIsAmended && (
+                              <span
+                                className="diff-amended-badge"
+                                title={`Amended at ${itemAmendedAt}`}
+                              >
+                                (amended)
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </>

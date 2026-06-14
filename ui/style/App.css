@@ -39,92 +39,74 @@
     right 220ms ease;
 }
 
-/* Pinned layout coordinate shifts (Handled dynamically via React inline styles in App.tsx) */
-/* .hybrid-shell.left-pinned .zen-canvas {
-  left: 280px;
-} */
-
-/* .hybrid-shell.right-pinned .zen-canvas {
-  right: min(560px, 52vw);
-} */
-
-/* @media (max-width: 1100px) {
-  .hybrid-shell.left-pinned .zen-canvas {
-    left: 260px;
-  }
-} */
-
-/* Exquisite floating sidebar toggle button handles */
-.sidebar-toggle-btn {
+/* Persistent icon rails for left/right panel views */
+.icon-rail {
   position: absolute;
-  top: 16px;
+  top: 0;
+  bottom: 0;
+  width: 48px;
   z-index: 1005;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0;
+  background: rgba(250, 249, 247, 0.85);
+  backdrop-filter: blur(8px);
+}
+
+.icon-rail-left {
+  left: 0;
+  border-right: 1px solid rgba(188, 108, 37, 0.18);
+}
+
+.icon-rail-right {
+  right: 0;
+  border-left: 1px solid rgba(188, 108, 37, 0.18);
+}
+
+.hybrid-shell.modal-open .icon-rail,
+.hybrid-shell.modal-open .canvas-view-toggle-pill,
+.hybrid-shell:has(.charts-modal-overlay) .icon-rail,
+.hybrid-shell:has(.charts-modal-overlay) .canvas-view-toggle-pill {
+  display: none !important;
+}
+
+.icon-rail-btn {
   width: 36px;
   height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 8px;
-  background: rgba(250, 249, 247, 0.85);
-  border: 1px solid rgba(188, 108, 37, 0.18);
+  background: transparent;
+  border: 1px solid transparent;
   color: var(--primary-color);
   cursor: pointer;
-  backdrop-filter: blur(8px);
   transition: all 220ms cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 8px rgba(188, 108, 37, 0.06);
 }
 
-.hybrid-shell.modal-open .sidebar-toggle-btn,
-.hybrid-shell.modal-open .canvas-view-toggle-pill,
-.hybrid-shell:has(.charts-modal-overlay) .sidebar-toggle-btn,
-.hybrid-shell:has(.charts-modal-overlay) .canvas-view-toggle-pill {
-  display: none !important;
-}
-
-.sidebar-toggle-btn:hover {
-  background: rgba(255, 255, 255, 1);
-  border-color: var(--primary-color);
+.icon-rail-btn:hover {
+  background: rgba(188, 108, 37, 0.1);
+  border-color: rgba(188, 108, 37, 0.2);
   color: var(--primary-color);
-  transform: scale(1.05);
-  box-shadow: 0 4px 12px rgba(188, 108, 37, 0.12);
 }
 
-.sidebar-toggle-btn:disabled {
+.icon-rail-btn.active {
+  background: rgba(188, 108, 37, 0.18);
+  border-color: rgba(188, 108, 37, 0.35);
+  box-shadow: 0 2px 8px rgba(188, 108, 37, 0.12);
+}
+
+.icon-rail-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
-  transform: none;
-  box-shadow: 0 2px 8px rgba(188, 108, 37, 0.03);
 }
 
-.sidebar-toggle-btn:disabled:hover {
-  background: rgba(250, 249, 247, 0.85);
-  border-color: rgba(188, 108, 37, 0.18);
-  color: var(--primary-color);
-  transform: none;
-  box-shadow: 0 2px 8px rgba(188, 108, 37, 0.03);
+.icon-rail-btn:disabled:hover {
+  background: transparent;
+  border-color: transparent;
 }
-
-.sidebar-toggle-btn.left {
-  left: 16px;
-}
-
-/* .sidebar-toggle-btn.left.open {
-  left: 296px;
-} */
-
-.sidebar-toggle-btn.right {
-  right: 48px;
-}
-
-/* .sidebar-toggle-btn.right.open {
-  right: calc(min(560px, 52vw) + 16px);
-} */
-
-/* @media (max-width: 1100px) {
-  .sidebar-toggle-btn.left.open {
-    left: 276px;
-  }
-} */
 
 /* Resizing handles and drag override states */
 .hybrid-shell.is-resizing {
@@ -134,7 +116,7 @@
 
 .hybrid-shell.is-resizing .pane-wrap,
 .hybrid-shell.is-resizing .zen-canvas,
-.hybrid-shell.is-resizing .sidebar-toggle-btn {
+.hybrid-shell.is-resizing .icon-rail {
   transition: none !important;
 }
 
@@ -189,7 +171,7 @@
 }
 
 .pane-wrap.left {
-  left: 0;
+  left: 48px;
   width: 280px;
   transform: translateX(-100%);
 }
@@ -199,7 +181,7 @@
 }
 
 .pane-wrap.right {
-  right: 0;
+  right: 48px;
   width: min(560px, 52vw);
   transform: translateX(100%);
 }

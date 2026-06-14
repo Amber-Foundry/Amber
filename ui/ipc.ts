@@ -340,9 +340,11 @@ export function memoryExtractForce(
   endpoint: string,
   model: string
 ): Promise<IpcResult<Changeset>> {
-  return invoke<IpcResult<Changeset>>("memory_extract_force", {
+  return invoke<Changeset>("memory_extract_force", {
     provider,
     endpoint,
     model,
-  });
+  })
+    .then((ok) => ({ ok }) as IpcResult<Changeset>)
+    .catch((error) => ({ err: String(error) }) as IpcResult<Changeset>);
 }
