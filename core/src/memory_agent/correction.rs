@@ -68,6 +68,13 @@ pub fn detect_correction_signal(
             if clean_word.is_empty() {
                 continue;
             }
+            // Filter out common stop words to prevent false-positive negation triggers
+            if crate::memory_agent::similarity::STOPWORDS
+                .binary_search(&clean_word)
+                .is_ok()
+            {
+                continue;
+            }
             // Check if current message negates a specific word/phrase from the previous message
             if message_lower.contains(&format!("not {}", clean_word))
                 || message_lower.contains(&format!("no, {}", clean_word))
@@ -170,5 +177,17 @@ mod tests {
                 negated_fragment: "blue".to_string()
             })
         );
+    }
+
+    #[test]
+    fn test_negation_scan_ignores_stopwords() {
+        let prev = "It is to be or not to be.";
+        let current = "not to";
+        let signal = detect_correction_signal(current, Some(prev), &[]);
+        assert_eq!(signal, None);
+
+        let current_neutral = "is it correct";
+        let signal_neutral = detect_correction_signal(current_neutral, Some(prev), &[]);
+        assert_eq!(signal_neutral, None);
     }
 }

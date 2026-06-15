@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-const STOPWORDS: &[&str] = &[
+pub const STOPWORDS: &[&str] = &[
     "a",
     "about",
     "above",
