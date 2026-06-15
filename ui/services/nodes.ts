@@ -36,10 +36,11 @@ export async function getNode(nodeId: string): Promise<Node | null> {
 }
 
 export async function getNodes(isRedactedUnlocked?: boolean): Promise<Node[]> {
-  if (isRedactedUnlocked !== undefined && cachedUnlockState !== isRedactedUnlocked) {
+  const requestedState = isRedactedUnlocked !== undefined ? isRedactedUnlocked : null;
+  if (cachedUnlockState !== requestedState) {
     cachedNodes = null;
     pendingNodesPromise = null;
-    cachedUnlockState = isRedactedUnlocked;
+    cachedUnlockState = requestedState;
   }
 
   if (isRedactedUnlocked === undefined) {
