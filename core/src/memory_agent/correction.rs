@@ -64,7 +64,6 @@ pub fn detect_correction_signal(
             if message_lower.contains(&format!("not {}", word))
                 || message_lower.contains(&format!("no, {}", word))
                 || message_lower.contains(&format!("no {}", word))
-                || message_lower.contains(&format!("it's {}, not {}", word, word))
             {
                 return Some(CorrectionSignal::Negation {
                     negated_fragment: word.to_string(),
