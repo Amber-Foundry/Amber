@@ -247,10 +247,24 @@ pub fn amend_or_create_changeset(
     let pending_items = load_pending_items(&tx, &existing_id)?;
 
     for candidate in candidates {
+        let resolved_vault_id = candidate
+            .target_vault_key
+            .as_deref()
+            .and_then(crate::onboarding::vault_id_for_category_key)
+            .unwrap_or("vault_root_graph")
+            .to_string();
+
         // Build the base proposed_data for this candidate.
         let candidate_data = serde_json::json!({
-            "title":   candidate.title,
-            "summary": candidate.summary,
+            "title":            candidate.title,
+            "summary":          candidate.summary,
+            "detail":           candidate.detail,
+            "nodeType":         candidate.node_type,
+            "targetVaultKey":   candidate.target_vault_key,
+            "vaultId":          resolved_vault_id,
+            "tags":             candidate.tags,
+            "confidence":       candidate.confidence,
+            "action":           candidate.action,
         });
 
         let candidate_fp = candidate_fingerprint(&candidate_data);
