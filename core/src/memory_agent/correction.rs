@@ -62,27 +62,31 @@ pub fn detect_correction_signal(
 
     // 2. Direct Negation Scan
     if let Some(prev) = previous_message {
-        let prev_lower = prev.to_lowercase();
-        for word in prev_lower.split_whitespace() {
+        use std::collections::HashSet;
+        let mut prev_words = HashSet::new();
+        for word in prev.to_lowercase().split_whitespace() {
             let clean_word = word.trim_matches(|c: char| !c.is_alphanumeric());
-            if clean_word.is_empty() {
-                continue;
-            }
-            // Filter out common stop words to prevent false-positive negation triggers
-            if crate::memory_agent::similarity::STOPWORDS
-                .binary_search(&clean_word)
-                .is_ok()
+            if !clean_word.is_empty()
+                && crate::memory_agent::similarity::STOPWORDS
+                    .binary_search(&clean_word)
+                    .is_err()
             {
-                continue;
+                prev_words.insert(clean_word.to_string());
             }
-            // Check if current message negates a specific word/phrase from the previous message
-            if contains_phrase_with_boundaries(&message_lower, &format!("not {}", clean_word))
-                || contains_phrase_with_boundaries(&message_lower, &format!("no, {}", clean_word))
-                || contains_phrase_with_boundaries(&message_lower, &format!("no {}", clean_word))
-            {
-                return Some(CorrectionSignal::Negation {
-                    negated_fragment: clean_word.to_string(),
-                });
+        }
+
+        let current_words: Vec<&str> = message_lower.split_whitespace().collect();
+        for i in 0..current_words.len() {
+            let clean_curr = current_words[i].trim_matches(|c: char| !c.is_alphanumeric());
+            if clean_curr == "not" || clean_curr == "no" {
+                if let Some(next_word) = current_words.get(i + 1) {
+                    let clean_next = next_word.trim_matches(|c: char| !c.is_alphanumeric());
+                    if prev_words.contains(clean_next) {
+                        return Some(CorrectionSignal::Negation {
+                            negated_fragment: clean_next.to_string(),
+                        });
+                    }
+                }
             }
         }
     }
