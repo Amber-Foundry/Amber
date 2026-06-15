@@ -64,13 +64,17 @@ pub fn detect_correction_signal(
     if let Some(prev) = previous_message {
         let prev_lower = prev.to_lowercase();
         for word in prev_lower.split_whitespace() {
+            let clean_word = word.trim_matches(|c: char| !c.is_alphanumeric());
+            if clean_word.is_empty() {
+                continue;
+            }
             // Check if current message negates a specific word/phrase from the previous message
-            if message_lower.contains(&format!("not {}", word))
-                || message_lower.contains(&format!("no, {}", word))
-                || message_lower.contains(&format!("no {}", word))
+            if message_lower.contains(&format!("not {}", clean_word))
+                || message_lower.contains(&format!("no, {}", clean_word))
+                || message_lower.contains(&format!("no {}", clean_word))
             {
                 return Some(CorrectionSignal::Negation {
-                    negated_fragment: word.to_string(),
+                    negated_fragment: clean_word.to_string(),
                 });
             }
         }
@@ -153,5 +157,18 @@ mod tests {
     fn test_contains_phrase_with_boundaries_unicode_start() {
         // This test would trigger a panic with the original `start = abs_pos + 1` logic
         assert!(!contains_phrase_with_boundaries("a⚠️test", "⚠️test"));
+    }
+
+    #[test]
+    fn test_negation_scan_ignores_punctuation() {
+        let prev = "My favorite color is blue.";
+        let current = "not blue";
+        let signal = detect_correction_signal(current, Some(prev), &[]);
+        assert_eq!(
+            signal,
+            Some(CorrectionSignal::Negation {
+                negated_fragment: "blue".to_string()
+            })
+        );
     }
 }
