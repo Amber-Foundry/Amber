@@ -360,7 +360,7 @@ function ChatPanel({
 
   useEffect(() => {
     let active = true;
-    getAllNodes()
+    getAllNodes(isRedactedUnlocked)
       .then((nodes) => {
         if (active) {
           setExistingNodeIds(new Set(nodes.map((n) => n.id)));
@@ -372,7 +372,7 @@ function ChatPanel({
     return () => {
       active = false;
     };
-  }, [nodeRefreshKey]);
+  }, [nodeRefreshKey, isRedactedUnlocked]);
 
   const [userName, setUserName] = useState("Lisa");
   const [vaults, setVaults] = useState<Vault[]>([]);
