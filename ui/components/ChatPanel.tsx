@@ -299,6 +299,24 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({
   );
 });
 
+async function resolveLlmConfig(): Promise<{
+  provider: string;
+  endpoint: string;
+  model: string;
+}> {
+  const provider = getLlmProvider();
+  let endpoint = "";
+  if (provider === "lmstudio") {
+    endpoint = getLmStudioEndpoint();
+  } else if (provider === "ollama") {
+    endpoint = getOllamaEndpoint();
+  } else if (["openai", "anthropic", "google", "xai"].includes(provider)) {
+    endpoint = await getApiKey(provider);
+  }
+  const model = getLlmModel();
+  return { provider, endpoint, model };
+}
+
 type ChatPanelProps = {
   selectedNodeIds: string[];
   scope: ContextAssemblerScope;
@@ -360,24 +378,6 @@ function ChatPanel({
       setShowChartsConfirmModal(true);
     }
   }, [chartsEnabled, setChatChartsEnabled]);
-
-  async function resolveLlmConfig(): Promise<{
-    provider: string;
-    endpoint: string;
-    model: string;
-  }> {
-    const provider = getLlmProvider();
-    let endpoint = "";
-    if (provider === "lmstudio") {
-      endpoint = getLmStudioEndpoint();
-    } else if (provider === "ollama") {
-      endpoint = getOllamaEndpoint();
-    } else if (["openai", "anthropic", "google", "xai"].includes(provider)) {
-      endpoint = await getApiKey(provider);
-    }
-    const model = getLlmModel();
-    return { provider, endpoint, model };
-  }
 
   const handleForceExtract = useCallback(async () => {
     if (isExtracting || isSending) return;
@@ -571,16 +571,7 @@ function ChatPanel({
       setIsSending(true);
 
       try {
-        const provider = getLlmProvider();
-        let endpoint = "";
-        if (provider === "lmstudio") {
-          endpoint = getLmStudioEndpoint();
-        } else if (provider === "ollama") {
-          endpoint = getOllamaEndpoint();
-        } else if (["openai", "anthropic", "google", "xai"].includes(provider)) {
-          endpoint = await getApiKey(provider);
-        }
-        const model = getLlmModel();
+        const { provider, endpoint, model } = await resolveLlmConfig();
 
         let executionPrompt = promptText;
         if (agentMode === "Ingest/Memory") {
