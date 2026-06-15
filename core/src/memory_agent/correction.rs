@@ -76,9 +76,9 @@ pub fn detect_correction_signal(
                 continue;
             }
             // Check if current message negates a specific word/phrase from the previous message
-            if message_lower.contains(&format!("not {}", clean_word))
-                || message_lower.contains(&format!("no, {}", clean_word))
-                || message_lower.contains(&format!("no {}", clean_word))
+            if contains_phrase_with_boundaries(&message_lower, &format!("not {}", clean_word))
+                || contains_phrase_with_boundaries(&message_lower, &format!("no, {}", clean_word))
+                || contains_phrase_with_boundaries(&message_lower, &format!("no {}", clean_word))
             {
                 return Some(CorrectionSignal::Negation {
                     negated_fragment: clean_word.to_string(),
@@ -92,8 +92,11 @@ pub fn detect_correction_signal(
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(pending_raw) {
             if let Some(title) = val.get("title").and_then(|t| t.as_str()) {
                 let title_lower = title.to_lowercase();
-                if message_lower.contains(&format!("not {}", title_lower))
-                    || message_lower.contains(&format!("{} is wrong", title_lower))
+                if contains_phrase_with_boundaries(&message_lower, &format!("not {}", title_lower))
+                    || contains_phrase_with_boundaries(
+                        &message_lower,
+                        &format!("{} is wrong", title_lower),
+                    )
                 {
                     return Some(CorrectionSignal::ChangesetContradiction {
                         contradicted_field: title.to_string(),
@@ -102,9 +105,13 @@ pub fn detect_correction_signal(
             }
             if let Some(summary) = val.get("summary").and_then(|s| s.as_str()) {
                 let summary_lower = summary.to_lowercase();
-                if message_lower.contains(&format!("not {}", summary_lower))
-                    || message_lower.contains(&format!("{} is wrong", summary_lower))
-                {
+                if contains_phrase_with_boundaries(
+                    &message_lower,
+                    &format!("not {}", summary_lower),
+                ) || contains_phrase_with_boundaries(
+                    &message_lower,
+                    &format!("{} is wrong", summary_lower),
+                ) {
                     return Some(CorrectionSignal::ChangesetContradiction {
                         contradicted_field: summary.to_string(),
                     });
@@ -177,6 +184,18 @@ mod tests {
                 negated_fragment: "blue".to_string()
             })
         );
+    }
+
+    #[test]
+    fn test_negation_scan_respects_word_boundaries() {
+        let prev = "My favorite color is blue.";
+        let current = "not blueprint";
+        let signal = detect_correction_signal(current, Some(prev), &[]);
+        assert_eq!(signal, None);
+
+        let current_ok = "not blue";
+        let signal_ok = detect_correction_signal(current_ok, Some(prev), &[]);
+        assert!(signal_ok.is_some());
     }
 
     #[test]
