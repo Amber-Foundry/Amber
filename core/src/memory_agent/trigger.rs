@@ -120,7 +120,7 @@ pub fn should_extract_correction(
     conn: &Connection,
     session_id: &str,
     message: &str,
-) -> Result<bool, String> {
+) -> Result<Option<correction::CorrectionSignal>, String> {
     // 1. Query latest user message prior to this one in session
     let previous_message: Option<String> = conn
         .query_row(
@@ -145,8 +145,12 @@ pub fn should_extract_correction(
         .collect::<Result<Vec<String>, _>>()
         .map_err(|err| format!("Failed reading pending changeset row: {err}"))?;
 
-    let signal: bool =
-        correction::has_correction_signal(message, previous_message.as_deref(), &pending_data);
+    let signal =
+        correction::detect_correction_signal(message, previous_message.as_deref(), &pending_data);
+
+    if signal.is_none() {
+        return Ok(None);
+    }
 
     // 3. Check for signal detection and message count threshold (3)
     let message_count: i64 = conn
@@ -157,10 +161,10 @@ pub fn should_extract_correction(
         )
         .map_err(|err| format!("Failed querying session message count: {err}"))?;
 
-    if signal && message_count >= 3 {
-        Ok(true)
+    if message_count >= 3 {
+        Ok(signal)
     } else {
-        Ok(false)
+        Ok(None)
     }
 }
 

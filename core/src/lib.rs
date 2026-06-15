@@ -412,7 +412,7 @@ pub async fn execute_memory_extraction_pipeline(
     endpoint: String,
     model: String,
     db_path: PathBuf,
-    is_correction: Option<bool>,
+    correction_signal: Option<memory_agent::CorrectionSignal>,
 ) -> Result<Changeset, String> {
     // 1. Load and filter chat history synchronously within scoped block to drop connection before await
     let chat_history = {
@@ -594,44 +594,13 @@ pub async fn execute_memory_extraction_pipeline(
     // 7. Reuse a single connection for changeset build, persist, and retrieval
     let mut conn = open_connection(&db_path)?;
 
-    let changeset_id: String = if is_correction.unwrap_or(false) {
-        let correction_signal = {
-            let latest = chat_history.last().map(|m| m.content.as_str());
-            let previous = chat_history
-                .len()
-                .checked_sub(2)
-                .and_then(|i| chat_history.get(i))
-                .map(|m| m.content.as_str());
-
-            let pending_data: Vec<String> = conn
-                .prepare(
-                    "SELECT ci.proposed_data \
-                     FROM changeset_items ci \
-                     JOIN changesets c ON ci.changeset_id = c.id \
-                     WHERE ci.status = 'pending' AND c.session_id = 'default-session';",
-                )
-                .map_err(|err| format!("Failed preparing pending changeset query: {err}"))?
-                .query_map([], |row| row.get(0))
-                .map_err(|err| format!("Failed querying pending changeset items: {err}"))?
-                .collect::<Result<Vec<String>, _>>()
-                .map_err(|err| format!("Failed reading pending changeset row: {err}"))?;
-
-            memory_agent::correction::detect_correction_signal(
-                latest.unwrap_or(""),
-                previous,
-                &pending_data,
-            )
-            .unwrap_or(memory_agent::correction::CorrectionSignal::ExplicitPhrase {
-                phrase: "correction".to_string(),
-            })
-        };
-
+    let changeset_id: String = if let Some(ref signal) = correction_signal {
         let (id, _amended) = memory_agent::amendment::amend_or_create_changeset(
             &mut conn,
             &candidates,
             "default-session",
             &model,
-            &correction_signal,
+            signal,
         )?;
         id
     } else {
@@ -713,15 +682,15 @@ async fn memory_extract_if_ready(
 
     // 5. Check trigger
     let mut ready = memory_agent::trigger::should_extract(&conn, session_id)?;
-    let mut is_correction = false;
+    let mut correction_signal = None;
     if !ready {
         let latest_user_msg = fetch_latest_user_message(&conn, session_id)?;
         if let Some(msg_content) = latest_user_msg {
-            let correction_ready =
+            let signal =
                 memory_agent::trigger::should_extract_correction(&conn, session_id, &msg_content)?;
-            if correction_ready {
+            if signal.is_some() {
                 ready = true;
-                is_correction = true;
+                correction_signal = signal;
             }
         }
     }
@@ -740,7 +709,7 @@ async fn memory_extract_if_ready(
         endpoint,
         model,
         db_path.clone(),
-        Some(is_correction),
+        correction_signal,
     )
     .await;
 
@@ -3634,12 +3603,26 @@ async fn memory_extract_force(
         return Err("Need at least 3 messages to extract memory.".to_string());
     }
 
+    // Since memory_extract_force is a manual bypass/trigger, check if there's a correction
+    // signal in the latest user message to see if we should run it as a correction.
+    let latest_user_msg = fetch_latest_user_message(&conn, "default-session")?;
+    let correction_signal = if let Some(msg_content) = latest_user_msg {
+        memory_agent::trigger::should_extract_correction(&conn, "default-session", &msg_content)?
+    } else {
+        None
+    };
+
     drop(conn);
 
-    // Execute pipeline (always as correction=true to enable amendment)
-    let result =
-        execute_memory_extraction_pipeline(provider, endpoint, model, db_path.clone(), Some(true))
-            .await;
+    // Execute pipeline with the detected correction signal
+    let result = execute_memory_extraction_pipeline(
+        provider,
+        endpoint,
+        model,
+        db_path.clone(),
+        correction_signal,
+    )
+    .await;
 
     // Mark extraction complete
     let conn = open_connection(&db_path)?;

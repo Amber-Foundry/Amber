@@ -160,9 +160,9 @@ fn test_should_extract_correction_bypasses_debounce() -> Result<(), Box<dyn Erro
     let ready = should_extract(&conn, session_id)?;
     assert!(!ready);
 
-    // should_extract_correction must return true (correction message bypasses debounce)
+    // should_extract_correction must return Some(CorrectionSignal) (correction message bypasses debounce)
     let ready_correction = should_extract_correction(&conn, session_id, "actually I meant Go")?;
-    assert!(ready_correction);
+    assert!(ready_correction.is_some());
 
     Ok(())
 }
@@ -211,18 +211,18 @@ fn test_should_extract_correction_filters_by_session() -> Result<(), Box<dyn Err
     insert_test_message(&conn, "msg_b2", session_b, "assistant", "Hi")?;
     insert_test_message(&conn, "msg_b3", session_b, "user", "Some other query")?;
 
-    // If we check session_a for "Blue Theme is wrong", it should return FALSE,
+    // If we check session_a for "Blue Theme is wrong", it should return None,
     // because "Blue Theme" is in session_b's pending changesets, not session_a's.
     let ready_a = should_extract_correction(&conn, session_a, "Blue Theme is wrong")?;
     assert!(
-        !ready_a,
+        ready_a.is_none(),
         "Session A should not be contaminated by Session B's changesets"
     );
 
-    // If we check session_b for "Blue Theme is wrong", it should return TRUE.
+    // If we check session_b for "Blue Theme is wrong", it should return Some.
     let ready_b = should_extract_correction(&conn, session_b, "Blue Theme is wrong")?;
     assert!(
-        ready_b,
+        ready_b.is_some(),
         "Session B should detect contradiction on its own pending changeset"
     );
 
