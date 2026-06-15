@@ -168,6 +168,68 @@ fn test_should_extract_correction_bypasses_debounce() -> Result<(), Box<dyn Erro
 }
 
 #[test]
+fn test_should_extract_correction_filters_by_session() -> Result<(), Box<dyn Error>> {
+    let mut conn = setup_test_db()?;
+    let session_a = "session-A";
+    let session_b = "session-B";
+
+    // Setup vaults and sessions
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO vaults (id, name, privacy_tier) VALUES ('vault-root', 'Vault Root', 'open');",
+        [],
+    );
+    create_test_session(&conn, session_a, "vault-root")?;
+    create_test_session(&conn, session_b, "vault-root")?;
+
+    // Create a pending changeset for session_b containing "Blue Theme"
+    let pending_items = vec![PendingChangesetItem {
+        item_type: ChangesetItemType::Add,
+        target_node_id: None,
+        proposed_data: r#"{"title":"Blue Theme","summary":"This is a beautiful blue theme"}"#
+            .to_string(),
+        existing_data: None,
+        similarity: None,
+        merge_with_id: None,
+    }];
+    let pending_changeset = PendingChangeset {
+        session_id: session_b.to_string(),
+        model_used: Some("llama3".to_string()),
+        items: pending_items,
+    };
+
+    let tx = conn.transaction()?;
+    persist_changeset(&tx, &pending_changeset, Some("llama3"))?;
+    tx.commit()?;
+
+    // Insert 3 messages in session_a
+    insert_test_message(&conn, "msg_a1", session_a, "user", "Hello")?;
+    insert_test_message(&conn, "msg_a2", session_a, "assistant", "Hi")?;
+    insert_test_message(&conn, "msg_a3", session_a, "user", "Some query")?;
+
+    // Insert 3 messages in session_b
+    insert_test_message(&conn, "msg_b1", session_b, "user", "Hello")?;
+    insert_test_message(&conn, "msg_b2", session_b, "assistant", "Hi")?;
+    insert_test_message(&conn, "msg_b3", session_b, "user", "Some other query")?;
+
+    // If we check session_a for "Blue Theme is wrong", it should return FALSE,
+    // because "Blue Theme" is in session_b's pending changesets, not session_a's.
+    let ready_a = should_extract_correction(&conn, session_a, "Blue Theme is wrong")?;
+    assert!(
+        !ready_a,
+        "Session A should not be contaminated by Session B's changesets"
+    );
+
+    // If we check session_b for "Blue Theme is wrong", it should return TRUE.
+    let ready_b = should_extract_correction(&conn, session_b, "Blue Theme is wrong")?;
+    assert!(
+        ready_b,
+        "Session B should detect contradiction on its own pending changeset"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_amend_existing_changeset_in_place() -> Result<(), Box<dyn Error>> {
     let mut conn = setup_test_db()?;
     let session_id = "test-session";

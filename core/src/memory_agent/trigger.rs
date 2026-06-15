@@ -131,11 +131,16 @@ pub fn should_extract_correction(
         .optional()
         .map_err(|err| format!("Failed querying latest message: {err}"))?;
 
-    // 2. Query all pending changeset_items with status 'pending' and extract their proposed_data column values
+    // 2. Query all pending changeset_items with status 'pending' for this session and extract their proposed_data column values
     let pending_data: Vec<String> = conn
-        .prepare("SELECT proposed_data FROM changeset_items WHERE status = 'pending';")
+        .prepare(
+            "SELECT ci.proposed_data \
+             FROM changeset_items ci \
+             JOIN changesets c ON ci.changeset_id = c.id \
+             WHERE ci.status = 'pending' AND c.session_id = ?1;",
+        )
         .map_err(|err| format!("Failed preparing pending changeset query: {err}"))?
-        .query_map([], |row| row.get(0))
+        .query_map([session_id], |row| row.get(0))
         .map_err(|err| format!("Failed querying pending changeset items: {err}"))?
         .collect::<Result<Vec<String>, _>>()
         .map_err(|err| format!("Failed reading pending changeset row: {err}"))?;
