@@ -600,7 +600,8 @@ pub async fn execute_memory_extraction_pipeline(
             let previous = chat_history
                 .len()
                 .checked_sub(2)
-                .map(|i| chat_history[i].content.as_str());
+                .and_then(|i| chat_history.get(i))
+                .map(|m| m.content.as_str());
 
             let pending_data: Vec<String> = conn
                 .prepare("SELECT proposed_data FROM changeset_items WHERE status = 'pending';")
