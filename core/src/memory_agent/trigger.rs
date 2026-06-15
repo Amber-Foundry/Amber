@@ -121,7 +121,20 @@ pub fn should_extract_correction(
     session_id: &str,
     message: &str,
 ) -> Result<Option<correction::CorrectionSignal>, String> {
-    // 1. Query latest user message prior to this one in session
+    // 1. Check message count threshold (3) first to avoid redundant queries in early sessions
+    let message_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1;",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| format!("Failed querying session message count: {err}"))?;
+
+    if message_count < 3 {
+        return Ok(None);
+    }
+
+    // 2. Query latest user message prior to this one in session
     let previous_message: Option<String> = conn
         .query_row(
             "SELECT content FROM session_messages WHERE session_id = ?1 AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1 OFFSET 1;",
@@ -131,7 +144,7 @@ pub fn should_extract_correction(
         .optional()
         .map_err(|err| format!("Failed querying latest message: {err}"))?;
 
-    // 2. Query all pending changeset_items with status 'pending' for this session and extract their proposed_data column values
+    // 3. Query all pending changeset_items with status 'pending' for this session and extract their proposed_data column values
     let pending_data: Vec<String> = conn
         .prepare(
             "SELECT ci.proposed_data \
@@ -148,24 +161,7 @@ pub fn should_extract_correction(
     let signal =
         correction::detect_correction_signal(message, previous_message.as_deref(), &pending_data);
 
-    if signal.is_none() {
-        return Ok(None);
-    }
-
-    // 3. Check for signal detection and message count threshold (3)
-    let message_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1;",
-            [session_id],
-            |row| row.get(0),
-        )
-        .map_err(|err| format!("Failed querying session message count: {err}"))?;
-
-    if message_count >= 3 {
-        Ok(signal)
-    } else {
-        Ok(None)
-    }
+    Ok(signal)
 }
 
 #[cfg(test)]
