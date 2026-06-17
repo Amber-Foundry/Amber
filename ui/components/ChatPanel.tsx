@@ -150,13 +150,9 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({
                   message.role === "user" && isOverflowing && isCollapsed ? "collapsed" : ""
                 }`}
               >
-                {existingNodeIds !== null ? (
-                  <ExistingNodesContext.Provider value={existingNodeIds}>
-                    {markdownBody}
-                  </ExistingNodesContext.Provider>
-                ) : (
-                  markdownBody
-                )}
+                <ExistingNodesContext.Provider value={existingNodeIds}>
+                  {markdownBody}
+                </ExistingNodesContext.Provider>
               </div>
               {message.role === "user" && isOverflowing && (
                 <button

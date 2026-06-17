@@ -166,7 +166,8 @@ export function preprocessMathDelimiters(text: string): string {
   processed = processed.replace(/\\\\\)/g, "$").replace(/\\\)/g, "$");
   return processed;
 }
-export const ExistingNodesContext = React.createContext<Set<string> | null>(null);
+// undefined = no provider (badges validate per link); null = provider loading; Set = ready lookup
+export const ExistingNodesContext = React.createContext<Set<string> | null | undefined>(undefined);
 
 function WikiLinkBadge({
   nodeId,
@@ -206,7 +207,7 @@ function WikiLinkBadge({
 
   // Validate node existence on mount (skip for search queries or if context provider is present)
   React.useEffect(() => {
-    if (isSearchQuery || existingNodeIds !== null) {
+    if (isSearchQuery || existingNodeIds !== undefined) {
       return; // Don't validate search queries or if context provider is present
     }
 

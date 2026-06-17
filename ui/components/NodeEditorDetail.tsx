@@ -283,12 +283,10 @@ export default function NodeEditorDetail({
                   <code>{preprocessedMarkdown}</code>
                 </pre>
               )
-            ) : existingNodeIds ? (
+            ) : (
               <ExistingNodesContext.Provider value={existingNodeIds}>
                 {markdownBody}
               </ExistingNodesContext.Provider>
-            ) : (
-              markdownBody
             )}
           </div>
         )}
