@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { DEV_ONBOARDING_CHANGED } from "../constants/devEvents";
 import { onboardingExtractProposals } from "../ipc";
 import { getLlmModels } from "../services/nodes";
-import { unwrapIpcResult } from "../services/ipcResult";
-import { AppError } from "../services/ipcResult";
+import { unwrapIpcResult, AppError } from "../services/ipcResult";
 import { getOnboardingComplete, setOnboardingComplete } from "../services/settings";
 import {
   getLlmModel,
