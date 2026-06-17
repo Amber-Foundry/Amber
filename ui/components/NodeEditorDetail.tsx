@@ -171,14 +171,17 @@ export default function NodeEditorDetail({
     return createMarkdownComponents(chartsEnabled, onSelectNode, isRedactedUnlocked);
   }, [chartsEnabled, onSelectNode, isRedactedUnlocked]);
 
-  const markdownBody = (
-    <ReactMarkdown
-      remarkPlugins={remarkPluginsStable}
-      rehypePlugins={rehypePluginsStable}
-      components={markdownComponents}
-    >
-      {preprocessedMarkdown}
-    </ReactMarkdown>
+  const markdownBody = React.useMemo(
+    () => (
+      <ReactMarkdown
+        remarkPlugins={remarkPluginsStable}
+        rehypePlugins={rehypePluginsStable}
+        components={markdownComponents}
+      >
+        {preprocessedMarkdown}
+      </ReactMarkdown>
+    ),
+    [markdownComponents, preprocessedMarkdown]
   );
 
   return (

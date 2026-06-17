@@ -101,14 +101,17 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({
     return preprocessMathDelimiters(wLinks);
   }, [message.content]);
 
-  const markdownBody = (
-    <ReactMarkdown
-      remarkPlugins={remarkPluginsStable}
-      rehypePlugins={rehypePluginsStable}
-      components={markdownComponents}
-    >
-      {preprocessedMessage}
-    </ReactMarkdown>
+  const markdownBody = React.useMemo(
+    () => (
+      <ReactMarkdown
+        remarkPlugins={remarkPluginsStable}
+        rehypePlugins={rehypePluginsStable}
+        components={markdownComponents}
+      >
+        {preprocessedMessage}
+      </ReactMarkdown>
+    ),
+    [markdownComponents, preprocessedMessage]
   );
 
   return (
