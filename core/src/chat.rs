@@ -186,6 +186,27 @@ pub fn purge_temporary_session(db: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// Purges the temporary session messages based on the configured retention policy.
+pub fn purge_temporary_session_with_retention(
+    db: &Connection,
+    retention: &str,
+) -> Result<(), String> {
+    if retention == "7_days" {
+        // Delete messages older than 7 days
+        db.execute(
+            "DELETE FROM session_messages 
+             WHERE session_id = ?1 
+               AND created_at <= datetime('now', '-7 days');",
+            params![TEMPORARY_SESSION_ID],
+        )
+        .map_err(|err| format!("Failed to purge old temporary session messages: {err}"))?;
+    } else {
+        // Default to immediate deletion of the entire temporary session
+        purge_temporary_session(db)?;
+    }
+    Ok(())
+}
+
 pub fn convert_temporary_to_memory(conn: &Connection) -> Result<(), String> {
     conn.execute("SAVEPOINT convert_temporary_sp;", [])
         .map_err(|err| format!("Failed starting conversion savepoint: {err}"))?;
@@ -228,5 +249,100 @@ pub fn convert_temporary_to_memory(conn: &Connection) -> Result<(), String> {
             let _ = conn.execute("ROLLBACK TO convert_temporary_sp;", []);
             Err(err)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_test_db() -> Result<Connection, Box<dyn std::error::Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.execute_batch(
+            "
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                scope_json TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE session_messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                updated_at TEXT
+            );
+        ",
+        )?;
+        Ok(conn)
+    }
+
+    #[test]
+    fn test_purge_immediate() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+
+        // Add temporary message
+        append_message(
+            &conn,
+            "msg_1".to_string(),
+            "user".to_string(),
+            "Hello brainstorm 1".to_string(),
+            TEMPORARY_SESSION_ID,
+        )?;
+
+        let history = get_chat_history(&conn, TEMPORARY_SESSION_ID)?;
+        assert_eq!(history.len(), 1);
+
+        // Call retention check with "immediate"
+        purge_temporary_session_with_retention(&conn, "immediate")?;
+
+        // Verify it is completely purged
+        let history_after = get_chat_history(&conn, TEMPORARY_SESSION_ID)?;
+        assert_eq!(history_after.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_purge_7_days() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+
+        // Insert a new temporary session manually
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, scope_json) VALUES ('temporary-session', '[]');",
+            [],
+        )?;
+
+        // Add old message (older than 7 days)
+        conn.execute(
+            "INSERT INTO session_messages (id, session_id, role, content, created_at)
+             VALUES ('msg_old', 'temporary-session', 'user', 'Old brainstorm', datetime('now', '-8 days'));",
+            [],
+        )?;
+
+        // Add new message (today)
+        conn.execute(
+            "INSERT INTO session_messages (id, session_id, role, content, created_at)
+             VALUES ('msg_new', 'temporary-session', 'user', 'New brainstorm', datetime('now'));",
+            [],
+        )?;
+
+        let history = get_chat_history(&conn, TEMPORARY_SESSION_ID)?;
+        assert_eq!(history.len(), 2);
+
+        // Call retention check with "7_days"
+        purge_temporary_session_with_retention(&conn, "7_days")?;
+
+        // Verify the old one was deleted and the new one was kept
+        let history_after = get_chat_history(&conn, TEMPORARY_SESSION_ID)?;
+        assert_eq!(history_after.len(), 1);
+        assert_eq!(history_after[0].id, "msg_new");
+        Ok(())
     }
 }

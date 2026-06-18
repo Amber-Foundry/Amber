@@ -1332,7 +1332,14 @@ pub fn run() {
                     }
                 }
             });
-            chat::purge_temporary_session(&conn)?;
+            let retention: String = conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key = 'temporary_session_retention' LIMIT 1;",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|_| "immediate".to_string());
+            chat::purge_temporary_session_with_retention(&conn, &retention)?;
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())

@@ -17,6 +17,8 @@ import {
   setLlmMode,
   getApiKey,
   setApiKey,
+  getTemporarySessionRetention,
+  setTemporarySessionRetention,
 } from "../utils/settings";
 
 const DEV_SAMPLE_ONBOARDING_ANSWERS = `{
@@ -290,6 +292,29 @@ function LlmSettings() {
   const [extractionBusy, setExtractionBusy] = useState(false);
 
   const [mode, setModeState] = useState(() => getLlmMode());
+  const [retentionPolicy, setRetentionPolicy] = useState<"immediate" | "7_days">("immediate");
+
+  useEffect(() => {
+    let canceled = false;
+    void (async () => {
+      const policy = await getTemporarySessionRetention();
+      if (!canceled) {
+        setRetentionPolicy(policy);
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  async function handleRetentionPolicyChange(val: "immediate" | "7_days") {
+    try {
+      await setTemporarySessionRetention(val);
+      setRetentionPolicy(val);
+    } catch (err) {
+      console.error("Failed to save retention policy:", err);
+    }
+  }
   const [localProvider, setLocalProvider] = useState<"ollama" | "lmstudio">(() => {
     const p = getLlmProvider();
     return p === "lmstudio" ? "lmstudio" : "ollama";
@@ -575,6 +600,27 @@ function LlmSettings() {
             </div>
           </div>
         )}
+      </div>
+
+      <div
+        className="settings-section temporary-session-settings"
+        style={{
+          borderTop: "1px solid rgba(255, 255, 255, 0.08)",
+          marginTop: "20px",
+          paddingTop: "20px",
+        }}
+      >
+        <h4>🕶️ Off the Record Settings</h4>
+        <label className="settings-field">
+          <span>Brainstorm Retention Policy</span>
+          <select
+            value={retentionPolicy}
+            onChange={(e) => handleRetentionPolicyChange(e.target.value as "immediate" | "7_days")}
+          >
+            <option value="immediate">Delete immediately on session close / app exit</option>
+            <option value="7_days">Retain brainstorm history for 7 days (auto-purge old)</option>
+          </select>
+        </label>
       </div>
 
       {showDevOnboardingTools ? (

@@ -174,3 +174,24 @@ export function setPlantUmlServer(url: string): void {
   window.localStorage.setItem(PLANTUML_SERVER_KEY, normalized);
   window.dispatchEvent(new CustomEvent("mindvault:llm-settings-changed"));
 }
+
+const TEMPORARY_SESSION_RETENTION_KEY = "temporary_session_retention";
+
+export async function getTemporarySessionRetention(): Promise<"immediate" | "7_days"> {
+  try {
+    const value = await unwrapIpcResult(settingsGet(TEMPORARY_SESSION_RETENTION_KEY));
+    if (value === "7_days") {
+      return "7_days";
+    }
+  } catch (e) {
+    console.warn("Failed to get temporary session retention setting:", e);
+  }
+  return "immediate";
+}
+
+export async function setTemporarySessionRetention(
+  retention: "immediate" | "7_days"
+): Promise<void> {
+  await unwrapIpcResult(settingsSet(TEMPORARY_SESSION_RETENTION_KEY, retention));
+  window.dispatchEvent(new CustomEvent("mindvault:llm-settings-changed"));
+}

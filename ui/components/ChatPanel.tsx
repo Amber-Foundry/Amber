@@ -38,6 +38,7 @@ import {
   getLlmMode,
   setLlmMode,
   getApiKey,
+  getTemporarySessionRetention,
 } from "../utils/settings";
 import { useUIStore } from "../utils/store";
 import { chatConvertTemporaryToMemory } from "../ipc";
@@ -381,9 +382,12 @@ function ChatPanel({
     setIsOffTheRecord(next);
     try {
       await chatSetOffTheRecord(next);
-      // Only clear the temporary session when switching away from it (deactivating OTR)
+      // Only clear the temporary session when switching away from it (deactivating OTR) if policy is immediate
       if (sessionId === "temporary-session") {
-        await clearChatHistory(sessionId);
+        const retention = await getTemporarySessionRetention();
+        if (retention === "immediate") {
+          await clearChatHistory(sessionId);
+        }
       }
       const history = await getChatHistory(nextSessionId);
       setMessages(history);
