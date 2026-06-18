@@ -3,13 +3,4 @@
 /**
  * Serialized onboarding extraction result for IPC / TypeScript. Enriches `onboarding::ProposedNode` with backend-derived metadata for the UI like `resolved_vault_id`.
  */
-export type OnboardingProposedNode = {
-  title: string;
-  summary: string;
-  detail?: string;
-  category?: string;
-  targetVaultKey?: string;
-  tags?: Array<string>;
-  nodeType?: string;
-  resolvedVaultId?: string;
-};
+export type OnboardingProposedNode = { title: string, summary: string, detail?: string, category?: string, targetVaultKey?: string, tags?: Array<string>, nodeType?: string, resolvedVaultId?: string, };

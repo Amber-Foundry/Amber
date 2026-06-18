@@ -1,25 +1,6 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
-/// Default session id used to anchor the always-on chat thread until
-/// multi-session UI lands. The schema requires `session_id NOT NULL`
-/// (see db/migrations/0001_schema_v1.sql), so we keep one canonical row.
-const DEFAULT_SESSION_ID: &str = "default-session";
-
-/// MARK: Internal helpers
-
-fn ensure_default_session(db: &Connection) -> Result<(), crate::AppError> {
-    db.execute(
-        "INSERT OR IGNORE INTO sessions (id, scope_json) VALUES (?1, '[]');",
-        params![DEFAULT_SESSION_ID],
-    )
-    .map_err(|err| {
-        eprintln!("Database error in ensure_default_session: {err}");
-        "Failed ensuring default chat session".to_string()
-    })?;
-    Ok(())
-}
-
 fn ensure_session(db: &Connection, session_id: &str) -> Result<(), crate::AppError> {
     db.execute(
         "INSERT OR IGNORE INTO sessions (id, scope_json) VALUES (?1, '[]');",
