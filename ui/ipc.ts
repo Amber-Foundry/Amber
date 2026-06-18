@@ -93,16 +93,21 @@ export function chatGetHistory(sessionId: string) {
   return invokeTyped<ChatMessage[]>("chat_get_history", { sessionId });
 }
 
-export function chatAppendMessage(id: string, role: string, content: string) {
-  return invokeTyped<void>("chat_append_message", { id, role, content });
+export function chatAppendMessage(id: string, role: string, content: string, sessionId: string) {
+  return invokeTyped<void>("chat_append_message", { id, role, content, sessionId });
 }
 
 export function chatClearHistory(sessionId: string) {
   return invokeTyped<void>("chat_clear_history", { sessionId });
 }
 
-export function chatEditAndTruncate(editId: string, newContent: string, deleteIds: string[]) {
-  return invokeTyped<void>("chat_edit_and_truncate", { editId, newContent, deleteIds });
+export function chatEditAndTruncate(
+  editId: string,
+  newContent: string,
+  deleteIds: string[],
+  sessionId: string
+) {
+  return invokeTyped<void>("chat_edit_and_truncate", { editId, newContent, deleteIds, sessionId });
 }
 
 export function vaultCreate(input: VaultCreateInput) {

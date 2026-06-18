@@ -700,7 +700,7 @@ function ChatPanel({
         };
 
         setMessages((prev) => [...prev, aiMsg]);
-        await chatAppendMessage(aiMsgId, "assistant", aiResponse);
+        await chatAppendMessage(aiMsgId, "assistant", aiResponse, sessionId);
 
         // Fire-and-forget background extraction check (non-blocking for the user)
         extractMemoryIfReady(provider, endpoint, model, sessionId)
@@ -750,7 +750,7 @@ function ChatPanel({
     setMessages((prev) => [...prev, userMsg]);
 
     try {
-      await chatAppendMessage(userMsgId, "user", promptText);
+      await chatAppendMessage(userMsgId, "user", promptText, sessionId);
       await executeLlmResponse(promptText);
     } catch (error) {
       setStatus(String(error));
@@ -847,7 +847,7 @@ function ChatPanel({
       const deleteIds = msgs.slice(index + 1).map((m) => m.id);
 
       try {
-        await chatEditAndTruncate(userMsg.id, newContent, deleteIds);
+        await chatEditAndTruncate(userMsg.id, newContent, deleteIds, sessionId);
         setMessages((prev) => {
           const updated = [...prev.slice(0, index)];
           updated.push({
@@ -863,7 +863,7 @@ function ChatPanel({
       }
     },
 
-    [setStatus, setMessages, setEditingMessageId]
+    [setStatus, setMessages, setEditingMessageId, sessionId]
   );
 
   const handleRetryMessage = useCallback(
@@ -894,7 +894,7 @@ function ChatPanel({
         const deleteIds = msgs.slice(userIndex + 1).map((m) => m.id);
 
         try {
-          await chatEditAndTruncate(userMsg.id, userMsg.content, deleteIds);
+          await chatEditAndTruncate(userMsg.id, userMsg.content, deleteIds, sessionId);
           setMessages((prev) => prev.slice(0, userIndex + 1));
           await executeLlmResponseRef.current(userMsg.content);
         } catch (error) {
@@ -903,7 +903,7 @@ function ChatPanel({
       }
     },
 
-    [setStatus, setMessages]
+    [setStatus, setMessages, sessionId]
   );
 
   function toggleDropdown(type: "vault" | "mode" | "model" | "overflow") {
