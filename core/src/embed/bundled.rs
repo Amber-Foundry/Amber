@@ -1,4 +1,4 @@
-use crate::embed::{EmbedEngine, EmbedError, TierConfig};
+use crate::embed::{normalize_all, EmbedEngine, EmbedError, TierConfig};
 use ort::execution_providers::CPUExecutionProvider;
 #[cfg(target_os = "windows")]
 use ort::execution_providers::DirectMLExecutionProvider;
@@ -434,25 +434,6 @@ fn mean_pool(
     }
 
     Ok(vectors)
-}
-
-fn normalize_all(vectors: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>, EmbedError> {
-    vectors
-        .into_iter()
-        .map(|mut vector| {
-            let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
-            if norm == 0.0 {
-                return Err(EmbedError::InferenceFailed(
-                    "embedding output had zero norm".to_string(),
-                ));
-            }
-
-            for value in &mut vector {
-                *value /= norm;
-            }
-            Ok(vector)
-        })
-        .collect()
 }
 
 #[cfg(test)]
