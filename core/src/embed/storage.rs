@@ -467,4 +467,96 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_trigger_invalidation_on_update() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+        let model = "test-model";
+        let row = EmbeddingRow {
+            node_id: "node_test_1".to_string(),
+            chunk_index: 0,
+            chunk_type: "primary".to_string(),
+            model: model.to_string(),
+            embedding: vec![1.0, 2.0, 3.0],
+            computed_at: "time".to_string(),
+        };
+
+        // 1. Initial insert of embedding
+        upsert_embedding(&conn, &row)?;
+        let embeddings = get_embeddings_for_model(&conn, model)?;
+        assert_eq!(embeddings.len(), 1);
+
+        // 2. Update detail to NULL (transition from text to NULL)
+        conn.execute(
+            "UPDATE nodes SET detail = NULL WHERE id = 'node_test_1';",
+            [],
+        )?;
+        let embeddings = get_embeddings_for_model(&conn, model)?;
+        assert_eq!(
+            embeddings.len(),
+            0,
+            "Embedding should be deleted when detail changes to NULL"
+        );
+
+        // 3. Re-insert embedding
+        upsert_embedding(&conn, &row)?;
+        let embeddings = get_embeddings_for_model(&conn, model)?;
+        assert_eq!(embeddings.len(), 1);
+
+        // 4. Update detail from NULL to text
+        conn.execute(
+            "UPDATE nodes SET detail = 'New Detail' WHERE id = 'node_test_1';",
+            [],
+        )?;
+        let embeddings = get_embeddings_for_model(&conn, model)?;
+        assert_eq!(
+            embeddings.len(),
+            0,
+            "Embedding should be deleted when detail changes from NULL to text"
+        );
+
+        // 5. Re-insert embedding
+        upsert_embedding(&conn, &row)?;
+
+        // 6. Test non-triggering update (node_type)
+        conn.execute(
+            "UPDATE nodes SET node_type = 'fact' WHERE id = 'node_test_1';",
+            [],
+        )?;
+        let embeddings = get_embeddings_for_model(&conn, model)?;
+        assert_eq!(
+            embeddings.len(),
+            1,
+            "Embedding should NOT be deleted when non-triggering column is updated"
+        );
+
+        // 7. Update title
+        conn.execute(
+            "UPDATE nodes SET title = 'New Title' WHERE id = 'node_test_1';",
+            [],
+        )?;
+        let embeddings = get_embeddings_for_model(&conn, model)?;
+        assert_eq!(
+            embeddings.len(),
+            0,
+            "Embedding should be deleted when title changes"
+        );
+
+        // 8. Re-insert embedding
+        upsert_embedding(&conn, &row)?;
+
+        // 9. Update summary
+        conn.execute(
+            "UPDATE nodes SET summary = 'New Summary' WHERE id = 'node_test_1';",
+            [],
+        )?;
+        let embeddings = get_embeddings_for_model(&conn, model)?;
+        assert_eq!(
+            embeddings.len(),
+            0,
+            "Embedding should be deleted when summary changes"
+        );
+
+        Ok(())
+    }
 }

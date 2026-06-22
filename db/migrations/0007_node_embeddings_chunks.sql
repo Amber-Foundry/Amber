@@ -18,9 +18,9 @@ DROP TRIGGER IF EXISTS trg_invalidate_embedding_on_update;
 
 CREATE TRIGGER trg_invalidate_embedding_on_update
 AFTER UPDATE ON nodes
-WHEN NEW.title != OLD.title
-   OR NEW.summary != OLD.summary
-   OR NEW.detail != OLD.detail
+WHEN NEW.title IS NOT OLD.title
+   OR NEW.summary IS NOT OLD.summary
+   OR NEW.detail IS NOT OLD.detail
 BEGIN
     DELETE FROM node_embeddings WHERE node_id = NEW.id;
 END;

@@ -235,17 +235,20 @@ fn assert_invalidation_trigger_covers_fields(
     let sql_upper = sql.to_uppercase();
     assert!(
         sql_upper.contains("NEW.TITLE != OLD.TITLE")
-            || sql_upper.contains("NEW.TITLE <> OLD.TITLE"),
+            || sql_upper.contains("NEW.TITLE <> OLD.TITLE")
+            || sql_upper.contains("NEW.TITLE IS NOT OLD.TITLE"),
         "Trigger missing title change check"
     );
     assert!(
         sql_upper.contains("NEW.SUMMARY != OLD.SUMMARY")
-            || sql_upper.contains("NEW.SUMMARY <> OLD.SUMMARY"),
+            || sql_upper.contains("NEW.SUMMARY <> OLD.SUMMARY")
+            || sql_upper.contains("NEW.SUMMARY IS NOT OLD.SUMMARY"),
         "Trigger missing summary change check"
     );
     assert!(
         sql_upper.contains("NEW.DETAIL != OLD.DETAIL")
-            || sql_upper.contains("NEW.DETAIL <> OLD.DETAIL"),
+            || sql_upper.contains("NEW.DETAIL <> OLD.DETAIL")
+            || sql_upper.contains("NEW.DETAIL IS NOT OLD.DETAIL"),
         "Trigger missing detail change check"
     );
     Ok(())
