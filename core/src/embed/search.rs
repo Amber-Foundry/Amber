@@ -101,14 +101,24 @@ pub fn find_top_n_similar(
     }
 
     // Sort descending by similarity score, with a deterministic secondary sort alphabetically by node_id.
-    candidates.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
-
     if candidates.len() > n {
+        candidates.select_nth_unstable_by(n, |a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        candidates[0..n].sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
         candidates.truncate(n);
+    } else {
+        candidates.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
     }
 
     Ok(candidates)
