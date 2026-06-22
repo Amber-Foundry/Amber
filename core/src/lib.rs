@@ -1094,29 +1094,56 @@ fn build_embed_engine_from_settings(
     build_embed_engine_from_config(conn, &settings)
 }
 
-fn spawn_single_node_embedding(db_path: PathBuf, node_id: String) {
-    tauri::async_runtime::spawn_blocking(move || {
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
-                let mut conn = open_connection(&db_path)?;
-                let engine =
-                    build_embed_engine_from_settings(&conn).map_err(|err| err.to_string())?;
-                let cancel = AtomicBool::new(false);
-                embed::embed_node(&mut conn, &node_id, engine.as_ref(), &cancel)
-                    .map(|_| ())
-                    .map_err(|err| err.to_string())
-            }));
+struct SingleNodeEmbedTask {
+    db_path: PathBuf,
+    node_id: String,
+}
 
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                eprintln!("[embed] single-node embedding failed for {node_id}: {err}");
+static SINGLE_NODE_EMBED_TX: std::sync::OnceLock<std::sync::mpsc::Sender<SingleNodeEmbedTask>> =
+    std::sync::OnceLock::new();
+
+fn spawn_single_node_embedding(db_path: PathBuf, node_id: String) {
+    let tx = SINGLE_NODE_EMBED_TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<SingleNodeEmbedTask>();
+
+        std::thread::spawn(move || {
+            for task in rx {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<(), String> {
+                        let mut conn = open_connection(&task.db_path)?;
+                        let engine = build_embed_engine_from_settings(&conn)
+                            .map_err(|err| err.to_string())?;
+                        let cancel = AtomicBool::new(false);
+                        embed::embed_node(&mut conn, &task.node_id, engine.as_ref(), &cancel)
+                            .map(|_| ())
+                            .map_err(|err| err.to_string())
+                    },
+                ));
+
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        eprintln!(
+                            "[embed] single-node embedding failed for {}: {err}",
+                            task.node_id
+                        );
+                    }
+                    Err(_) => {
+                        eprintln!(
+                            "[embed] single-node embedding panicked for {}",
+                            task.node_id
+                        );
+                    }
+                }
             }
-            Err(_) => {
-                eprintln!("[embed] single-node embedding panicked for {node_id}");
-            }
-        }
+        });
+
+        tx
     });
+
+    if let Err(err) = tx.send(SingleNodeEmbedTask { db_path, node_id }) {
+        eprintln!("[embed] failed to send task to single-node embedding queue: {err}");
+    }
 }
 
 fn clear_matching_embed_job(
