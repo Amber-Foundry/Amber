@@ -1,9 +1,10 @@
-.embedding-settings-panel{
+.embedding-settings-panel {
   display: grid;
   align-content: start;
   gap: 16px;
 }
-.embedding-settings-title{
+
+.embedding-settings-title {
   margin: 0;
   font-size: 0.78rem;
   font-weight: 600;
@@ -11,13 +12,89 @@
   text-transform: uppercase;
   color: rgba(27, 26, 23, 0.6);
 }
-.embedding-settings-item{
+
+.embedding-settings-label {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(27, 26, 23, 0.35);
+  margin-bottom: 2px;
+}
+
+.embedding-settings-item {
   margin: 0;
   font-size: 0.72rem;
   color: rgba(27, 26, 23, 0.5);
-  text-align: center;
 }
-.embedding-settings-button{
+
+/* Jaccard warning badge */
+.embedding-jaccard-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(188, 108, 37, 0.08);
+  border: 1px solid rgba(188, 108, 37, 0.25);
+  font-size: 0.72rem;
+  color: rgba(150, 80, 20, 0.9);
+  line-height: 1.45;
+}
+
+.embedding-jaccard-warning-icon {
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  margin-top: 1px;
+}
+
+/* Coverage bar */
+.embedding-coverage {
+  display: grid;
+  gap: 6px;
+}
+
+.embedding-coverage-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.embedding-coverage-pct {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--primary-color, #bc6c25);
+}
+
+.embedding-progress-track {
+  height: 5px;
+  border-radius: 99px;
+  background: rgba(27, 26, 23, 0.1);
+  overflow: hidden;
+}
+
+.embedding-progress-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: var(--primary-color, #bc6c25);
+  transition: width 0.5s ease;
+}
+
+.embedding-last-computed {
+  text-align: left;
+  color: rgba(27, 26, 23, 0.35);
+  font-size: 0.68rem;
+}
+
+/* Actions */
+.embedding-settings-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.embedding-settings-button {
   flex: 1;
   padding: 8px 12px;
   border-radius: 8px;
@@ -29,12 +106,39 @@
   cursor: pointer;
   transition: all 0.2s ease;
 }
-.embedding-settings-button:hover{
+
+.embedding-settings-button:hover {
   background: rgba(255, 255, 255, 0.4);
-  color: var(--primary-color);
+  color: var(--primary-color, #bc6c25);
 }
-.embedding-settings-button.active{
+
+.embedding-settings-button.active {
   background: white;
-  color: var(--primary-color);
+  color: var(--primary-color, #bc6c25);
   box-shadow: 0 2px 8px rgba(188, 108, 37, 0.15);
+}
+
+/* Spinner */
+.embedding-spinner-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+}
+
+.embedding-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(188, 108, 37, 0.2);
+  border-top-color: var(--primary-color, #bc6c25);
+  border-radius: 50%;
+  animation: embedding-spin 0.75s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes embedding-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

@@ -18,6 +18,8 @@ import {
   getApiKey,
   setApiKey,
 } from "../utils/settings";
+import EmbeddingSettings from "./EmbeddingSettings";
+import { cancelReembed, startReembed } from "../services/embedding";
 
 const DEV_SAMPLE_ONBOARDING_ANSWERS = `{
   "displayName": "Dev Tester",
@@ -280,6 +282,16 @@ function CloudSettings({
     </div>
   );
 }
+///TEMP TYPES
+type EmbeddingStatus = {
+  activeModel: string;
+  tier: string;
+  backend: string;
+  coveragePercent: number;
+  lastComputedAt: string | null;
+  jaccardFallbackActive: boolean;
+  reembedInProgress: boolean;
+};
 
 function LlmSettings() {
   const showDevOnboardingTools = import.meta.env.DEV;
@@ -309,6 +321,9 @@ function LlmSettings() {
   const [hybridTab, setHybridTab] = useState<"local" | "cloud">("local");
 
   const localEndpoint = localProvider === "ollama" ? ollamaEndpoint : lmStudioEndpoint;
+
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
+  const [embeddingLoading] = useState(true);
 
   useEffect(() => {
     if (!showDevOnboardingTools) return;
@@ -575,6 +590,20 @@ function LlmSettings() {
             </div>
           </div>
         )}
+        <EmbeddingSettings
+          status={embeddingStatus}
+          loading={embeddingLoading}
+          onReembed={() => {
+            void startReembed().then(() =>
+              setEmbeddingStatus((s) => (s ? { ...s, reembedInProgress: true } : s))
+            );
+          }}
+          onCancelReembed={() => {
+            void cancelReembed().then(() =>
+              setEmbeddingStatus((s) => (s ? { ...s, reembedInProgress: false } : s))
+            );
+          }}
+        />
       </div>
 
       {showDevOnboardingTools ? (

@@ -8,10 +8,7 @@ type EmbeddingStatus = {
   jaccardFallbackActive: boolean;
   reembedInProgress: boolean;
 };
-export async function invokeTyped<T>(
-  _command: string,
-  _payload?: unknown
-): Promise<T> {
+export async function invokeTyped<T>(_command: string, _payload?: unknown): Promise<T> {
   console.warn(`invokeTyped mock called: ${_command}`);
 
   return undefined as T;
