@@ -1,16 +1,18 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chat::ChatMessage;
 use rusqlite::OptionalExtension;
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 mod auth;
 mod chat;
+pub mod embed;
 pub mod ipc_types;
 pub mod llm;
 pub mod memory_agent;
@@ -23,6 +25,7 @@ use ipc_types::{
     NodeUpdateInput, OnboardingNodeCommitInput, OnboardingProposedNode, Tag, TagCreateInput, Vault,
     VaultCreateInput, VaultUpdateInput,
 };
+pub use ipc_types::{EmbeddingReembedInput, EmbeddingStatus};
 
 // MARK: Internal Types and Constants
 
@@ -31,6 +34,14 @@ use ipc_types::{
 const DEFAULT_ASSEMBLER_MAX_TOKENS: usize = 8000;
 
 static MEMORY_AGENT_LIMITER: std::sync::OnceLock<
+    governor::RateLimiter<
+        governor::state::direct::NotKeyed,
+        governor::state::InMemoryState,
+        governor::clock::DefaultClock,
+    >,
+> = std::sync::OnceLock::new();
+
+static EMBEDDING_LIMITER: std::sync::OnceLock<
     governor::RateLimiter<
         governor::state::direct::NotKeyed,
         governor::state::InMemoryState,
@@ -701,6 +712,9 @@ fn run_seed_data(conn: &mut Connection) -> Result<(), String> {
     )
     .map_err(|err| format!("Failed inserting default settings: {err}"))?;
 
+    embed::seed_embedding_defaults(&tx)
+        .map_err(|err| format!("Failed inserting default embedding settings: {err}"))?;
+
     tx.execute(
         "INSERT OR IGNORE INTO vaults (id, name, icon, description, privacy_tier, priority_profile, sort_order, meta)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
@@ -936,6 +950,7 @@ fn run_priority_refresh(db_path: &std::path::Path) -> Result<usize, String> {
 pub(crate) struct DbState {
     pub(crate) db_path: PathBuf,
     pub(crate) redacted_session_key: Mutex<Option<redacted::SessionKey>>,
+    pub(crate) embed_job: Arc<Mutex<Option<embed::EmbedJobHandle>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -969,7 +984,222 @@ pub fn check_rate_limit(key: &str) -> Result<(), String> {
             );
         }
     }
+    if key == "embedding" {
+        let limiter = EMBEDDING_LIMITER.get_or_init(|| {
+            let quota = match governor::Quota::with_period(std::time::Duration::from_secs(5)) {
+                Some(q) => q,
+                None => {
+                    let fallback_nonzero = std::num::NonZeroU32::MIN;
+                    governor::Quota::per_second(fallback_nonzero)
+                }
+            };
+            governor::RateLimiter::direct(quota)
+        });
+
+        if limiter.check().is_err() {
+            return Err(
+                "Rate limit exceeded for embedding operations. Please wait before starting another embedding job."
+                    .to_string(),
+            );
+        }
+    }
     Ok(())
+}
+
+fn with_embed_job_lock<T, F>(
+    embed_job: &Arc<Mutex<Option<embed::EmbedJobHandle>>>,
+    f: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&mut Option<embed::EmbedJobHandle>) -> T,
+{
+    let mut guard = embed_job
+        .lock()
+        .map_err(|_| "Embedding job state lock is poisoned; restart the app.".to_string())?;
+    Ok(f(&mut guard))
+}
+
+pub fn build_embedding_status(
+    conn: &Connection,
+    reembed_in_progress: bool,
+) -> Result<EmbeddingStatus, String> {
+    let settings = embed::get_embedding_settings(conn)?;
+    let (embedded, total) = embed::storage::count_coverage(conn, &settings.model)?;
+    let coverage_percent = if total == 0 {
+        0.0
+    } else {
+        (embedded as f64 / total as f64) * 100.0
+    };
+    let jaccard_fallback_active = settings.backend.eq_ignore_ascii_case("onnx")
+        && build_embed_engine_from_settings(conn).is_err();
+
+    Ok(EmbeddingStatus {
+        model: settings.model,
+        tier: settings.tier,
+        backend: settings.backend,
+        coverage_percent,
+        last_computed_at: settings.last_computed_at,
+        jaccard_fallback_active,
+        reembed_in_progress,
+    })
+}
+
+fn build_embed_engine_from_config(
+    conn: &Connection,
+    settings: &embed::EmbeddingSettings,
+) -> Result<Box<dyn embed::EmbedEngine>, embed::EmbedError> {
+    match settings.backend.to_ascii_lowercase().as_str() {
+        "onnx" => {
+            let config = embed::chunking_config_for_settings(settings).map_err(|err| {
+                embed::EmbedError::InferenceFailed(format!("embedding ONNX config failed: {err}"))
+            })?;
+            Ok(Box::new(embed::BundledEmbedEngine::new(
+                settings.model.clone(),
+                config.dims,
+            )?))
+        }
+        "ollama" => {
+            let registry = embed::load_registry().map_err(|err| {
+                embed::EmbedError::InferenceFailed(format!("embedding registry load failed: {err}"))
+            })?;
+            if settings.model != registry.ollama_default.model_id {
+                return Err(embed::EmbedError::InferenceFailed(format!(
+                    "embedding.model '{}' does not match Ollama default model '{}'",
+                    settings.model, registry.ollama_default.model_id
+                )));
+            }
+            let endpoint = embed::get_local_model_endpoint(conn).map_err(|err| {
+                embed::EmbedError::InferenceFailed(format!(
+                    "local model endpoint read failed: {err}"
+                ))
+            })?;
+            Ok(Box::new(embed::OllamaEmbedEngine::new(
+                endpoint,
+                settings.model.clone(),
+                registry.ollama_default.dims,
+            )))
+        }
+        other => Err(embed::EmbedError::InferenceFailed(format!(
+            "unsupported embedding backend: {other}"
+        ))),
+    }
+}
+
+fn build_embed_engine_from_settings(
+    conn: &Connection,
+) -> Result<Box<dyn embed::EmbedEngine>, embed::EmbedError> {
+    let settings = embed::get_embedding_settings(conn).map_err(|err| {
+        embed::EmbedError::InferenceFailed(format!("embedding settings read failed: {err}"))
+    })?;
+    build_embed_engine_from_config(conn, &settings)
+}
+
+struct SingleNodeEmbedTask {
+    db_path: PathBuf,
+    node_id: String,
+}
+
+static SINGLE_NODE_EMBED_TX: std::sync::OnceLock<std::sync::mpsc::Sender<SingleNodeEmbedTask>> =
+    std::sync::OnceLock::new();
+
+fn spawn_single_node_embedding(db_path: PathBuf, node_id: String) {
+    let tx = SINGLE_NODE_EMBED_TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<SingleNodeEmbedTask>();
+
+        std::thread::spawn(move || {
+            let mut cached_conn: Option<(PathBuf, Connection)> = None;
+            let mut cached_engine: Option<(embed::EmbeddingSettings, Box<dyn embed::EmbedEngine>)> =
+                None;
+
+            for task in rx {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<(), String> {
+                        let conn_is_valid = match &cached_conn {
+                            Some((path, _)) => path == &task.db_path,
+                            None => false,
+                        };
+                        if !conn_is_valid {
+                            let new_conn = open_connection(&task.db_path)?;
+                            cached_conn = Some((task.db_path.clone(), new_conn));
+                        }
+                        let conn = &mut cached_conn
+                            .as_mut()
+                            .ok_or_else(|| "Connection caching logic error".to_string())?
+                            .1;
+
+                        let current_settings =
+                            embed::get_embedding_settings(conn).map_err(|err| err.to_string())?;
+
+                        let need_rebuild = match &cached_engine {
+                            Some((settings, _)) => {
+                                settings.model != current_settings.model
+                                    || settings.backend != current_settings.backend
+                                    || settings.tier != current_settings.tier
+                            }
+                            None => true,
+                        };
+
+                        if need_rebuild {
+                            let engine = build_embed_engine_from_config(conn, &current_settings)
+                                .map_err(|err| err.to_string())?;
+                            cached_engine = Some((current_settings, engine));
+                        }
+
+                        let (_, engine) = cached_engine
+                            .as_ref()
+                            .ok_or_else(|| "Engine caching logic error".to_string())?;
+
+                        let cancel = AtomicBool::new(false);
+                        embed::embed_node(conn, &task.node_id, engine.as_ref(), &cancel)
+                            .map(|_| ())
+                            .map_err(|err| err.to_string())
+                    },
+                ));
+
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        eprintln!(
+                            "[embed] single-node embedding failed for {}: {err}",
+                            task.node_id
+                        );
+                    }
+                    Err(_) => {
+                        eprintln!(
+                            "[embed] single-node embedding panicked for {}",
+                            task.node_id
+                        );
+                        cached_conn = None;
+                        cached_engine = None;
+                    }
+                }
+            }
+        });
+
+        tx
+    });
+
+    if let Err(err) = tx.send(SingleNodeEmbedTask { db_path, node_id }) {
+        eprintln!("[embed] failed to send task to single-node embedding queue: {err}");
+    }
+}
+
+fn clear_matching_embed_job(
+    embed_job: &Arc<Mutex<Option<embed::EmbedJobHandle>>>,
+    cancel: &Arc<AtomicBool>,
+) {
+    match embed_job.lock() {
+        Ok(mut guard) => {
+            if let Some(active_handle) = guard.as_ref() {
+                if Arc::ptr_eq(&active_handle.cancel, cancel) {
+                    *guard = None;
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("[re-embed] embed_job lock poisoned during worker cleanup");
+        }
+    }
 }
 
 pub fn is_node_private(conn: &Connection, node_id: &str) -> Result<bool, String> {
@@ -1316,6 +1546,7 @@ pub fn run() {
             app.manage(DbState {
                 db_path: db_path.clone(),
                 redacted_session_key: Mutex::new(None),
+                embed_job: Arc::new(Mutex::new(None)),
             });
 
             let bg_path = db_path;
@@ -1341,6 +1572,9 @@ pub fn run() {
             db_ping,
             settings_get,
             settings_set,
+            embedding_get_status,
+            embedding_reembed_start,
+            embedding_reembed_cancel,
             chat_get_history,
             chat_append_message,
             chat_clear_history,
@@ -1721,9 +1955,51 @@ pub async fn test_helper_memory_extract_force(
     app.manage(AppState {
         db_path,
         redacted_session_key: std::sync::Mutex::new(None),
+        embed_job: Arc::new(std::sync::Mutex::new(None)),
     });
     let state = app.state::<AppState>();
     memory_extract_force(provider, endpoint, model, state).await
+}
+
+pub fn test_helper_init_embedding_db(db_path: std::path::PathBuf) -> Result<(), String> {
+    let mut conn = open_connection(&db_path)?;
+    run_migrations(&mut conn)?;
+    run_seed_data(&mut conn)
+}
+
+pub fn test_helper_embedding_get_status(
+    db_path: std::path::PathBuf,
+) -> Result<EmbeddingStatus, String> {
+    use tauri::Manager;
+    let app = tauri::test::mock_app();
+    app.manage(AppState {
+        db_path,
+        redacted_session_key: std::sync::Mutex::new(None),
+        embed_job: Arc::new(std::sync::Mutex::new(None)),
+    });
+    let state = app.state::<AppState>();
+    match embedding_get_status(state) {
+        IpcResponse::Ok { ok } => Ok(ok),
+        IpcResponse::Err { err } => Err(err),
+    }
+}
+
+pub fn test_helper_embedding_reembed_cancel(db_path: std::path::PathBuf) -> Result<bool, String> {
+    use tauri::Manager;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let app = tauri::test::mock_app();
+    app.manage(AppState {
+        db_path,
+        redacted_session_key: std::sync::Mutex::new(None),
+        embed_job: Arc::new(std::sync::Mutex::new(Some(embed::EmbedJobHandle {
+            cancel: Arc::clone(&cancel),
+        }))),
+    });
+    let state = app.state::<AppState>();
+    match embedding_reembed_cancel(state) {
+        IpcResponse::Ok { ok: () } => Ok(cancel.load(Ordering::Relaxed)),
+        IpcResponse::Err { err } => Err(err),
+    }
 }
 
 // MARK: Tauri Commands
@@ -1949,6 +2225,150 @@ fn settings_set(
         .map_err(|err| format!("Failed writing setting: {err}"))?;
         Ok(true)
     })())
+}
+
+#[tauri::command]
+fn embedding_get_status(state: tauri::State<'_, AppState>) -> IpcResponse<EmbeddingStatus> {
+    into_ipc((|| {
+        let reembed_in_progress = with_embed_job_lock(&state.embed_job, |slot| slot.is_some())?;
+        let conn = open_connection(&state.db_path)?;
+        build_embedding_status(&conn, reembed_in_progress)
+    })())
+}
+
+#[tauri::command]
+fn embedding_reembed_start(
+    state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    payload: EmbeddingReembedInput,
+) -> IpcResponse<()> {
+    into_ipc((|| {
+        check_rate_limit("embedding")?;
+        embed::validate_reembed_input(&payload)?;
+
+        let embed_job = Arc::clone(&state.embed_job);
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        with_embed_job_lock(&embed_job, |slot| {
+            if slot.is_some() {
+                return Err(
+                    "An embedding job is already active. Please cancel it or wait for it to finish."
+                        .to_string(),
+                );
+            }
+            *slot = Some(embed::EmbedJobHandle {
+                cancel: Arc::clone(&cancel),
+            });
+            Ok(())
+        })??;
+
+        let result = (|| -> Result<(String, Connection), String> {
+            let mut conn = open_connection(&state.db_path)?;
+
+            let temp_settings = embed::EmbeddingSettings {
+                model: payload.model.trim().to_string(),
+                tier: payload.tier.trim().to_ascii_lowercase(),
+                backend: payload.backend.trim().to_ascii_lowercase(),
+                last_computed_at: None,
+            };
+            build_embed_engine_from_config(&conn, &temp_settings)
+                .map_err(|err| format!("Failed to initialize embedding engine: {err}"))?;
+
+            let tx = conn
+                .transaction()
+                .map_err(|err| format!("Failed starting embedding settings transaction: {err}"))?;
+            let old_model = embed::get_embedding_settings(&tx)?.model;
+
+            embed::set_embedding_model(&tx, payload.model.trim())?;
+            embed::set_embedding_tier(&tx, &payload.tier.trim().to_ascii_lowercase())?;
+            embed::set_embedding_backend(&tx, &payload.backend.trim().to_ascii_lowercase())?;
+
+            tx.commit()
+                .map_err(|err| format!("Failed committing embedding settings: {err}"))?;
+            Ok((old_model, conn))
+        })();
+
+        let (old_model_id, conn) = match result {
+            Ok(val) => val,
+            Err(err) => {
+                let _ = with_embed_job_lock(&embed_job, |slot| {
+                    *slot = None;
+                });
+                return Err(err);
+            }
+        };
+
+        if let Ok(status) = build_embedding_status(&conn, true) {
+            let _emit_result = app_handle.emit("embedding-status-changed", status);
+        }
+
+        let db_path = state.db_path.clone();
+        let app_handle_clone = app_handle.clone();
+        let embed_job_worker = Arc::clone(&embed_job);
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_old_model = old_model_id;
+        let worker_new_model = payload.model.clone();
+
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut conn = match open_connection(&db_path) {
+                Ok(conn) => conn,
+                Err(err) => {
+                    eprintln!("[re-embed] Failed to open background connection: {err}");
+                    clear_matching_embed_job(&embed_job_worker, &worker_cancel);
+                    return;
+                }
+            };
+
+            let engine = match build_embed_engine_from_settings(&conn) {
+                Ok(engine) => engine,
+                Err(err) => {
+                    eprintln!("[re-embed] Failed to build engine in worker: {err}");
+                    clear_matching_embed_job(&embed_job_worker, &worker_cancel);
+                    if let Ok(status) = build_embedding_status(&conn, false) {
+                        let _emit_result =
+                            app_handle_clone.emit("embedding-status-changed", status);
+                    }
+                    return;
+                }
+            };
+
+            let old_model_arg = if worker_old_model != worker_new_model {
+                Some(worker_old_model.as_str())
+            } else {
+                None
+            };
+            let result =
+                embed::embed_all_nodes(&mut conn, engine.as_ref(), &worker_cancel, old_model_arg);
+            match result {
+                embed::EmbedJobResult::Completed { nodes_embedded } => {
+                    eprintln!("[re-embed] completed: embedded {nodes_embedded} node(s)");
+                }
+                embed::EmbedJobResult::Cancelled => {
+                    eprintln!("[re-embed] cancelled");
+                }
+                embed::EmbedJobResult::Failed(err) => {
+                    eprintln!("[re-embed] failed: {err}");
+                }
+            }
+
+            clear_matching_embed_job(&embed_job_worker, &worker_cancel);
+
+            if let Ok(status) = build_embedding_status(&conn, false) {
+                let _emit_result = app_handle_clone.emit("embedding-status-changed", status);
+            }
+        });
+
+        Ok(())
+    })())
+}
+
+#[tauri::command]
+fn embedding_reembed_cancel(state: tauri::State<'_, AppState>) -> IpcResponse<()> {
+    into_ipc(with_embed_job_lock(&state.embed_job, |slot| {
+        if let Some(handle) = slot.as_ref() {
+            handle.cancel.store(true, Ordering::Relaxed);
+        }
+    }))
 }
 
 #[tauri::command]
@@ -2913,6 +3333,8 @@ fn node_create(input: NodeCreateInput, state: tauri::State<'_, DbState>) -> IpcR
         tx.commit()
             .map_err(|err| format!("Failed committing node_create: {err}"))?;
 
+        spawn_single_node_embedding(state.db_path.clone(), id.clone());
+
         fetch_node_by_id(&conn, &id, session_key)
             .and_then(|node| node.ok_or_else(|| "Node not found after insert".to_string()))
     })())
@@ -2949,6 +3371,10 @@ fn node_update(input: NodeUpdateInput, state: tauri::State<'_, DbState>) -> IpcR
         let current = fetch_node_by_id(&tx, &input.id, session_key)?
             .filter(|node| node.deleted_at.is_none())
             .ok_or_else(|| format!("Node not found: {}", input.id))?;
+
+        let current_title = current.title.clone();
+        let current_summary = current.summary.clone();
+        let current_detail = current.detail.clone();
 
         let next_vault_id = input.vault_id.unwrap_or(current.vault_id);
         let next_sub_vault_id = input.sub_vault_id.or(current.sub_vault_id);
@@ -2991,6 +3417,16 @@ fn node_update(input: NodeUpdateInput, state: tauri::State<'_, DbState>) -> IpcR
                 )
             })? > 0;
         ensure_encrypted_node_can_be_unredacted(current_is_encrypted, session_key, should_encrypt)?;
+        let needs_reembed = embed::stored_text_columns_changed(
+            &current_title,
+            &current_summary,
+            current_detail.as_deref(),
+            current_is_encrypted,
+            should_encrypt,
+            &next_title,
+            &next_summary,
+            next_detail.as_deref(),
+        );
         let encrypted_payload = if should_encrypt {
             let key = session_key.ok_or_else(|| {
                 "Unlock redacted content with your master password before saving.".to_string()
@@ -3071,6 +3507,10 @@ fn node_update(input: NodeUpdateInput, state: tauri::State<'_, DbState>) -> IpcR
 
         tx.commit()
             .map_err(|err| format!("Failed committing node_update: {err}"))?;
+
+        if needs_reembed {
+            spawn_single_node_embedding(state.db_path.clone(), input.id.clone());
+        }
 
         fetch_node_by_id(&conn, &input.id, session_key).and_then(|node| {
             node.filter(|n| n.deleted_at.is_none())
@@ -3808,5 +4248,14 @@ mod tests {
         assert_eq!(private_nodes.len(), 1001);
         assert!(private_nodes.contains("node_0"));
         assert!(private_nodes.contains("node_1000"));
+    }
+
+    #[test]
+    fn embedding_rate_limit_rejects_immediate_second_call() {
+        let first = super::check_rate_limit("embedding");
+        assert!(first.is_ok());
+
+        let second = super::check_rate_limit("embedding");
+        assert!(second.is_err());
     }
 }

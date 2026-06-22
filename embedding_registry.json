@@ -1,0 +1,42 @@
+{
+  "tiers": {
+    "light": {
+      "model_id": "avsolatorio/GIST-small-Embedding-v0",
+      "params_m": 33,
+      "dims": 384,
+      "max_tokens": 512,
+      "onnx_size_mb": 65,
+      "chunk_target_tokens": [250, 350],
+      "chunk_overlap_tokens": [50, 64],
+      "rules": { "ram_gb_lt": 16, "vram_gb_lt": 8, "cpu_only": true }
+    },
+    "standard": {
+      "model_id": "avsolatorio/GIST-Embedding-v0",
+      "params_m": 109,
+      "dims": 768,
+      "max_tokens": 512,
+      "onnx_size_mb": 220,
+      "chunk_target_tokens": [250, 350],
+      "chunk_overlap_tokens": [50, 64],
+      "rules": { "ram_gb_range": [16, 31], "vram_gb_range": [8, 11] }
+    },
+    "quality": {
+      "model_id": "microsoft/harrier-oss-v1-270m",
+      "params_m": 268,
+      "dims": 640,
+      "max_tokens": 32768,
+      "onnx_size_mb": 500,
+      "chunk_target_tokens": [500, 800],
+      "chunk_overlap_tokens": [64, 80],
+      "fallback_model_id": "avsolatorio/GIST-Embedding-v0",
+      "rules": { "ram_gb_gte": 32, "vram_gb_gte_after_chat_headroom": 12 }
+    }
+  },
+  "ollama_default": {
+    "model_id": "nomic-embed-text",
+    "dims": 768,
+    "max_tokens": 8192,
+    "chunk_target_tokens": [300, 400],
+    "chunk_overlap_tokens": 64
+  }
+}
