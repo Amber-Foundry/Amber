@@ -1,3 +1,5 @@
+use crate::embed::{cosine_similarity, EmbedEngine};
+use rusqlite::Connection;
 use std::collections::HashSet;
 
 pub const STOPWORDS: &[&str] = &[
@@ -214,9 +216,33 @@ pub fn jaccard_similarity_pretokenized(set_a: &HashSet<String>, set_b: &HashSet<
     intersection_size / union_size
 }
 
-/// Compare pre-combined text blocks (e.g. title + summary). Reusable contract for M2.3 cosine.
-pub fn compute_text_similarity(candidate_text: &str, existing_text: &str) -> f64 {
-    jaccard_similarity(candidate_text, existing_text)
+fn cosine_via_embed(
+    candidate_text: &str,
+    existing_text: &str,
+    engine: &dyn EmbedEngine,
+) -> Option<f64> {
+    let texts = vec![candidate_text.to_string(), existing_text.to_string()];
+    let embeddings = engine.embed(&texts).ok()?;
+    if embeddings.len() != 2 {
+        return None;
+    }
+
+    Some(cosine_similarity(&embeddings[0], &embeddings[1]))
+}
+
+/// Compare pre-combined text blocks (e.g. title + summary).
+///
+/// Uses embedding cosine similarity when an engine is available, falling back to
+/// Jaccard token overlap when embeddings are unavailable.
+pub fn compute_text_similarity(
+    _conn: &Connection,
+    candidate_text: &str,
+    existing_text: &str,
+    engine: Option<&dyn EmbedEngine>,
+) -> f64 {
+    engine
+        .and_then(|eng| cosine_via_embed(candidate_text, existing_text, eng))
+        .unwrap_or_else(|| jaccard_similarity(candidate_text, existing_text))
 }
 
 /// Classify a similarity score into its matching action classification.
@@ -233,52 +259,111 @@ pub fn classify_similarity(score: f64) -> SimilarityClass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embed::EmbedError;
+
+    struct FakeEmbedEngine;
+
+    impl EmbedEngine for FakeEmbedEngine {
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+            Ok(texts
+                .iter()
+                .map(|text| {
+                    if text.contains("semantic match") {
+                        vec![1.0, 0.0]
+                    } else {
+                        vec![0.0, 1.0]
+                    }
+                })
+                .collect())
+        }
+
+        fn model_id(&self) -> &str {
+            "fake-model"
+        }
+
+        fn dims(&self) -> usize {
+            2
+        }
+    }
+
+    fn setup_conn() -> Connection {
+        match Connection::open_in_memory() {
+            Ok(conn) => conn,
+            Err(err) => panic!("Failed to open test DB: {err}"),
+        }
+    }
 
     #[test]
     fn test_identical_strings() {
+        let conn = setup_conn();
         let text = "MindVault is a local first secure personal knowledge base";
-        let score = compute_text_similarity(text, text);
+        let score = compute_text_similarity(&conn, text, text, None);
         assert!((score - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_disjoint_strings() {
+        let conn = setup_conn();
         let a = "apple orange banana";
         let b = "computer keyboard mouse";
-        let score = compute_text_similarity(a, b);
+        let score = compute_text_similarity(&conn, a, b, None);
         assert!(score < f64::EPSILON);
     }
 
     #[test]
     fn test_partial_overlap() {
+        let conn = setup_conn();
         // "learning Rust is fun" -> tokenize -> {"learning", "rust", "fun"} (3 words)
         // "learning Python is fun" -> tokenize -> {"learning", "python", "fun"} (3 words)
         // Intersection -> {"learning", "fun"} (2 words)
         // Union -> {"learning", "rust", "python", "fun"} (4 words)
         // Expected Jaccard -> 2 / 4 = 0.50
-        let score = compute_text_similarity("learning Rust is fun", "learning Python is fun");
+        let score = compute_text_similarity(
+            &conn,
+            "learning Rust is fun",
+            "learning Python is fun",
+            None,
+        );
         assert!((score - 0.50).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_empty_inputs() {
-        assert!(compute_text_similarity("", "test") < f64::EPSILON);
-        assert!(compute_text_similarity("test", "") < f64::EPSILON);
-        assert!(compute_text_similarity("", "") < f64::EPSILON);
+        let conn = setup_conn();
+        assert!(compute_text_similarity(&conn, "", "test", None) < f64::EPSILON);
+        assert!(compute_text_similarity(&conn, "test", "", None) < f64::EPSILON);
+        assert!(compute_text_similarity(&conn, "", "", None) < f64::EPSILON);
     }
 
     #[test]
     fn test_case_insensitivity() {
-        let score = compute_text_similarity("LEARNING RUST", "learning rust");
+        let conn = setup_conn();
+        let score = compute_text_similarity(&conn, "LEARNING RUST", "learning rust", None);
         assert!((score - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_stopword_filtering() {
+        let conn = setup_conn();
         // "about a the learning" -> stopwords filtered -> {"learning"}
         // "learning" -> {"learning"}
         // Expected Jaccard -> 1.0
-        let score = compute_text_similarity("about a the learning", "learning");
+        let score = compute_text_similarity(&conn, "about a the learning", "learning", None);
+        assert!((score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_compute_text_similarity_uses_cosine_when_engine_available() {
+        let conn = setup_conn();
+        let engine = FakeEmbedEngine;
+
+        let score = compute_text_similarity(
+            &conn,
+            "semantic match candidate",
+            "semantic match existing",
+            Some(&engine),
+        );
+
         assert!((score - 1.0).abs() < f64::EPSILON);
     }
 

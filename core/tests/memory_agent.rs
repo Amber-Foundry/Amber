@@ -187,7 +187,7 @@ fn test_jaccard_dedup_classifies_correctly() -> Result<(), Box<dyn Error>> {
         },
     ];
 
-    let changeset = build_changeset(&conn, &candidates, "test-session")
+    let changeset = build_changeset(&conn, &candidates, "test-session", None)
         .map_err(|err| format!("Failed compiling changeset: {err}"))?;
 
     assert_eq!(changeset.items.len(), 4);

@@ -1915,6 +1915,7 @@ pub async fn execute_memory_extraction_pipeline(
 
     // 7. Reuse a single connection for changeset build, persist, and retrieval
     let mut conn = open_connection(&db_path)?;
+    let embed_engine = build_embed_engine_from_settings(&conn).ok();
 
     let changeset_id: String = if let Some(ref signal) = correction_signal {
         let (id, _amended) = memory_agent::amendment::amend_or_create_changeset(
@@ -1923,14 +1924,19 @@ pub async fn execute_memory_extraction_pipeline(
             "default-session",
             &model,
             signal,
+            embed_engine.as_deref(),
         )?;
         id
     } else {
         let tx = conn
             .transaction()
             .map_err(|err| format!("Failed to start transaction: {err}"))?;
-        let pending_changeset =
-            memory_agent::changeset::build_changeset(&tx, &candidates, "default-session")?;
+        let pending_changeset = memory_agent::changeset::build_changeset(
+            &tx,
+            &candidates,
+            "default-session",
+            embed_engine.as_deref(),
+        )?;
         let persisted_id =
             memory_agent::persistence::persist_changeset(&tx, &pending_changeset, Some(&model))?;
         tx.commit()

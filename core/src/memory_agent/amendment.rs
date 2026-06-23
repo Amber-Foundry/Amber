@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection};
 use serde_json;
 
+use crate::embed::EmbedEngine;
 use crate::memory_agent;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -12,7 +13,7 @@ fn chrono_now_iso() -> String {
 }
 
 /// Extracts a lowercase `"title summary"` string from a proposed_data JSON value
-/// for use as the Jaccard comparison fingerprint.
+/// for use as the text comparison fingerprint.
 fn candidate_fingerprint(proposed_data: &serde_json::Value) -> String {
     let title = proposed_data
         .get("title")
@@ -125,6 +126,7 @@ pub fn amend_or_create_changeset(
     session_id: &str,
     model: &str,
     correction_signal: &crate::memory_agent::CorrectionSignal,
+    engine: Option<&dyn EmbedEngine>,
 ) -> Result<(String, bool), String> {
     let tx = conn
         .transaction()
@@ -136,7 +138,7 @@ pub fn amend_or_create_changeset(
     // ── 2a. No pending changeset — create a fresh one ────────────────────────
     if existing_changeset.is_none() {
         let pending_changeset =
-            memory_agent::changeset::build_changeset(&tx, candidates, session_id)?;
+            memory_agent::changeset::build_changeset(&tx, candidates, session_id, engine)?;
 
         let persisted_id =
             memory_agent::persistence::persist_changeset(&tx, &pending_changeset, Some(model))?;
@@ -185,7 +187,8 @@ pub fn amend_or_create_changeset(
             .filter(|(item_id, _)| !amended_item_ids.contains(item_id))
             .map(|(item_id, existing_data)| {
                 let existing_fp = candidate_fingerprint(existing_data);
-                let sim = memory_agent::jaccard_similarity(&candidate_fp, &existing_fp);
+                let sim =
+                    memory_agent::compute_text_similarity(&tx, &candidate_fp, &existing_fp, engine);
                 (item_id, sim)
             })
             .filter(|(_, sim)| *sim > 0.5)

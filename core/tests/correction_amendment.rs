@@ -283,6 +283,7 @@ fn test_amend_existing_changeset_in_place() -> Result<(), Box<dyn Error>> {
         session_id,
         model,
         &correction_signal,
+        None,
     )?;
 
     // Assert original changeset_items row was updated in-place, not duplicated
@@ -331,6 +332,7 @@ fn test_amend_creates_new_when_no_pending_exists() -> Result<(), Box<dyn Error>>
         session_id,
         model,
         &correction_signal,
+        None,
     )?;
 
     // Assert a new changeset is created normally
@@ -392,6 +394,7 @@ fn test_amend_appends_genuinely_new_candidate() -> Result<(), Box<dyn Error>> {
         session_id,
         model,
         &correction_signal,
+        None,
     )?;
 
     // Assert B is inserted as a new row and item_count is incremented
@@ -472,6 +475,7 @@ fn test_amend_prevents_multiple_candidates_matching_same_item() -> Result<(), Bo
         session_id,
         model,
         &correction_signal,
+        None,
     )?;
 
     // The returned changeset should be the same, and it was amended.
