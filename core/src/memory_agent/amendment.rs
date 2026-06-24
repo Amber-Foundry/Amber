@@ -224,6 +224,13 @@ pub fn amend_or_create_changeset(
                         e, embedded_count
                     )
                 })?;
+                if vectors.len() != chunk.len() {
+                    return Err(format!(
+                        "Embedding engine returned {} vectors for a chunk of {} texts",
+                        vectors.len(),
+                        chunk.len()
+                    ));
+                }
                 for (fp, vec) in chunk.iter().zip(vectors) {
                     embedding_map.insert(fp.clone(), vec);
                 }

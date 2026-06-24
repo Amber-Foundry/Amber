@@ -278,6 +278,13 @@ pub fn build_changeset(
                         e, embedded_count
                     )
                 })?;
+                if vectors.len() != chunk.len() {
+                    return Err(format!(
+                        "Embedding engine returned {} vectors for a chunk of {} texts",
+                        vectors.len(),
+                        chunk.len()
+                    ));
+                }
                 let chunk_start = embedded_count;
                 for (chunk_offset, vec) in vectors.into_iter().enumerate() {
                     let candidate_idx = texts_to_embed[chunk_start + chunk_offset].0;
