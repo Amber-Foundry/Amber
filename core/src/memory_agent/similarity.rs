@@ -221,6 +221,9 @@ fn cosine_via_embed(
     existing_text: &str,
     engine: &dyn EmbedEngine,
 ) -> Option<f64> {
+    if candidate_text == existing_text {
+        return Some(1.0);
+    }
     let texts = vec![candidate_text.to_string(), existing_text.to_string()];
     let embeddings = engine.embed(&texts).ok()?;
     if embeddings.len() != 2 {
