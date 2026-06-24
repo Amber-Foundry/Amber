@@ -158,6 +158,11 @@ pub fn amend_or_create_changeset(
 
     let mut amended_item_ids = std::collections::HashSet::new();
 
+    // Gather all unique fingerprints
+    let mut unique_fps = std::collections::HashSet::new();
+
+    let mut candidate_fingerprints = Vec::with_capacity(candidates.len());
+    let mut candidate_datas = Vec::with_capacity(candidates.len());
     for candidate in candidates {
         let resolved_vault_id = candidate
             .target_vault_key
@@ -166,8 +171,7 @@ pub fn amend_or_create_changeset(
             .unwrap_or("vault_root_graph")
             .to_string();
 
-        // Build the base proposed_data for this candidate.
-        let mut candidate_data = serde_json::json!({
+        let candidate_data = serde_json::json!({
             "title":            candidate.title,
             "summary":          candidate.summary,
             "detail":           candidate.detail,
@@ -179,20 +183,88 @@ pub fn amend_or_create_changeset(
             "action":           candidate.action,
         });
 
-        let candidate_fp = candidate_fingerprint(&candidate_data);
+        let fp = candidate_fingerprint(&candidate_data);
+        unique_fps.insert(fp.clone());
+        candidate_fingerprints.push(fp);
+        candidate_datas.push(candidate_data);
+    }
+
+    let mut pending_item_fingerprints = Vec::with_capacity(pending_items.len());
+    for (_, existing_data) in &pending_items {
+        let fp = candidate_fingerprint(existing_data);
+        unique_fps.insert(fp.clone());
+        pending_item_fingerprints.push(fp);
+    }
+
+    // Pre-compute embeddings in bulk
+    let mut embedding_map = std::collections::HashMap::new();
+    if let Some(eng) = engine {
+        let unique_fps_vec: Vec<String> = unique_fps.into_iter().collect();
+        if !unique_fps_vec.is_empty() {
+            let mut to_embed = Vec::new();
+            for fp in &unique_fps_vec {
+                let trimmed = fp.trim();
+                if !trimmed.is_empty() {
+                    to_embed.push(fp.clone());
+                } else {
+                    let mut fallback_vec = vec![0.0; eng.dims()];
+                    if !fallback_vec.is_empty() {
+                        fallback_vec[0] = 1.0;
+                    }
+                    embedding_map.insert(fp.clone(), fallback_vec);
+                }
+            }
+
+            const BATCH_SIZE: usize = 32;
+            let mut embedded_count = 0;
+            for chunk in to_embed.chunks(BATCH_SIZE) {
+                let vectors = eng.embed(chunk).map_err(|e| {
+                    format!(
+                        "Failed to generate bulk embeddings: {:?} (successfully embedded {} items)",
+                        e, embedded_count
+                    )
+                })?;
+                for (fp, vec) in chunk.iter().zip(vectors) {
+                    embedding_map.insert(fp.clone(), vec);
+                }
+                embedded_count += chunk.len();
+            }
+        }
+    }
+
+    for (idx, candidate) in candidates.iter().enumerate() {
+        let mut candidate_data = candidate_datas[idx].clone();
+        let candidate_fp = &candidate_fingerprints[idx];
 
         // Find the highest-similarity existing item above the 50 % threshold.
-        let best_match = pending_items
-            .iter()
-            .filter(|(item_id, _)| !amended_item_ids.contains(item_id))
-            .map(|(item_id, existing_data)| {
-                let existing_fp = candidate_fingerprint(existing_data);
-                let sim =
-                    memory_agent::compute_text_similarity(&tx, &candidate_fp, &existing_fp, engine);
-                (item_id, sim)
-            })
-            .filter(|(_, sim)| *sim > 0.5)
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut best_match = None;
+        let mut max_sim = 0.5;
+
+        for (item_idx, (item_id, _)) in pending_items.iter().enumerate() {
+            if amended_item_ids.contains(item_id) {
+                continue;
+            }
+            let existing_fp = &pending_item_fingerprints[item_idx];
+            let sim = if engine.is_some() {
+                let c_vec = embedding_map.get(candidate_fp).ok_or_else(|| {
+                    format!("Missing cached embedding for candidate: '{}'", candidate_fp)
+                })?;
+                let e_vec = embedding_map.get(existing_fp).ok_or_else(|| {
+                    format!(
+                        "Missing cached embedding for pending item: '{}'",
+                        existing_fp
+                    )
+                })?;
+                crate::embed::cosine_similarity(c_vec, e_vec)
+            } else {
+                crate::memory_agent::similarity::jaccard_similarity(candidate_fp, existing_fp)
+            };
+
+            if sim > max_sim {
+                max_sim = sim;
+                best_match = Some((item_id, sim));
+            }
+        }
 
         if let Some((matched_id, similarity)) = best_match {
             // Track this item ID as amended so it is excluded from future matches.
