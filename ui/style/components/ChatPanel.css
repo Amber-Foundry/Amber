@@ -2106,6 +2106,93 @@
   color: #7d7a75;
 }
 
+/* PlantUML privacy consent placeholder card */
+.plantuml-consent-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 24px 24px;
+  text-align: center;
+  background: linear-gradient(135deg, rgba(255, 179, 71, 0.06) 0%, rgba(255, 140, 50, 0.03) 100%);
+  border-top: 1px solid rgba(180, 140, 80, 0.12);
+}
+
+.plantuml-consent-icon {
+  color: #d4a44a;
+  opacity: 0.85;
+  flex-shrink: 0;
+}
+
+.plantuml-consent-title {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #e0d5c0;
+  letter-spacing: 0.01em;
+}
+
+.plantuml-consent-message {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #9e978c;
+  max-width: 420px;
+}
+
+.plantuml-consent-message strong {
+  color: #b5a98a;
+}
+
+.plantuml-consent-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.plantuml-consent-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 0.76rem;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid rgba(180, 140, 80, 0.2);
+  background: rgba(180, 140, 80, 0.08);
+  color: #c9b988;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+}
+
+.plantuml-consent-btn:hover {
+  background: rgba(180, 140, 80, 0.16);
+  border-color: rgba(180, 140, 80, 0.35);
+  color: #ddd0a8;
+}
+
+.plantuml-consent-btn-primary {
+  background: rgba(212, 164, 74, 0.18);
+  border-color: rgba(212, 164, 74, 0.35);
+  color: #d4a44a;
+}
+
+.plantuml-consent-btn-primary:hover {
+  background: rgba(212, 164, 74, 0.28);
+  border-color: rgba(212, 164, 74, 0.5);
+  color: #e8be5e;
+}
+
+.plantuml-revoke-btn:hover {
+  color: #d48a8a;
+  background: rgba(200, 100, 100, 0.12);
+}
+
 /* User Message Truncation, Gradient Fade, and Show More Toggle Styles */
 .chat-bubble-content-wrapper {
   position: relative;

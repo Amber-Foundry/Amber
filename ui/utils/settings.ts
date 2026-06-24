@@ -209,6 +209,32 @@ export function setPlantUmlServer(url: string): void {
   window.dispatchEvent(new CustomEvent("mindvault:llm-settings-changed"));
 }
 
+const PLANTUML_CONSENT_KEY = "mindvault.plantuml.consent";
+
+// Module-scoped flag for session-only consent (not persisted).
+let sessionPlantUmlConsent = false;
+
+export function getPlantUmlConsent(): "disabled" | "session" | "always" {
+  const persisted = window.localStorage.getItem(PLANTUML_CONSENT_KEY);
+  if (persisted === "always") return "always";
+  if (sessionPlantUmlConsent) return "session";
+  return "disabled";
+}
+
+export function setPlantUmlConsent(value: "disabled" | "session" | "always"): void {
+  if (value === "session") {
+    sessionPlantUmlConsent = true;
+    // Don't persist — session consent is ephemeral
+  } else {
+    sessionPlantUmlConsent = false;
+    window.localStorage.setItem(PLANTUML_CONSENT_KEY, value);
+    void settingsSet(PLANTUML_CONSENT_KEY, value).catch((err) => {
+      console.error("Failed to persist PlantUML consent in SQLite:", err);
+    });
+  }
+  window.dispatchEvent(new CustomEvent("mindvault:plantuml-consent-changed"));
+}
+
 // Self-executing initialization block to restore all settings from the SQLite database into localStorage at startup.
 // This resolves issues where localStorage is cleared or flaky in Tauri.
 void (async () => {
@@ -221,6 +247,7 @@ void (async () => {
     CHAT_CHARTS_ENABLED_KEY,
     NODE_EDITOR_CHARTS_ENABLED_KEY,
     PLANTUML_SERVER_KEY,
+    PLANTUML_CONSENT_KEY,
     "mindvault.llm.ollama.model",
     "mindvault.llm.lmstudio.model",
     "mindvault.llm.openai.model",
