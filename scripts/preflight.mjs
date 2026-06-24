@@ -60,6 +60,7 @@ Usage:
 
 What it runs:
   - Prettier + ESLint + TypeScript (UI)
+  - Frontend + backend license checks
   - cargo fmt/clippy/test (core)
 `);
   process.exit(0);
@@ -77,6 +78,34 @@ function run(command, { cwd } = {}) {
     });
     child.on("exit", (code) => resolve(code ?? 1));
     child.on("error", () => resolve(1));
+  });
+}
+
+function runCapture(command, { cwd } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let combined = "";
+    child.stdout.on("data", (chunk) => {
+      combined += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      combined += chunk;
+    });
+    child.on("exit", (code) => resolve({ code: code ?? 1, combined }));
+    child.on("error", () => resolve({ code: 1, combined: "" }));
+  });
+}
+
+async function isCommandAvailable(cmd) {
+  return new Promise((resolve) => {
+    const checkCmd = process.platform === "win32" ? `where ${cmd}` : `which ${cmd}`;
+    const child = spawn(checkCmd, { shell: true, stdio: "ignore" });
+    child.on("exit", (code) => resolve(code === 0));
   });
 }
 
@@ -193,8 +222,47 @@ const steps = [
     cmd: "npm run test:all",
   },
   {
-    name: "license check",
+    name: "frontend license check",
     cmd: "npm run license-check",
+  },
+  {
+    name: "backend cargo-deny check",
+    cmd: async () => {
+      if (!(await isCommandAvailable("cargo-deny"))) {
+        console.warn(
+          "\n[Warning] cargo-deny is not installed. Backend license/security checks will be skipped locally.\n" +
+            "   To install cargo-deny locally, run: cargo install --locked cargo-deny\n" +
+            "   Note: This check is enforced in CI via .github/workflows/security.yml.\n"
+        );
+        return 0;
+      }
+
+      const { code, combined } = await runCapture(
+        "cargo deny --manifest-path core/Cargo.toml check --show-stats"
+      );
+      const lines = combined.split(/\r?\n/);
+
+      if (code === 0) {
+        for (const line of lines) {
+          if (/^\s*(advisories|bans|licenses|sources)\s+(ok|FAILED):/.test(line)) {
+            console.log(line.trimEnd());
+          }
+        }
+        return 0;
+      }
+
+      const errors = lines.filter((line) => /\berror\[/.test(line));
+      if (errors.length > 0) {
+        for (const line of errors) {
+          console.error(line);
+        }
+      } else {
+        for (const line of lines.filter((line) => line.trim()).slice(-12)) {
+          console.error(line);
+        }
+      }
+      return code;
+    },
   },
   {
     name: fix ? "cargo fmt" : "cargo fmt (check)",
