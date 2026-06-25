@@ -224,7 +224,10 @@ export function getPlantUmlConsent(): "disabled" | "session" | "always" {
 export function setPlantUmlConsent(value: "disabled" | "session" | "always"): void {
   if (value === "session") {
     sessionPlantUmlConsent = true;
-    // Don't persist — session consent is ephemeral
+    window.localStorage.setItem(PLANTUML_CONSENT_KEY, "disabled");
+    void settingsSet(PLANTUML_CONSENT_KEY, "disabled").catch((err) => {
+      console.error("Failed to clear PlantUML consent in SQLite:", err);
+    });
   } else {
     sessionPlantUmlConsent = false;
     window.localStorage.setItem(PLANTUML_CONSENT_KEY, value);

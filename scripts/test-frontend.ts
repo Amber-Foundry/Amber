@@ -45,6 +45,8 @@ import {
   setLlmMode,
   getPlantUmlServer,
   setPlantUmlServer,
+  getPlantUmlConsent,
+  setPlantUmlConsent,
 } from "../ui/utils/settings.ts";
 import type { Node, Vault } from "../ui/ipc.ts";
 import { evaluateExpression, preprocessExpression } from "../ui/utils/mathParser.ts";
@@ -505,6 +507,46 @@ function runSettingsTests() {
   const puml4 = getPlantUmlServer();
   if (puml4 !== "http://localhost:8080/puml") {
     throw new Error(`setPlantUmlServer Test 13 Failed: Expected HTTP URL kept, got '${puml4}'`);
+  }
+
+  // Test 14: Default consent should be 'disabled'
+  window.localStorage.clear();
+  const consent1 = getPlantUmlConsent();
+  if (consent1 !== "disabled") {
+    throw new Error(`getPlantUmlConsent Test 14 Failed: Expected 'disabled', got '${consent1}'`);
+  }
+
+  // Test 15: Transition to 'always' persists in localStorage
+  setPlantUmlConsent("always");
+  const consent2 = getPlantUmlConsent();
+  if (consent2 !== "always") {
+    throw new Error(`getPlantUmlConsent Test 15 Failed: Expected 'always', got '${consent2}'`);
+  }
+  const persistedConsent = window.localStorage.getItem("mindvault.plantuml.consent");
+  if (persistedConsent !== "always") {
+    throw new Error(
+      `setPlantUmlConsent Test 15 Failed: Expected 'always' in localStorage, got '${persistedConsent}'`
+    );
+  }
+
+  // Test 16: Transition to 'session' sets localStorage value to 'disabled' and returns 'session'
+  setPlantUmlConsent("session");
+  const consent3 = getPlantUmlConsent();
+  if (consent3 !== "session") {
+    throw new Error(`getPlantUmlConsent Test 16 Failed: Expected 'session', got '${consent3}'`);
+  }
+  const clearedConsent = window.localStorage.getItem("mindvault.plantuml.consent");
+  if (clearedConsent !== "disabled") {
+    throw new Error(
+      `setPlantUmlConsent Test 16 Failed: Expected localStorage to be 'disabled', got '${clearedConsent}'`
+    );
+  }
+
+  // Test 17: Transition back to 'disabled' clears session and sets 'disabled'
+  setPlantUmlConsent("disabled");
+  const consent4 = getPlantUmlConsent();
+  if (consent4 !== "disabled") {
+    throw new Error(`getPlantUmlConsent Test 17 Failed: Expected 'disabled', got '${consent4}'`);
   }
 
   // Reset/clean up
