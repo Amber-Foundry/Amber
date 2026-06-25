@@ -1,15 +1,8 @@
 import type { Node } from "../ipc";
+import { parseJSON } from "./parse";
 
-export function parsePriorityJson(priority: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(priority);
-    if (typeof parsed === "object" && parsed !== null) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // ignore
-  }
-  return {};
+export function parsePriorityJson(priority: string | null | undefined): Record<string, unknown> {
+  return parseJSON(priority);
 }
 
 export function getPriorityScore(node: Node): number {

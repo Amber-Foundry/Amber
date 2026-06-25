@@ -104,6 +104,7 @@ describe("PriorityDashboard Pure Helpers", () => {
       expect(parsePriorityJson("123")).toEqual({});
       expect(parsePriorityJson("null")).toEqual({});
       expect(parsePriorityJson('"string"')).toEqual({});
+      expect(parsePriorityJson("[1, 2, 3]")).toEqual({});
     });
 
     it("parses valid priority json objects", () => {
