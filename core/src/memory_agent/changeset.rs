@@ -1,10 +1,10 @@
-use crate::embed::{find_top_n_similar, EmbedEngine};
+use crate::embed::{find_top_n_similar, DbNode, EmbedEngine};
 use crate::memory_agent::parser::{CandidateAction, CandidateNode};
 use crate::memory_agent::similarity::{
     classify_similarity, jaccard_similarity, jaccard_similarity_pretokenized, tokenize,
     SimilarityClass,
 };
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -79,15 +79,6 @@ struct ExistingNodeData {
     pub node_type: String,
 }
 
-#[derive(Debug, Clone)]
-struct DbNode {
-    id: String,
-    vault_id: String,
-    title: String,
-    summary: String,
-    node_type: String,
-}
-
 fn fetch_node_detail(conn: &Connection, node_id: &str) -> Result<Option<String>, String> {
     conn.query_row(
         "SELECT detail FROM nodes WHERE id = ?1;",
@@ -95,27 +86,6 @@ fn fetch_node_detail(conn: &Connection, node_id: &str) -> Result<Option<String>,
         |row| row.get(0),
     )
     .map_err(|err| format!("Failed to fetch node detail for {node_id}: {err}"))
-}
-
-fn fetch_node_for_similarity(conn: &Connection, node_id: &str) -> Result<Option<DbNode>, String> {
-    conn.query_row(
-        "SELECT id, vault_id, title, summary, node_type
-         FROM nodes
-         WHERE id = ?1 AND deleted_at IS NULL AND is_archived = 0
-         LIMIT 1;",
-        [node_id],
-        |row| {
-            Ok(DbNode {
-                id: row.get(0)?,
-                vault_id: row.get(1)?,
-                title: row.get(2)?,
-                summary: row.get(3)?,
-                node_type: row.get(4)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(|err| format!("Failed to fetch node for similarity {node_id}: {err}"))
 }
 
 fn combined_text(title: &str, summary: &str) -> String {
@@ -140,12 +110,9 @@ fn best_match_via_embeddings(
             None
         },
     )?;
-    for (node_id, score) in matches {
-        if let Some(node) = fetch_node_for_similarity(conn, &node_id)? {
-            if !has_context || relevant_vaults.contains(&node.vault_id) {
-                return Ok(Some((node, score)));
-            }
-        }
+
+    if let Some((node, score)) = matches.into_iter().next() {
+        return Ok(Some((node, score)));
     }
 
     Ok(None)

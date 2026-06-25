@@ -179,13 +179,13 @@ fn test_cosine_search_ranking() -> Result<(), Box<dyn std::error::Error>> {
         mindvault_lib::embed::find_top_n_similar(&conn, &query_vector, "fake-model", 3, None)?;
 
     assert_eq!(matches.len(), 3);
-    assert_eq!(matches[0].0, "node_2");
+    assert_eq!(matches[0].0.id, "node_2");
     assert!((matches[0].1 - 1.0).abs() < 1e-4);
 
-    assert_eq!(matches[1].0, "node_3");
+    assert_eq!(matches[1].0.id, "node_3");
     assert!((matches[1].1 - (val_45 as f64)).abs() < 1e-3);
 
-    assert_eq!(matches[2].0, "node_1");
+    assert_eq!(matches[2].0.id, "node_1");
     assert!(matches[2].1.abs() < 1e-4);
 
     let _remove_result = fs::remove_file(db_path);
