@@ -66,7 +66,7 @@ pub fn embed_node_with_config(
     engine: &dyn EmbedEngine,
     chunk_config: &TierConfig,
     cancel: &AtomicBool,
-    is_unlocked: bool,
+    _is_unlocked: bool,
 ) -> Result<bool, EmbedError> {
     if cancel.load(Ordering::Relaxed) {
         return Err(EmbedError::Cancelled);
@@ -130,7 +130,7 @@ pub fn embed_node_with_config(
         }
     }
 
-    if effective_tier == "locked" && !is_unlocked {
+    if effective_tier == "locked" {
         let stub = crate::privacy::generate_pointer_stub(&title, node_id);
         title = stub;
         summary = String::new();
