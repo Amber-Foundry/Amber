@@ -1991,6 +1991,11 @@ pub fn test_helper_init_embedding_db(db_path: std::path::PathBuf) -> Result<(), 
     run_seed_data(&mut conn)
 }
 
+pub fn test_helper_run_migrations(db_path: std::path::PathBuf) -> Result<(), String> {
+    let mut conn = open_connection(&db_path)?;
+    run_migrations(&mut conn)
+}
+
 pub fn test_helper_embedding_get_status(
     db_path: std::path::PathBuf,
 ) -> Result<EmbeddingStatus, String> {

@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 fn migrations_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -327,5 +328,161 @@ fn schema_integrity_migration_has_tables_indexes_and_foreign_keys(
     assert_foreign_keys_exist(&conn);
     assert_composite_pk_exists(&conn)?;
     assert_invalidation_trigger_covers_fields(&conn)?;
+    Ok(())
+}
+
+fn load_migration_files() -> Vec<(i64, String, PathBuf)> {
+    let dir = migrations_dir();
+    let entries = fs::read_dir(&dir).unwrap_or_else(|err| {
+        panic!(
+            "failed to read migrations directory {}: {err}",
+            dir.display()
+        )
+    });
+
+    let mut migrations = Vec::new();
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|err| panic!("failed to read migration entry: {err}"));
+        let path = entry.path();
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_else(|| panic!("failed to get file name for path: {}", path.display()));
+
+        if !file_name.ends_with(".sql") {
+            continue;
+        }
+
+        let (version_text, _) = file_name.split_once('_').unwrap_or_else(|| {
+            panic!("migration file must follow '<version>_<name>.sql': {file_name}")
+        });
+        let version = version_text
+            .parse::<i64>()
+            .unwrap_or_else(|_| panic!("migration version must be numeric: {file_name}"));
+
+        migrations.push((version, file_name.to_string(), path));
+    }
+
+    migrations.sort_by_key(|(version, _, _)| *version);
+    migrations
+}
+
+fn apply_migrations_through_version(conn: &Connection, max_version: i64) {
+    for (version, name, path) in load_migration_files() {
+        if version > max_version {
+            break;
+        }
+        let sql = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+        if let Err(err) = conn.execute_batch(&sql) {
+            panic!("migration {version}_{name} failed: {err}");
+        }
+        if let Err(err) = conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
+            params![version, name],
+        ) {
+            panic!("failed to record migration {version}_{name}: {err}");
+        }
+    }
+}
+
+/// Pre-0008 0007: chunk schema from 0007, trigger without privacy/vault columns.
+const LEGACY_0007_NODE_EMBEDDINGS_SQL: &str = r#"
+DROP TABLE IF EXISTS node_embeddings;
+
+CREATE TABLE node_embeddings (
+    node_id     TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL DEFAULT 0,
+    chunk_type  TEXT NOT NULL DEFAULT 'primary'
+                CHECK (chunk_type IN ('primary', 'detail', 'import')),
+    model       TEXT NOT NULL,
+    embedding   BLOB NOT NULL,
+    computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (node_id, chunk_index, chunk_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_node_embeddings_model ON node_embeddings(model);
+
+DROP TRIGGER IF EXISTS trg_invalidate_embedding_on_update;
+
+CREATE TRIGGER trg_invalidate_embedding_on_update
+AFTER UPDATE ON nodes
+WHEN NEW.title IS NOT OLD.title
+   OR NEW.summary IS NOT OLD.summary
+   OR NEW.detail IS NOT OLD.detail
+BEGIN
+    DELETE FROM node_embeddings WHERE node_id = NEW.id;
+END;
+"#;
+
+#[test]
+fn migration_0008_upgrades_legacy_0007_embedding_triggers() -> Result<(), Box<dyn std::error::Error>>
+{
+    let temp_dir = std::env::temp_dir().join(format!(
+        "amber-migration-0008-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("system clock before UNIX epoch: {err}"))?
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir)?;
+    let db_path = temp_dir.join("legacy.db");
+
+    {
+        let conn = Connection::open(&db_path)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            "#,
+        )?;
+        apply_migrations_through_version(&conn, 6);
+
+        conn.execute_batch(LEGACY_0007_NODE_EMBEDDINGS_SQL)?;
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (7, '0007_node_embeddings_chunks.sql')",
+            [],
+        )?;
+
+        let legacy_trigger_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_invalidate_embedding_on_update'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(
+            !legacy_trigger_sql.contains("privacy_tier"),
+            "legacy 0007 trigger should not reference privacy_tier"
+        );
+    }
+
+    mindvault_lib::test_helper_run_migrations(db_path.clone())?;
+
+    let conn = Connection::open(&db_path)?;
+    let upgraded_trigger_sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_invalidate_embedding_on_update'",
+        [],
+        |row| row.get(0),
+    )?;
+    let upgraded_upper = upgraded_trigger_sql.to_uppercase();
+    assert!(
+        upgraded_upper.contains("PRIVACY_TIER")
+            && (upgraded_upper.contains("NEW.PRIVACY_TIER != OLD.PRIVACY_TIER")
+                || upgraded_upper.contains("NEW.PRIVACY_TIER <> OLD.PRIVACY_TIER")
+                || upgraded_upper.contains("NEW.PRIVACY_TIER IS NOT OLD.PRIVACY_TIER")),
+        "0008 upgrade should add privacy_tier to node invalidation trigger"
+    );
+
+    let applied_0008: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 8",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(applied_0008, 1, "migration 0008 should be recorded");
+
+    fs::remove_dir_all(temp_dir).ok();
     Ok(())
 }

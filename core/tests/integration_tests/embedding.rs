@@ -471,3 +471,57 @@ fn test_settings_set_validation_and_auto_align() -> Result<(), Box<dyn std::erro
     let _remove_result = fs::remove_file(db_path);
     Ok(())
 }
+
+#[test]
+fn test_privacy_tier_change_clears_stale_embeddings() -> Result<(), Box<dyn std::error::Error>> {
+    let db_path = unique_db_path("privacy_tier_invalidation")?;
+    mindvault_lib::test_helper_init_embedding_db(db_path.clone())?;
+    let conn = rusqlite::Connection::open(&db_path)?;
+
+    conn.execute(
+        "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_test', 'Test Vault', 'open');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail, privacy_tier)
+         VALUES ('node_test', 'vault_test', 'concept', 'Title', 'Summary', 'Detail', 'open');",
+        [],
+    )?;
+
+    mindvault_lib::embed::storage::upsert_embedding(
+        &conn,
+        &mindvault_lib::embed::EmbeddingRow {
+            node_id: "node_test".to_string(),
+            chunk_index: 0,
+            chunk_type: "primary".to_string(),
+            model: "avsolatorio/GIST-small-Embedding-v0".to_string(),
+            embedding: vec![1.0, 2.0],
+            computed_at: "time".to_string(),
+        },
+    )?;
+
+    let before = mindvault_lib::embed::storage::get_primary_embedding(
+        &conn,
+        "node_test",
+        "avsolatorio/GIST-small-Embedding-v0",
+    )?;
+    assert!(before.is_some());
+
+    conn.execute(
+        "UPDATE nodes SET privacy_tier = 'locked' WHERE id = 'node_test';",
+        [],
+    )?;
+
+    let after = mindvault_lib::embed::storage::get_primary_embedding(
+        &conn,
+        "node_test",
+        "avsolatorio/GIST-small-Embedding-v0",
+    )?;
+    assert!(
+        after.is_none(),
+        "privacy_tier change should invalidate stored embeddings"
+    );
+
+    let _remove_result = fs::remove_file(db_path);
+    Ok(())
+}

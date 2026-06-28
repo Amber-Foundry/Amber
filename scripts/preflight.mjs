@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import process from "node:process";
+import { runBannedPatternChecks } from "./check-banned-patterns.mjs";
 
 const args = new Set(process.argv.slice(2));
 const fixFromArgs = args.has("--fix");
@@ -109,79 +109,8 @@ async function isCommandAvailable(cmd) {
   });
 }
 
-function getBundledRipgrepPath() {
-  try {
-    const require = createRequire(import.meta.url);
-    const rgPath = require("@vscode/ripgrep").rgPath;
-    if (typeof rgPath === "string" && rgPath.length > 0) {
-      return rgPath.includes(" ") ? `"${rgPath}"` : rgPath;
-    }
-  } catch {
-    // VSCode ripgrep package is not installed or resolution failed.
-  }
-  return null;
-}
-
-function getPathRipgrepCommand() {
-  // Fall back to the globally installed `rg` binary on system PATH.
-  return "rg";
-}
-
-function getRgCommand() {
-  // Prefer the bundled cross-platform local ripgrep binary, falling back to system PATH.
-  return getBundledRipgrepPath() ?? getPathRipgrepCommand();
-}
-
-async function assertRgNoMatches({ name, args }) {
-  // ripgrep exit codes:
-  // 0 = matches found
-  // 1 = no matches
-  // 2 = error
-  const cmd = args.join(" ");
-  const code = await run(cmd);
-  if (code === 0) {
-    console.error(`\nBanned pattern matched: ${name}`);
-    return 1;
-  }
-  if (code === 1) {
-    return 0;
-  }
-  console.error(`\nBanned pattern check errored: ${name}`);
-  return code;
-}
-
-// Banned pattern regex to detect sensitive credentials printed in Rust logging statements.
-const BANNED_LOGGING_CREDENTIALS_REGEX =
-  '"(tracing|log)::(trace|debug|info|warn|error)!\\([^\\n]*(api_key|password|secret|token)\\s*="';
-
 async function runBannedPatterns() {
-  const rg = getRgCommand();
-  const checks = [
-    {
-      name: "XSS: dangerouslySetInnerHTML in ui/",
-      args: [rg, '"dangerouslySetInnerHTML"', "ui", "--glob", '"*.ts"', "--glob", '"*.tsx"'],
-    },
-    {
-      name: "IPC: invoke() directly in ui/components/",
-      args: [rg, '"invoke\\("', "ui/components"],
-    },
-    {
-      name: "TypeScript: explicit any in ui/",
-      args: [rg, '": any\\b|as any\\b"', "ui", "--glob", '"*.ts"', "--glob", '"*.tsx"'],
-    },
-    {
-      name: "Rust logging: secret-ish fields in core/src/",
-      args: [rg, BANNED_LOGGING_CREDENTIALS_REGEX, "core/src"],
-    },
-  ];
-
-  for (const check of checks) {
-    const code = await assertRgNoMatches(check);
-    if (code !== 0) {
-      return code;
-    }
-  }
-  return 0;
+  return runBannedPatternChecks();
 }
 
 const CARGO_MANIFEST_FLAGS = ["--manifest-path", "core/Cargo.toml"];
@@ -217,6 +146,8 @@ const steps = [
   },
   { name: "banned patterns", cmd: runBannedPatterns },
   { name: "tsc (noEmit)", cmd: "npx tsc --noEmit" },
+  { name: "frontend build", cmd: "npm run build" },
+  { name: "bundle size limit", cmd: "npx size-limit" },
   {
     name: "frontend tests",
     cmd: "npm run test:all",
