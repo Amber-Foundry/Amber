@@ -161,7 +161,9 @@ describe("OnboardingShell Component", () => {
 
     // Try going next on Step 2 (without selected model)
     await user.click(screen.getByText("Next"));
-    expect(screen.getByText("Configure endpoint + model before extraction.")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("Configure endpoint + model before extraction.")[0]
+    ).toBeInTheDocument();
   });
 
   it("tests LLM connection, fetches models, and allows extraction to transition to review", async () => {
@@ -207,7 +209,7 @@ describe("OnboardingShell Component", () => {
 
     // Model dropdown options should populate
     await waitFor(() => {
-      expect(screen.getByText("Connected. Found 2 model(s).")).toBeInTheDocument();
+      expect(screen.getAllByText("Connected. Found 2 model(s).")[0]).toBeInTheDocument();
     });
 
     const modelBtn = screen.getByRole("button", { name: "llama3" });
@@ -346,7 +348,7 @@ describe("OnboardingShell Component", () => {
 
     // Wait for the failure message and the Skip Extraction button to appear
     await waitFor(() => {
-      expect(screen.getByText("Failed to connect to LLM server")).toBeInTheDocument();
+      expect(screen.getAllByText("Failed to connect to LLM server")[0]).toBeInTheDocument();
     });
     const skipExtractionBtn = screen.getByText("Skip extraction");
     expect(skipExtractionBtn).toBeInTheDocument();
