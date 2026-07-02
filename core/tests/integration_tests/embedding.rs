@@ -264,6 +264,70 @@ fn test_model_migration_invalidates_old_vectors() -> Result<(), Box<dyn std::err
 }
 
 #[test]
+fn test_model_migration_cancellation_preserves_old_vectors(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db_path = unique_db_path("model_migration_cancel")?;
+    amber_lib::test_helper_init_embedding_db(db_path.clone())?;
+    let mut conn = rusqlite::Connection::open(&db_path)?;
+
+    conn.execute(
+        "INSERT INTO vaults (id, name) VALUES ('vault_test', 'Test Vault');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail)
+         VALUES ('node_test', 'vault_test', 'concept', 'Title', 'Summary', 'Detail');",
+        [],
+    )?;
+
+    amber_lib::embed::storage::upsert_embedding(
+        &conn,
+        &amber_lib::embed::EmbeddingRow {
+            node_id: "node_test".to_string(),
+            chunk_index: 0,
+            chunk_type: "primary".to_string(),
+            model: "old-model".to_string(),
+            embedding: vec![1.0, 2.0],
+            computed_at: "time".to_string(),
+        },
+    )?;
+
+    struct MockEngine;
+    impl amber_lib::embed::EmbedEngine for MockEngine {
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, amber_lib::embed::EmbedError> {
+            Ok(texts.iter().map(|_| vec![0.5, 0.5]).collect())
+        }
+        fn model_id(&self) -> &str {
+            "new-model"
+        }
+        fn dims(&self) -> usize {
+            2
+        }
+    }
+
+    let engine = MockEngine;
+    let cancel = std::sync::atomic::AtomicBool::new(true);
+    let res = amber_lib::embed::job::embed_all_nodes(
+        &mut conn,
+        &engine,
+        &cancel,
+        Some("old-model"),
+        false,
+    );
+    assert_eq!(res, amber_lib::embed::job::EmbedJobResult::Cancelled);
+
+    let old_rows = amber_lib::embed::storage::get_embeddings_for_model(&conn, "old-model")?;
+    assert_eq!(
+        old_rows.len(),
+        1,
+        "Old model embeddings must be preserved when migration is cancelled"
+    );
+
+    let _remove_result = fs::remove_file(db_path);
+    Ok(())
+}
+
+#[test]
 fn test_reembed_cancel() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("reembed_cancel")?;
     amber_lib::test_helper_init_embedding_db(db_path.clone())?;

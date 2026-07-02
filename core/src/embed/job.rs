@@ -248,17 +248,6 @@ pub fn embed_all_nodes(
         Err(err) => return EmbedJobResult::Failed(format!("embedding chunk config failed: {err}")),
     };
 
-    if let Some(model) = old_model_id.filter(|model| !model.trim().is_empty()) {
-        if cancel.load(Ordering::Relaxed) {
-            return EmbedJobResult::Cancelled;
-        }
-        if let Err(err) = delete_embeddings_for_model(conn, model) {
-            return EmbedJobResult::Failed(format!(
-                "failed deleting old model embeddings for {model}: {err}"
-            ));
-        }
-    }
-
     let node_ids = match list_active_node_ids(conn) {
         Ok(ids) => ids,
         Err(err) => return EmbedJobResult::Failed(err),
@@ -290,6 +279,17 @@ pub fn embed_all_nodes(
                     "[embed] Failed to embed node {node_id} (skipping and continuing): {err}"
                 );
             }
+        }
+    }
+
+    if let Some(model) = old_model_id.filter(|model| !model.trim().is_empty()) {
+        if cancel.load(Ordering::Relaxed) {
+            return EmbedJobResult::Cancelled;
+        }
+        if let Err(err) = delete_embeddings_for_model(conn, model) {
+            return EmbedJobResult::Failed(format!(
+                "failed deleting old model embeddings for {model}: {err}"
+            ));
         }
     }
 
