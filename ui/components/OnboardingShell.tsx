@@ -526,7 +526,7 @@ function OnboardingShell({ onComplete, onSkip, busy, errorMessage }: OnboardingS
           ) : null}
           {currentStep === LLM_STEP_INDEX ? (
             <div className="onboarding-llm-grid">
-              <details className="onboarding-advanced-details">
+              <details className="onboarding-advanced-details" open>
                 <summary>Advanced LLM settings</summary>
                 <div className="provider-toggle" role="radiogroup" aria-label="LLM provider">
                   <label>
