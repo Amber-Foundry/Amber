@@ -185,9 +185,6 @@ Join our [Discord Server](https://discord.gg/UYhqRHbH4M) to discuss features, ge
 Amber is built on a **three-repository Open Core model**:
 
 * **Amber Core** (This repository): The open-source core engine, desktop client UI, and local graph database/retrieval pipeline. This codebase is licensed under the **AGPLv3** copyleft license.
-* **Amber Pro** (Private repository): A proprietary Rust crate containing Pro and Team features (such as Shared Vaults, MCP Server integrations, Knowledge Gap Detection, Meta-Prompting, and contextual reminder systems). Official release binaries compile this crate in via the `--features pro` Cargo flag.
-* **Amber Cloud** (Private repository): The proprietary cloud services backend handling secure user authentication, Stripe billing, Backblaze B2/Cloudflare sync protocols, and compute credit ledgers.
-* **Amber Mobile** (Private repository): The proprietary companion app codebase for iOS and Android.
 
 ### Licensing for Commercial Use
 If you wish to embed or distribute the Amber engine inside closed-source proprietary software, or bypass the copyleft obligations of the AGPLv3 license, commercial licensing options are available. Please contact via Discord or LinkedIn.

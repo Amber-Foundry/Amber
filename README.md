@@ -317,11 +317,6 @@ Amber is built on a **three-repository Open Core model**:
 | Repository | Visibility | License | Contains |
 |---|---|---|---|
 | **Amber** | Public | AGPLv3 | Core engine, desktop app, local graph, retrieval pipeline — the complete Free-tier product |
-| **Amber Pro** | Private | Proprietary | Pro & Team features (Shared Vaults, Morning Brief, Meta-Prompting, Contextual Reminders, MCP Server) compiled into official releases via `--features pro` |
-| **Amber Cloud** | Private | Proprietary | Cloud sync, authentication, billing, cloud storage, compute credit ledger |
-| **Amber Mobile** | Private | Proprietary | iOS & Android companion app |
-
-The public repository compiles and runs as a fully functional Free-tier app. Official release binaries link the private `Amber-pro` crate; community builds from source get upgrade prompt stubs in place of Pro features.
 
 ### Commercial Licensing
 
