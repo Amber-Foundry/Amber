@@ -683,8 +683,8 @@ struct TestEmbedEngine {
     model_id: String,
 }
 
-impl mindvault_lib::embed::EmbedEngine for TestEmbedEngine {
-    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, mindvault_lib::embed::EmbedError> {
+impl amber_lib::embed::EmbedEngine for TestEmbedEngine {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, amber_lib::embed::EmbedError> {
         let val_45 = std::f32::consts::FRAC_1_SQRT_2;
         Ok(texts
             .iter()
@@ -725,7 +725,7 @@ fn test_cosine_dedup_classifies_correctly() -> Result<(), Box<dyn Error>> {
     conn.execute(
         "INSERT INTO node_embeddings (node_id, chunk_index, chunk_type, model, embedding, computed_at)
          VALUES ('node_existing', 0, 'primary', 'test-model', ?1, 'time');",
-        rusqlite::params![mindvault_lib::embed::storage::serialize_f32_vec(&[1.0, 0.0])],
+        rusqlite::params![amber_lib::embed::storage::serialize_f32_vec(&[1.0, 0.0])],
     )?;
 
     let engine = TestEmbedEngine {
