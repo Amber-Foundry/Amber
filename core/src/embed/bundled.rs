@@ -301,7 +301,13 @@ fn pad_token_id(tokenizer: &Tokenizer) -> i64 {
         return padding.pad_id as i64;
     }
 
-    tokenizer.token_to_id("").unwrap_or(0) as i64
+    for candidate in &["[PAD]", "<pad>", "<|endoftext|>", "<unk>"] {
+        if let Some(id) = tokenizer.token_to_id(candidate) {
+            return id as i64;
+        }
+    }
+
+    0
 }
 
 fn ensure_file_exists(path: &Path, label: &str) -> Result<(), EmbedError> {
@@ -453,6 +459,15 @@ mod tests {
             sanitize_model_id("avsolatorio/GIST-small-Embedding-v0"),
             "avsolatorio_GIST-small-Embedding-v0"
         );
+    }
+
+    #[test]
+    fn test_pad_token_id_fallback() {
+        let tokenizer = Tokenizer::from_file("../embedding_registry.json").ok();
+        if let Some(tok) = tokenizer {
+            let id = pad_token_id(&tok);
+            assert!(id >= 0);
+        }
     }
 
     #[test]
