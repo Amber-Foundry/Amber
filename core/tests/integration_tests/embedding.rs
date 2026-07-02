@@ -10,9 +10,9 @@ fn unique_db_path(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
 #[test]
 fn embedding_get_status_returns_seeded_defaults() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("embedding_status")?;
-    mindvault_lib::test_helper_init_embedding_db(db_path.clone())?;
+    amber_lib::test_helper_init_embedding_db(db_path.clone())?;
 
-    let status = mindvault_lib::test_helper_embedding_get_status(db_path.clone())?;
+    let status = amber_lib::test_helper_embedding_get_status(db_path.clone())?;
 
     assert_eq!(status.model, "avsolatorio/GIST-small-Embedding-v0");
     assert_eq!(status.tier, "light");
@@ -28,7 +28,7 @@ fn embedding_get_status_returns_seeded_defaults() -> Result<(), Box<dyn std::err
 fn embedding_reembed_cancel_sets_active_cancel_token() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("embedding_cancel")?;
 
-    let cancelled = mindvault_lib::test_helper_embedding_reembed_cancel(db_path.clone())?;
+    let cancelled = amber_lib::test_helper_embedding_reembed_cancel(db_path.clone())?;
 
     assert!(cancelled);
 
@@ -39,7 +39,7 @@ fn embedding_reembed_cancel_sets_active_cancel_token() -> Result<(), Box<dyn std
 #[test]
 fn test_storage_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("storage_round_trip")?;
-    mindvault_lib::test_helper_init_embedding_db(db_path.clone())?;
+    amber_lib::test_helper_init_embedding_db(db_path.clone())?;
     let conn = rusqlite::Connection::open(&db_path)?;
 
     // Insert vault and node to satisfy foreign keys
@@ -53,7 +53,7 @@ fn test_storage_round_trip() -> Result<(), Box<dyn std::error::Error>> {
         [],
     )?;
 
-    let row = mindvault_lib::embed::EmbeddingRow {
+    let row = amber_lib::embed::EmbeddingRow {
         node_id: "node_test".to_string(),
         chunk_index: 0,
         chunk_type: "primary".to_string(),
@@ -62,9 +62,9 @@ fn test_storage_round_trip() -> Result<(), Box<dyn std::error::Error>> {
         computed_at: "2026-06-23T12:00:00Z".to_string(),
     };
 
-    mindvault_lib::embed::storage::upsert_embedding(&conn, &row)?;
+    amber_lib::embed::storage::upsert_embedding(&conn, &row)?;
 
-    let read_opt = mindvault_lib::embed::storage::get_primary_embedding(
+    let read_opt = amber_lib::embed::storage::get_primary_embedding(
         &conn,
         "node_test",
         "avsolatorio/GIST-small-Embedding-v0",
@@ -85,7 +85,7 @@ fn test_chunking_long_detail() -> Result<(), Box<dyn std::error::Error>> {
     let summary = "This is the summary of my note.";
     let detail = "This is a sentence. ".repeat(100);
 
-    let config = mindvault_lib::embed::TierConfig {
+    let config = amber_lib::embed::TierConfig {
         model_id: "test-model".to_string(),
         params_m: 100,
         dims: 128,
@@ -98,7 +98,7 @@ fn test_chunking_long_detail() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let chunks =
-        mindvault_lib::embed::chunking::chunk_node_text(title, summary, Some(&detail), &config);
+        amber_lib::embed::chunking::chunk_node_text(title, summary, Some(&detail), &config);
 
     assert!(!chunks.is_empty());
     assert_eq!(chunks[0].chunk_type, "primary");
@@ -117,7 +117,7 @@ fn test_chunking_long_detail() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_cosine_search_ranking() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("cosine_search")?;
-    mindvault_lib::test_helper_init_embedding_db(db_path.clone())?;
+    amber_lib::test_helper_init_embedding_db(db_path.clone())?;
     let conn = rusqlite::Connection::open(&db_path)?;
 
     conn.execute(
@@ -135,9 +135,9 @@ fn test_cosine_search_ranking() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Node 1: orthogonal (cosine similarity 0.0)
-    mindvault_lib::embed::storage::upsert_embedding(
+    amber_lib::embed::storage::upsert_embedding(
         &conn,
-        &mindvault_lib::embed::EmbeddingRow {
+        &amber_lib::embed::EmbeddingRow {
             node_id: "node_1".to_string(),
             chunk_index: 0,
             chunk_type: "primary".to_string(),
@@ -148,9 +148,9 @@ fn test_cosine_search_ranking() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Node 2: identical (cosine similarity 1.0)
-    mindvault_lib::embed::storage::upsert_embedding(
+    amber_lib::embed::storage::upsert_embedding(
         &conn,
-        &mindvault_lib::embed::EmbeddingRow {
+        &amber_lib::embed::EmbeddingRow {
             node_id: "node_2".to_string(),
             chunk_index: 0,
             chunk_type: "primary".to_string(),
@@ -162,9 +162,9 @@ fn test_cosine_search_ranking() -> Result<(), Box<dyn std::error::Error>> {
 
     // Node 3: 45 degrees (cosine similarity should be ~0.707)
     let val_45 = std::f32::consts::FRAC_1_SQRT_2;
-    mindvault_lib::embed::storage::upsert_embedding(
+    amber_lib::embed::storage::upsert_embedding(
         &conn,
-        &mindvault_lib::embed::EmbeddingRow {
+        &amber_lib::embed::EmbeddingRow {
             node_id: "node_3".to_string(),
             chunk_index: 0,
             chunk_type: "primary".to_string(),
@@ -176,7 +176,7 @@ fn test_cosine_search_ranking() -> Result<(), Box<dyn std::error::Error>> {
 
     let query_vector = vec![1.0, 0.0];
     let matches =
-        mindvault_lib::embed::find_top_n_similar(&conn, &query_vector, "fake-model", 3, None)?;
+        amber_lib::embed::find_top_n_similar(&conn, &query_vector, "fake-model", 3, None)?;
 
     assert_eq!(matches.len(), 3);
     assert_eq!(matches[0].0.id, "node_2");
@@ -195,7 +195,7 @@ fn test_cosine_search_ranking() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_compute_text_similarity_falls_back_without_engine() -> Result<(), Box<dyn std::error::Error>>
 {
-    let score = mindvault_lib::memory_agent::similarity::compute_text_similarity(
+    let score = amber_lib::memory_agent::similarity::compute_text_similarity(
         "apple banana",
         "banana orange",
         None,
@@ -208,7 +208,7 @@ fn test_compute_text_similarity_falls_back_without_engine() -> Result<(), Box<dy
 #[test]
 fn test_model_migration_invalidates_old_vectors() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("model_migration")?;
-    mindvault_lib::test_helper_init_embedding_db(db_path.clone())?;
+    amber_lib::test_helper_init_embedding_db(db_path.clone())?;
     let mut conn = rusqlite::Connection::open(&db_path)?;
 
     conn.execute(
@@ -221,9 +221,9 @@ fn test_model_migration_invalidates_old_vectors() -> Result<(), Box<dyn std::err
         [],
     )?;
 
-    mindvault_lib::embed::storage::upsert_embedding(
+    amber_lib::embed::storage::upsert_embedding(
         &conn,
-        &mindvault_lib::embed::EmbeddingRow {
+        &amber_lib::embed::EmbeddingRow {
             node_id: "node_test".to_string(),
             chunk_index: 0,
             chunk_type: "primary".to_string(),
@@ -233,15 +233,12 @@ fn test_model_migration_invalidates_old_vectors() -> Result<(), Box<dyn std::err
         },
     )?;
 
-    let rows = mindvault_lib::embed::storage::get_embeddings_for_model(&conn, "old-model")?;
+    let rows = amber_lib::embed::storage::get_embeddings_for_model(&conn, "old-model")?;
     assert_eq!(rows.len(), 1);
 
     struct MockEngine;
-    impl mindvault_lib::embed::EmbedEngine for MockEngine {
-        fn embed(
-            &self,
-            texts: &[String],
-        ) -> Result<Vec<Vec<f32>>, mindvault_lib::embed::EmbedError> {
+    impl amber_lib::embed::EmbedEngine for MockEngine {
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, amber_lib::embed::EmbedError> {
             Ok(texts.iter().map(|_| vec![0.5, 0.5]).collect())
         }
         fn model_id(&self) -> &str {
@@ -254,18 +251,12 @@ fn test_model_migration_invalidates_old_vectors() -> Result<(), Box<dyn std::err
 
     let engine = MockEngine;
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    mindvault_lib::embed::job::embed_all_nodes(
-        &mut conn,
-        &engine,
-        &cancel,
-        Some("old-model"),
-        false,
-    );
+    amber_lib::embed::job::embed_all_nodes(&mut conn, &engine, &cancel, Some("old-model"), false);
 
-    let old_rows = mindvault_lib::embed::storage::get_embeddings_for_model(&conn, "old-model")?;
+    let old_rows = amber_lib::embed::storage::get_embeddings_for_model(&conn, "old-model")?;
     assert!(old_rows.is_empty());
 
-    let new_rows = mindvault_lib::embed::storage::get_embeddings_for_model(&conn, "new-model")?;
+    let new_rows = amber_lib::embed::storage::get_embeddings_for_model(&conn, "new-model")?;
     assert_eq!(new_rows.len(), 2);
 
     let _remove_result = fs::remove_file(db_path);
@@ -275,7 +266,7 @@ fn test_model_migration_invalidates_old_vectors() -> Result<(), Box<dyn std::err
 #[test]
 fn test_reembed_cancel() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("reembed_cancel")?;
-    mindvault_lib::test_helper_init_embedding_db(db_path.clone())?;
+    amber_lib::test_helper_init_embedding_db(db_path.clone())?;
     let mut conn = rusqlite::Connection::open(&db_path)?;
 
     conn.execute(
@@ -299,11 +290,8 @@ fn test_reembed_cancel() -> Result<(), Box<dyn std::error::Error>> {
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
-    impl mindvault_lib::embed::EmbedEngine for MockCancelEngine {
-        fn embed(
-            &self,
-            texts: &[String],
-        ) -> Result<Vec<Vec<f32>>, mindvault_lib::embed::EmbedError> {
+    impl amber_lib::embed::EmbedEngine for MockCancelEngine {
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, amber_lib::embed::EmbedError> {
             // Signal cancellation mid-run
             self.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -320,16 +308,15 @@ fn test_reembed_cancel() -> Result<(), Box<dyn std::error::Error>> {
     let engine = MockCancelEngine {
         cancel: cancel.clone(),
     };
-    let result =
-        mindvault_lib::embed::job::embed_all_nodes(&mut conn, &engine, &cancel, None, false);
+    let result = amber_lib::embed::job::embed_all_nodes(&mut conn, &engine, &cancel, None, false);
 
     assert!(matches!(
         result,
-        mindvault_lib::embed::EmbedJobResult::Cancelled
+        amber_lib::embed::EmbedJobResult::Cancelled
     ));
 
     // Verify only the first node got embedded before cancellation halted the job
-    let rows = mindvault_lib::embed::storage::get_embeddings_for_model(&conn, "new-model")?;
+    let rows = amber_lib::embed::storage::get_embeddings_for_model(&conn, "new-model")?;
     assert_eq!(rows.len(), 1);
 
     let _remove_result = fs::remove_file(db_path);
@@ -339,7 +326,7 @@ fn test_reembed_cancel() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_invalidation_trigger_on_title_change() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("trigger_invalidation")?;
-    mindvault_lib::test_helper_init_embedding_db(db_path.clone())?;
+    amber_lib::test_helper_init_embedding_db(db_path.clone())?;
     let conn = rusqlite::Connection::open(&db_path)?;
 
     conn.execute(
@@ -352,9 +339,9 @@ fn test_invalidation_trigger_on_title_change() -> Result<(), Box<dyn std::error:
         [],
     )?;
 
-    mindvault_lib::embed::storage::upsert_embedding(
+    amber_lib::embed::storage::upsert_embedding(
         &conn,
-        &mindvault_lib::embed::EmbeddingRow {
+        &amber_lib::embed::EmbeddingRow {
             node_id: "node_test".to_string(),
             chunk_index: 0,
             chunk_type: "primary".to_string(),
@@ -364,7 +351,7 @@ fn test_invalidation_trigger_on_title_change() -> Result<(), Box<dyn std::error:
         },
     )?;
 
-    let opt = mindvault_lib::embed::storage::get_primary_embedding(
+    let opt = amber_lib::embed::storage::get_primary_embedding(
         &conn,
         "node_test",
         "avsolatorio/GIST-small-Embedding-v0",
@@ -376,7 +363,7 @@ fn test_invalidation_trigger_on_title_change() -> Result<(), Box<dyn std::error:
         [],
     )?;
 
-    let opt_after = mindvault_lib::embed::storage::get_primary_embedding(
+    let opt_after = amber_lib::embed::storage::get_primary_embedding(
         &conn,
         "node_test",
         "avsolatorio/GIST-small-Embedding-v0",
@@ -390,10 +377,10 @@ fn test_invalidation_trigger_on_title_change() -> Result<(), Box<dyn std::error:
 #[test]
 fn test_settings_set_validation_and_auto_align() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("settings_set_val")?;
-    mindvault_lib::test_helper_init_embedding_db(db_path.clone())?;
+    amber_lib::test_helper_init_embedding_db(db_path.clone())?;
 
     // 1. Validate local_model_endpoint
-    let res = mindvault_lib::test_helper_settings_set(
+    let res = amber_lib::test_helper_settings_set(
         db_path.clone(),
         "local_model_endpoint".to_string(),
         "\"not-a-valid-url\"".to_string(),
@@ -403,7 +390,7 @@ fn test_settings_set_validation_and_auto_align() -> Result<(), Box<dyn std::erro
         Ok(_) => panic!("Expected settings_set to fail for invalid URL"),
     }
 
-    let res = mindvault_lib::test_helper_settings_set(
+    let res = amber_lib::test_helper_settings_set(
         db_path.clone(),
         "local_model_endpoint".to_string(),
         "\"ftp://localhost\"".to_string(),
@@ -413,7 +400,7 @@ fn test_settings_set_validation_and_auto_align() -> Result<(), Box<dyn std::erro
         Ok(_) => panic!("Expected settings_set to fail for non-HTTP URL"),
     }
 
-    let res = mindvault_lib::test_helper_settings_set(
+    let res = amber_lib::test_helper_settings_set(
         db_path.clone(),
         "local_model_endpoint".to_string(),
         "\"http://localhost:11434\"".to_string(),
@@ -421,7 +408,7 @@ fn test_settings_set_validation_and_auto_align() -> Result<(), Box<dyn std::erro
     assert!(res.is_ok());
 
     // 2. Validate embedding.backend
-    let res = mindvault_lib::test_helper_settings_set(
+    let res = amber_lib::test_helper_settings_set(
         db_path.clone(),
         "embedding.backend".to_string(),
         "\"invalid-backend\"".to_string(),
@@ -432,7 +419,7 @@ fn test_settings_set_validation_and_auto_align() -> Result<(), Box<dyn std::erro
     }
 
     // Switch to ollama. It should auto-align model to nomic-embed-text.
-    let res = mindvault_lib::test_helper_settings_set(
+    let res = amber_lib::test_helper_settings_set(
         db_path.clone(),
         "embedding.backend".to_string(),
         "\"ollama\"".to_string(),
@@ -441,12 +428,12 @@ fn test_settings_set_validation_and_auto_align() -> Result<(), Box<dyn std::erro
 
     // Check that model was auto-aligned to nomic-embed-text
     let conn = rusqlite::Connection::open(&db_path)?;
-    let settings = mindvault_lib::embed::get_embedding_settings(&conn)?;
+    let settings = amber_lib::embed::get_embedding_settings(&conn)?;
     assert_eq!(settings.backend, "ollama");
     assert_eq!(settings.model, "nomic-embed-text");
 
     // Try setting model to something else while backend is ollama. It should fail.
-    let res = mindvault_lib::test_helper_settings_set(
+    let res = amber_lib::test_helper_settings_set(
         db_path.clone(),
         "embedding.model".to_string(),
         "\"avsolatorio/GIST-small-Embedding-v0\"".to_string(),
@@ -457,14 +444,14 @@ fn test_settings_set_validation_and_auto_align() -> Result<(), Box<dyn std::erro
     }
 
     // Switch back to onnx. It should auto-align model to the light tier model.
-    let res = mindvault_lib::test_helper_settings_set(
+    let res = amber_lib::test_helper_settings_set(
         db_path.clone(),
         "embedding.backend".to_string(),
         "\"onnx\"".to_string(),
     );
     assert!(res.is_ok());
 
-    let settings = mindvault_lib::embed::get_embedding_settings(&conn)?;
+    let settings = amber_lib::embed::get_embedding_settings(&conn)?;
     assert_eq!(settings.backend, "onnx");
     assert_eq!(settings.model, "avsolatorio/GIST-small-Embedding-v0");
 
@@ -475,7 +462,7 @@ fn test_settings_set_validation_and_auto_align() -> Result<(), Box<dyn std::erro
 #[test]
 fn test_privacy_tier_change_clears_stale_embeddings() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("privacy_tier_invalidation")?;
-    mindvault_lib::test_helper_init_embedding_db(db_path.clone())?;
+    amber_lib::test_helper_init_embedding_db(db_path.clone())?;
     let conn = rusqlite::Connection::open(&db_path)?;
 
     conn.execute(
@@ -488,9 +475,9 @@ fn test_privacy_tier_change_clears_stale_embeddings() -> Result<(), Box<dyn std:
         [],
     )?;
 
-    mindvault_lib::embed::storage::upsert_embedding(
+    amber_lib::embed::storage::upsert_embedding(
         &conn,
-        &mindvault_lib::embed::EmbeddingRow {
+        &amber_lib::embed::EmbeddingRow {
             node_id: "node_test".to_string(),
             chunk_index: 0,
             chunk_type: "primary".to_string(),
@@ -500,7 +487,7 @@ fn test_privacy_tier_change_clears_stale_embeddings() -> Result<(), Box<dyn std:
         },
     )?;
 
-    let before = mindvault_lib::embed::storage::get_primary_embedding(
+    let before = amber_lib::embed::storage::get_primary_embedding(
         &conn,
         "node_test",
         "avsolatorio/GIST-small-Embedding-v0",
@@ -512,7 +499,7 @@ fn test_privacy_tier_change_clears_stale_embeddings() -> Result<(), Box<dyn std:
         [],
     )?;
 
-    let after = mindvault_lib::embed::storage::get_primary_embedding(
+    let after = amber_lib::embed::storage::get_primary_embedding(
         &conn,
         "node_test",
         "avsolatorio/GIST-small-Embedding-v0",

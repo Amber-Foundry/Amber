@@ -459,7 +459,7 @@ fn migration_0008_upgrades_legacy_0007_embedding_triggers() -> Result<(), Box<dy
         );
     }
 
-    mindvault_lib::test_helper_run_migrations(db_path.clone())?;
+    amber_lib::test_helper_run_migrations(db_path.clone())?;
 
     let conn = Connection::open(&db_path)?;
     let upgraded_trigger_sql: String = conn.query_row(

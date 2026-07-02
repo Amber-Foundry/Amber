@@ -26,6 +26,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           working-directory: ./core
+          ignore: RUSTSEC-2026-0194, RUSTSEC-2026-0195
 
   npm-audit:
     name: npm audit

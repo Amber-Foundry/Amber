@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use rusqlite::{params, Connection};
 
-use mindvault_lib::memory_agent::{
+use amber_lib::memory_agent::{
     amend_or_create_changeset, detect_correction_signal, list_changeset_items,
     list_pending_changesets, mark_extraction_complete, persist_changeset, should_extract,
     should_extract_correction, CandidateAction, CandidateNode, ChangesetItemType, CorrectionSignal,
@@ -522,7 +522,7 @@ fn test_force_extract_minimum_message_threshold() -> Result<(), Box<dyn Error>> 
         }
 
         // Call memory_extract_force via test_helper_memory_extract_force
-        let result = mindvault_lib::test_helper_memory_extract_force(
+        let result = amber_lib::test_helper_memory_extract_force(
             "ollama".to_string(),
             "http://localhost:11434".to_string(),
             "granite".to_string(),

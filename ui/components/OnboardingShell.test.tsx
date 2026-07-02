@@ -109,7 +109,7 @@ describe("OnboardingShell Component", () => {
     ]);
   });
 
-  it("renders steps, navigates to step 1, and skip onboarding handles skip action", async () => {
+  it("renders steps, navigates to basics and llm setup, and skip onboarding handles skip action", async () => {
     const user = userEvent.setup();
     const onComplete = vi.fn();
     const onSkip = vi.fn();
@@ -118,14 +118,18 @@ describe("OnboardingShell Component", () => {
       <OnboardingShell onComplete={onComplete} onSkip={onSkip} busy={false} errorMessage={null} />
     );
 
-    // Initial step basics
+    // Initial step 0 is Model Setup
     expect(screen.getByText("Welcome to MindVault")).toBeInTheDocument();
-    expect(screen.getByText("1. Basics")).toBeInTheDocument();
+    expect(screen.getByText("1. Model Setup")).toBeInTheDocument();
 
-    // Click skip
+    // Click skip onboarding
     const skipBtn = screen.getByText("Skip onboarding");
     await user.click(skipBtn);
     expect(onSkip).toHaveBeenCalledTimes(1);
+
+    // Advance from Model Setup to Basics
+    await user.click(screen.getByText("I’ll set this up later"));
+    expect(screen.getByText("2. Basics")).toBeInTheDocument();
 
     // Enter name and click next
     const nameInput = screen.getByPlaceholderText("Kevin") as HTMLInputElement;
@@ -134,8 +138,8 @@ describe("OnboardingShell Component", () => {
     const nextBtn = screen.getByText("Next");
     await user.click(nextBtn);
 
-    // Moves to step 1 (LLM setup)
-    expect(screen.getByText("2. LLM setup")).toBeInTheDocument();
+    // Moves to step 2 (LLM setup)
+    expect(screen.getByText("3. LLM setup")).toBeInTheDocument();
   });
 
   it("handles LLM setup validation if endpoint or model is missing or if basics is empty", async () => {
@@ -147,17 +151,22 @@ describe("OnboardingShell Component", () => {
       <OnboardingShell onComplete={onComplete} onSkip={onSkip} busy={false} errorMessage={null} />
     );
 
-    // First go next to LLM Setup (leaving answers blank)
-    const nextBtn = screen.getByText("Next");
-    await user.click(nextBtn);
-    expect(screen.getByText("2. LLM setup")).toBeInTheDocument();
+    // Step 0 -> Step 1 (Basics)
+    await user.click(screen.getByText("I’ll set this up later"));
+    expect(screen.getByText("2. Basics")).toBeInTheDocument();
 
-    // Try going next (without filling basics or selected model)
-    await user.click(nextBtn);
-    expect(screen.getByText("Configure endpoint + model before extraction.")).toBeInTheDocument();
+    // Step 1 -> Step 2 (LLM setup) leaving answers blank
+    await user.click(screen.getByText("Next"));
+    expect(screen.getByText("3. LLM setup")).toBeInTheDocument();
+
+    // Try going next on Step 2 (without selected model)
+    await user.click(screen.getByText("Next"));
+    expect(
+      screen.getAllByText("Configure endpoint + model before extraction.")[0]
+    ).toBeInTheDocument();
   });
 
-  it("tests LLM connection, fetches models, and allows extraction to transition to step 2 review", async () => {
+  it("tests LLM connection, fetches models, and allows extraction to transition to review", async () => {
     const user = userEvent.setup();
     const onComplete = vi.fn();
     const onSkip = vi.fn();
@@ -181,27 +190,30 @@ describe("OnboardingShell Component", () => {
       <OnboardingShell onComplete={onComplete} onSkip={onSkip} busy={false} errorMessage={null} />
     );
 
-    // Step 0: Fill basics answer and move next
+    // Step 0: Model Setup -> Step 1: Basics
+    await user.click(screen.getByText("I’ll set this up later"));
+
+    // Step 1: Basics -> Step 2: LLM Setup
     const nameInput = screen.getByPlaceholderText("Kevin") as HTMLInputElement;
     await user.type(nameInput, "Evan");
     await user.click(screen.getByText("Next"));
 
-    // Step 1: LLM Setup
-    expect(screen.getByText("2. LLM setup")).toBeInTheDocument();
+    // Step 2: LLM Setup
+    expect(screen.getByText("3. LLM setup")).toBeInTheDocument();
 
     // Click connection check button
-    const testConnectionBtn = screen.getByText("Test Connection & Fetch Models");
+    const testConnectionBtn = screen.getByText(/test connection & fetch models/i);
     await user.click(testConnectionBtn);
 
     expect(mockGetLlmModels).toHaveBeenCalledWith("ollama", "http://localhost:11434");
 
     // Model dropdown options should populate
     await waitFor(() => {
-      expect(screen.getByText("Connected. Found 2 model(s).")).toBeInTheDocument();
+      expect(screen.getAllByText("Connected. Found 2 model(s).")[0]).toBeInTheDocument();
     });
 
-    const modelSelect = screen.getByRole("combobox") as HTMLSelectElement;
-    await user.selectOptions(modelSelect, "llama3");
+    const modelBtn = screen.getByRole("button", { name: "llama3" });
+    await user.click(modelBtn);
 
     // Click next (triggers extraction first)
     await user.click(screen.getByText("Next"));
@@ -210,7 +222,7 @@ describe("OnboardingShell Component", () => {
 
     // Transitioned to review step
     await waitFor(() => {
-      expect(screen.getByText("3. Review")).toBeInTheDocument();
+      expect(screen.getByText("4. Review")).toBeInTheDocument();
     });
 
     // Should display extraction success message
@@ -239,21 +251,24 @@ describe("OnboardingShell Component", () => {
       <OnboardingShell onComplete={onComplete} onSkip={onSkip} busy={false} errorMessage={null} />
     );
 
-    // Fill basics and go next
+    // Step 0 -> Step 1 (Basics)
+    await user.click(screen.getByText("I’ll set this up later"));
+
+    // Fill basics and go to Step 2 (LLM setup)
     const nameInput = screen.getByPlaceholderText("Kevin") as HTMLInputElement;
     await user.type(nameInput, "Kevin");
     await user.click(screen.getByText("Next"));
 
-    // Set model and go next
-    await user.click(screen.getByText("Test Connection & Fetch Models"));
+    // Set model and go to Step 3 (Review)
+    await user.click(screen.getByText(/test connection & fetch models/i));
     await waitFor(() => {
-      expect(screen.getByRole("combobox")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "llama3" })).toBeInTheDocument();
     });
-    await user.selectOptions(screen.getByRole("combobox"), "llama3");
+    await user.click(screen.getByRole("button", { name: "llama3" }));
     await user.click(screen.getByText("Next"));
 
     await waitFor(() => {
-      expect(screen.getByText("3. Review")).toBeInTheDocument();
+      expect(screen.getByText("4. Review")).toBeInTheDocument();
     });
 
     // Check that commit button is disabled since vault is not chosen (unresolvedCount > 0)
@@ -313,24 +328,27 @@ describe("OnboardingShell Component", () => {
       <OnboardingShell onComplete={onComplete} onSkip={onSkip} busy={false} errorMessage={null} />
     );
 
-    // Step 0: Fill basics answer and move next
+    // Step 0 -> Step 1 (Basics)
+    await user.click(screen.getByText("I’ll set this up later"));
+
+    // Step 1: Fill basics answer and move to Step 2
     const nameInput = screen.getByPlaceholderText("Kevin") as HTMLInputElement;
     await user.type(nameInput, "Aashish");
     await user.click(screen.getByText("Next"));
 
-    // Step 1: LLM Setup. Set model.
-    await user.click(screen.getByText("Test Connection & Fetch Models"));
+    // Step 2: LLM Setup. Set model.
+    await user.click(screen.getByText(/test connection & fetch models/i));
     await waitFor(() => {
-      expect(screen.getByRole("combobox")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "llama3" })).toBeInTheDocument();
     });
-    await user.selectOptions(screen.getByRole("combobox"), "llama3");
+    await user.click(screen.getByRole("button", { name: "llama3" }));
 
     // Click Next (triggers extraction which fails)
     await user.click(screen.getByText("Next"));
 
     // Wait for the failure message and the Skip Extraction button to appear
     await waitFor(() => {
-      expect(screen.getByText("Failed to connect to LLM server")).toBeInTheDocument();
+      expect(screen.getAllByText("Failed to connect to LLM server")[0]).toBeInTheDocument();
     });
     const skipExtractionBtn = screen.getByText("Skip extraction");
     expect(skipExtractionBtn).toBeInTheDocument();
@@ -338,8 +356,8 @@ describe("OnboardingShell Component", () => {
     // Click Skip Extraction
     await user.click(skipExtractionBtn);
 
-    // Should transition to step 2 (Review) with 0 staged proposals
-    expect(screen.getByText("3. Review")).toBeInTheDocument();
+    // Should transition to step 3 (Review) with 0 staged proposals
+    expect(screen.getByText("4. Review")).toBeInTheDocument();
     expect(
       screen.getByText("No staged proposals. You can still commit and finish with zero nodes.")
     ).toBeInTheDocument();
@@ -351,16 +369,13 @@ describe("OnboardingShell Component", () => {
       <OnboardingShell onComplete={vi.fn()} onSkip={vi.fn()} busy={false} errorMessage={null} />
     );
 
-    // Verify Back button is disabled on Step 0
+    // Verify Back button is disabled on Step 0 (Model Setup)
     const backBtn = screen.getByRole("button", { name: "Back" }) as HTMLButtonElement;
     expect(backBtn.disabled).toBe(true);
 
-    // Fill basics and proceed to Step 1
-    const nameInput = screen.getByPlaceholderText("Kevin") as HTMLInputElement;
-    await user.type(nameInput, "Kevin");
-    await user.click(screen.getByText("Next"));
-
-    expect(screen.getByText("2. LLM setup")).toBeInTheDocument();
+    // Move to Step 1 (Basics)
+    await user.click(screen.getByText("I’ll set this up later"));
+    expect(screen.getByText("2. Basics")).toBeInTheDocument();
 
     // Now Back button should be enabled
     expect(backBtn.disabled).toBe(false);
@@ -368,8 +383,8 @@ describe("OnboardingShell Component", () => {
     // Click Back
     await user.click(backBtn);
 
-    // Should return to Step 0
-    expect(screen.getByText("1. Basics")).toBeInTheDocument();
+    // Should return to Step 0 (Model Setup)
+    expect(screen.getByText("1. Model Setup")).toBeInTheDocument();
     expect(backBtn.disabled).toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { DEV_ONBOARDING_CHANGED } from "../constants/devEvents";
 import { onboardingExtractProposals } from "../ipc";
 import { getLlmModels } from "../services/nodes";
@@ -18,6 +18,11 @@ import {
   getApiKey,
   setApiKey,
 } from "../utils/settings";
+import EmbeddingSettings from "./EmbeddingSettings";
+import AdvancedLlmSettings from "./AdvancedLlmSettings";
+import ModelSetupPanel from "./ModelSetupPanel";
+import { cancelReembed, getEmbeddingStatus, startReembed } from "../services/embedding";
+import type { EmbeddingStatus } from "../types/generated";
 
 const DEV_SAMPLE_ONBOARDING_ANSWERS = `{
   "displayName": "Dev Tester",
@@ -25,6 +30,8 @@ const DEV_SAMPLE_ONBOARDING_ANSWERS = `{
   "workContext": "software engineer on a small team",
   "interests": "running, reading, local LLMs"
 }`;
+
+const EMBEDDING_STATUS_TIMEOUT_MS = 5000;
 
 const CLOUD_PROVIDERS = [
   { id: "openai", name: "OpenAI", presets: ["gpt-4o", "gpt-4o-mini", "o1-mini", "o1-preview"] },
@@ -280,7 +287,6 @@ function CloudSettings({
     </div>
   );
 }
-
 function LlmSettings() {
   const showDevOnboardingTools = import.meta.env.DEV;
   const [onboardingCompleteLabel, setOnboardingCompleteLabel] = useState<string>("…");
@@ -309,6 +315,117 @@ function LlmSettings() {
   const [hybridTab, setHybridTab] = useState<"local" | "cloud">("local");
 
   const localEndpoint = localProvider === "ollama" ? ollamaEndpoint : lmStudioEndpoint;
+
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
+  const [embeddingLoading, setEmbeddingLoading] = useState(true);
+  const [embeddingSyncState, setEmbeddingSyncState] = useState<
+    "idle" | "running" | "complete" | "error"
+  >("idle");
+  const [embeddingSyncError, setEmbeddingSyncError] = useState("");
+  const embeddingPollTimeoutRef = useRef<number | null>(null);
+  const embeddingMountedRef = useRef(true);
+  const refreshEmbeddingStatusRef = useRef<((pollAgain: boolean) => Promise<void>) | null>(null);
+  const clearEmbeddingPoll = useCallback(() => {
+    if (embeddingPollTimeoutRef.current !== null) {
+      window.clearTimeout(embeddingPollTimeoutRef.current);
+      embeddingPollTimeoutRef.current = null;
+    }
+  }, []);
+
+  const loadEmbeddingStatusWithTimeout = useCallback(async (): Promise<EmbeddingStatus> => {
+    let timeoutId: number | null = null;
+    try {
+      return await Promise.race([
+        getEmbeddingStatus(),
+        new Promise<EmbeddingStatus>((_, reject) => {
+          timeoutId = window.setTimeout(() => {
+            reject(new Error("Timed out loading embedding status."));
+          }, EMBEDDING_STATUS_TIMEOUT_MS) as unknown as number;
+        }),
+      ]);
+    } finally {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    }
+  }, []);
+
+  const refreshEmbeddingStatus = useCallback(
+    async (pollAgain: boolean) => {
+      try {
+        const status = await loadEmbeddingStatusWithTimeout();
+        if (!embeddingMountedRef.current) {
+          return;
+        }
+
+        setEmbeddingStatus(status);
+        window.dispatchEvent(new CustomEvent("amber:embedding-settings-changed"));
+
+        if (status.reembedInProgress) {
+          setEmbeddingSyncState("running");
+          if (pollAgain) {
+            clearEmbeddingPoll();
+            embeddingPollTimeoutRef.current = window.setTimeout(() => {
+              void refreshEmbeddingStatusRef.current?.(true);
+            }, 2000) as unknown as number;
+          }
+        } else {
+          clearEmbeddingPoll();
+          setEmbeddingSyncState(pollAgain ? "complete" : "idle");
+        }
+      } catch (err) {
+        if (!embeddingMountedRef.current) {
+          return;
+        }
+
+        clearEmbeddingPoll();
+        setEmbeddingSyncState("error");
+        setEmbeddingSyncError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (embeddingMountedRef.current) {
+          setEmbeddingLoading(false);
+        }
+      }
+    },
+    [clearEmbeddingPoll, loadEmbeddingStatusWithTimeout]
+  );
+
+  useEffect(() => {
+    refreshEmbeddingStatusRef.current = refreshEmbeddingStatus;
+  }, [refreshEmbeddingStatus]);
+
+  const runEmbeddingAction = useCallback(
+    async (action: () => Promise<void>) => {
+      clearEmbeddingPoll();
+      setEmbeddingSyncError("");
+      setEmbeddingSyncState("running");
+
+      try {
+        await action();
+        await refreshEmbeddingStatus(true);
+        window.dispatchEvent(new CustomEvent("amber:embedding-settings-changed"));
+      } catch (err) {
+        clearEmbeddingPoll();
+        if (!embeddingMountedRef.current) {
+          return;
+        }
+        setEmbeddingSyncState("error");
+        setEmbeddingSyncError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [clearEmbeddingPoll, refreshEmbeddingStatus]
+  );
+
+  useEffect(() => {
+    embeddingMountedRef.current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch; setState only happens after the await inside refreshEmbeddingStatus, not synchronously
+    void refreshEmbeddingStatus(false);
+
+    return () => {
+      embeddingMountedRef.current = false;
+      clearEmbeddingPoll();
+    };
+  }, [clearEmbeddingPoll, refreshEmbeddingStatus]);
 
   useEffect(() => {
     if (!showDevOnboardingTools) return;
@@ -457,205 +574,233 @@ function LlmSettings() {
         <h3>⚙️ LLM Settings</h3>
       </div>
 
-      <div className="segmented-control mode-selector">
-        <button
-          type="button"
-          className={mode === "local" ? "active" : ""}
-          onClick={() => handleModeChange("local")}
-        >
-          💻 Local
-        </button>
-        <button
-          type="button"
-          className={mode === "cloud" ? "active" : ""}
-          onClick={() => handleModeChange("cloud")}
-        >
-          ☁️ Cloud
-        </button>
-        <button
-          type="button"
-          className={mode === "hybrid" ? "active" : ""}
-          onClick={() => handleModeChange("hybrid")}
-        >
-          ⚡ Hybrid
-        </button>
+      <ModelSetupPanel variant="settings" />
+
+      <div className="settings-section memory-search-section">
+        <h4 className="llm-settings-dev-title">Memory Search</h4>
+        <EmbeddingSettings
+          status={embeddingStatus || null}
+          model={localSelectedModel || getLlmModel(localProvider) || ""}
+          loading={embeddingLoading}
+          syncState={embeddingSyncState}
+          syncError={embeddingSyncError}
+          onReembed={() => {
+            if (!embeddingStatus) return;
+            void runEmbeddingAction(() =>
+              startReembed({
+                model: embeddingStatus.model,
+                tier: embeddingStatus.tier,
+                backend: embeddingStatus.backend,
+              })
+            );
+          }}
+          onCancelReembed={() => {
+            void runEmbeddingAction(cancelReembed);
+          }}
+        />
       </div>
 
-      <div className="settings-content-wrapper">
-        {mode === "local" && (
-          <LocalSettings
-            provider={localProvider}
-            setProvider={(p: string) => {
-              setLocalProvider(p as "ollama" | "lmstudio");
-              setLlmProvider(p);
-              setLocalModels([]);
-              setLocalSelectedModel(getLlmModel(p));
-              setLocalStatus("");
-            }}
-            endpoint={localEndpoint}
-            setEndpoint={
-              localProvider === "ollama" ? setOllamaEndpointState : setLmStudioEndpointState
-            }
-            onSave={onSaveLocalSettings}
-            onTest={onTestLocalConnection}
-            status={localStatus}
-            isLoading={isLoading}
-            models={localModels}
-            selectedModel={localSelectedModel}
-            setSelectedModel={setLocalSelectedModel}
-          />
-        )}
-
-        {mode === "cloud" && (
-          <CloudSettings
-            key={cloudProvider}
-            provider={cloudProvider}
-            setProvider={setCloudProvider}
-          />
-        )}
-
-        {mode === "hybrid" && (
-          <div className="hybrid-wrapper">
-            <div className="hybrid-tabs segmented-control">
-              <button
-                type="button"
-                className={hybridTab === "local" ? "active" : ""}
-                onClick={() => {
-                  setHybridTab("local");
-                  setLlmProvider(localProvider);
-                }}
-              >
-                💻 Local Set
-              </button>
-              <button
-                type="button"
-                className={hybridTab === "cloud" ? "active" : ""}
-                onClick={() => {
-                  setHybridTab("cloud");
-                  setLlmProvider(cloudProvider);
-                }}
-              >
-                ☁️ Cloud Set
-              </button>
-            </div>
-            {hybridTab === "local" ? (
-              <LocalSettings
-                provider={localProvider}
-                setProvider={(p: string) => {
-                  setLocalProvider(p as "ollama" | "lmstudio");
-                  setLlmProvider(p);
-                  setLocalModels([]);
-                  setLocalSelectedModel(getLlmModel(p));
-                  setLocalStatus("");
-                }}
-                endpoint={localEndpoint}
-                setEndpoint={
-                  localProvider === "ollama" ? setOllamaEndpointState : setLmStudioEndpointState
-                }
-                onSave={onSaveLocalSettings}
-                onTest={onTestLocalConnection}
-                status={localStatus}
-                isLoading={isLoading}
-                models={localModels}
-                selectedModel={localSelectedModel}
-                setSelectedModel={setLocalSelectedModel}
-              />
-            ) : (
-              <CloudSettings
-                key={cloudProvider}
-                provider={cloudProvider}
-                setProvider={setCloudProvider}
-              />
-            )}
-            <div className="hybrid-note">
-              <p>
-                In Hybrid Mode, components dynamically choose whether to route to local or cloud
-                depending on task demands. Adjust settings for both here.
-              </p>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {showDevOnboardingTools ? (
-        <div className="llm-settings-dev" aria-label="Developer onboarding shortcuts">
-          <h4 className="llm-settings-dev-title">Developer</h4>
-          <p className="llm-settings-dev-line">
-            Onboarding: <strong>{onboardingCompleteLabel}</strong>
-          </p>
-          <div className="llm-settings-dev-actions">
-            <button
-              type="button"
-              className="settings-action"
-              disabled={onboardingDevBusy}
-              onClick={() => {
-                setOnboardingDevBusy(true);
-                void (async () => {
-                  try {
-                    await setOnboardingComplete(false);
-                    await refreshOnboardingDevState();
-                    setLocalStatus("Onboarding reset: wizard should appear.");
-                  } catch (err) {
-                    setLocalStatus(err instanceof Error ? err.message : String(err));
-                  } finally {
-                    setOnboardingDevBusy(false);
-                  }
-                })();
-              }}
-            >
-              Reset onboarding
-            </button>
-            <button
-              type="button"
-              className="settings-action"
-              disabled={onboardingDevBusy}
-              onClick={() => {
-                setOnboardingDevBusy(true);
-                void (async () => {
-                  try {
-                    await setOnboardingComplete(true);
-                    await refreshOnboardingDevState();
-                    setLocalStatus("Onboarding marked complete.");
-                  } catch (err) {
-                    setLocalStatus(err instanceof Error ? err.message : String(err));
-                  } finally {
-                    setOnboardingDevBusy(false);
-                  }
-                })();
-              }}
-            >
-              Mark onboarding done
-            </button>
-          </div>
-
-          <label className="settings-field llm-settings-dev-field">
-            <span>Test onboarding_extract_proposals (answers JSON)</span>
-            <textarea
-              className="llm-settings-dev-json-input"
-              rows={6}
-              spellCheck={false}
-              value={extractionAnswersJson}
-              onChange={(event) => setExtractionAnswersJson(event.target.value)}
-              aria-label="Sample onboarding answers JSON"
-            />
-          </label>
+      <AdvancedLlmSettings>
+        <div className="segmented-control mode-selector">
           <button
             type="button"
-            className="settings-action"
-            disabled={extractionBusy || onboardingDevBusy}
-            onClick={() => void onDevTestOnboardingExtraction()}
+            className={mode === "local" ? "active" : ""}
+            onClick={() => handleModeChange("local")}
           >
-            {extractionBusy ? "Running extraction…" : "Run onboarding extraction"}
+            💻 Local
           </button>
-          {extractionPreview ? (
-            <pre className="llm-settings-dev-json-preview" tabIndex={0}>
-              {extractionPreview}
-            </pre>
-          ) : null}
-
-          <p className="llm-settings-dev-note">Shown only in dev builds.</p>
+          <button
+            type="button"
+            className={mode === "cloud" ? "active" : ""}
+            onClick={() => handleModeChange("cloud")}
+          >
+            ☁️ Cloud
+          </button>
+          <button
+            type="button"
+            className={mode === "hybrid" ? "active" : ""}
+            onClick={() => handleModeChange("hybrid")}
+          >
+            ⚡ Hybrid
+          </button>
         </div>
-      ) : null}
+
+        <div className="settings-content-wrapper">
+          {mode === "local" && (
+            <LocalSettings
+              provider={localProvider}
+              setProvider={(p: string) => {
+                setLocalProvider(p as "ollama" | "lmstudio");
+                setLlmProvider(p);
+                setLocalModels([]);
+                setLocalSelectedModel(getLlmModel(p));
+                setLocalStatus("");
+              }}
+              endpoint={localEndpoint}
+              setEndpoint={
+                localProvider === "ollama" ? setOllamaEndpointState : setLmStudioEndpointState
+              }
+              onSave={onSaveLocalSettings}
+              onTest={onTestLocalConnection}
+              status={localStatus}
+              isLoading={isLoading}
+              models={localModels}
+              selectedModel={localSelectedModel}
+              setSelectedModel={setLocalSelectedModel}
+            />
+          )}
+
+          {mode === "cloud" && (
+            <CloudSettings
+              key={cloudProvider}
+              provider={cloudProvider}
+              setProvider={setCloudProvider}
+            />
+          )}
+
+          {mode === "hybrid" && (
+            <div className="hybrid-wrapper">
+              <div className="hybrid-tabs segmented-control">
+                <button
+                  type="button"
+                  className={hybridTab === "local" ? "active" : ""}
+                  onClick={() => {
+                    setHybridTab("local");
+                    setLlmProvider(localProvider);
+                  }}
+                >
+                  💻 Local Set
+                </button>
+                <button
+                  type="button"
+                  className={hybridTab === "cloud" ? "active" : ""}
+                  onClick={() => {
+                    setHybridTab("cloud");
+                    setLlmProvider(cloudProvider);
+                  }}
+                >
+                  ☁️ Cloud Set
+                </button>
+              </div>
+              {hybridTab === "local" ? (
+                <LocalSettings
+                  provider={localProvider}
+                  setProvider={(p: string) => {
+                    setLocalProvider(p as "ollama" | "lmstudio");
+                    setLlmProvider(p);
+                    setLocalModels([]);
+                    setLocalSelectedModel(getLlmModel(p));
+                    setLocalStatus("");
+                  }}
+                  endpoint={localEndpoint}
+                  setEndpoint={
+                    localProvider === "ollama" ? setOllamaEndpointState : setLmStudioEndpointState
+                  }
+                  onSave={onSaveLocalSettings}
+                  onTest={onTestLocalConnection}
+                  status={localStatus}
+                  isLoading={isLoading}
+                  models={localModels}
+                  selectedModel={localSelectedModel}
+                  setSelectedModel={setLocalSelectedModel}
+                />
+              ) : (
+                <CloudSettings
+                  key={cloudProvider}
+                  provider={cloudProvider}
+                  setProvider={setCloudProvider}
+                />
+              )}
+              <div className="hybrid-note">
+                <p>
+                  In Hybrid Mode, components dynamically choose whether to route to local or cloud
+                  depending on task demands. Adjust settings for both here.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {showDevOnboardingTools ? (
+            <div className="llm-settings-dev" aria-label="Developer onboarding shortcuts">
+              <h4 className="llm-settings-dev-title">Developer</h4>
+              <p className="llm-settings-dev-line">
+                Onboarding: <strong>{onboardingCompleteLabel}</strong>
+              </p>
+              <div className="llm-settings-dev-actions">
+                <button
+                  type="button"
+                  className="settings-action"
+                  disabled={onboardingDevBusy}
+                  onClick={() => {
+                    setOnboardingDevBusy(true);
+                    void (async () => {
+                      try {
+                        await setOnboardingComplete(false);
+                        await refreshOnboardingDevState();
+                        setLocalStatus("Onboarding reset: wizard should appear.");
+                      } catch (err) {
+                        setLocalStatus(err instanceof Error ? err.message : String(err));
+                      } finally {
+                        setOnboardingDevBusy(false);
+                      }
+                    })();
+                  }}
+                >
+                  Reset onboarding
+                </button>
+                <button
+                  type="button"
+                  className="settings-action"
+                  disabled={onboardingDevBusy}
+                  onClick={() => {
+                    setOnboardingDevBusy(true);
+                    void (async () => {
+                      try {
+                        await setOnboardingComplete(true);
+                        await refreshOnboardingDevState();
+                        setLocalStatus("Onboarding marked complete.");
+                      } catch (err) {
+                        setLocalStatus(err instanceof Error ? err.message : String(err));
+                      } finally {
+                        setOnboardingDevBusy(false);
+                      }
+                    })();
+                  }}
+                >
+                  Mark onboarding done
+                </button>
+              </div>
+
+              <label className="settings-field llm-settings-dev-field">
+                <span>Test onboarding_extract_proposals (answers JSON)</span>
+                <textarea
+                  className="llm-settings-dev-json-input"
+                  rows={6}
+                  spellCheck={false}
+                  value={extractionAnswersJson}
+                  onChange={(event) => setExtractionAnswersJson(event.target.value)}
+                  aria-label="Sample onboarding answers JSON"
+                />
+              </label>
+              <button
+                type="button"
+                className="settings-action"
+                disabled={extractionBusy || onboardingDevBusy}
+                onClick={() => void onDevTestOnboardingExtraction()}
+              >
+                {extractionBusy ? "Running extraction…" : "Run onboarding extraction"}
+              </button>
+              {extractionPreview ? (
+                <pre className="llm-settings-dev-json-preview" tabIndex={0}>
+                  {extractionPreview}
+                </pre>
+              ) : null}
+
+              <p className="llm-settings-dev-note">Shown only in dev builds.</p>
+            </div>
+          ) : null}
+        </div>
+      </AdvancedLlmSettings>
     </aside>
   );
 }

@@ -1,5 +1,5 @@
 [package]
-name = "mindvault"
+name = "amber"
 version = "0.1.0"
 description = "Personalized AI Memory Architecture"
 authors = ["Aashish"]
@@ -12,7 +12,7 @@ license = "AGPL-3.0-or-later"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "mindvault_lib"
+name = "amber_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

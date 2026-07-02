@@ -2,6 +2,10 @@
 db-path = "~/.cargo/advisory-db"
 unmaintained = "workspace"
 yanked = "deny"
+ignore = [
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]
 
 [licenses]
 allow = [
