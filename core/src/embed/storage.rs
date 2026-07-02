@@ -146,6 +146,7 @@ pub fn count_coverage(conn: &Connection, model: &str) -> Result<(i64, i64), Stri
              JOIN vaults v ON n.vault_id = v.id
              LEFT JOIN sub_vaults sv ON n.sub_vault_id = sv.id
              WHERE n.deleted_at IS NULL
+               AND v.deleted_at IS NULL
                AND COALESCE(n.privacy_tier, '') != 'redacted'
                AND COALESCE(sv.privacy_tier, '') != 'redacted'
                AND COALESCE(v.privacy_tier, '') != 'redacted';",
@@ -164,6 +165,7 @@ pub fn count_coverage(conn: &Connection, model: &str) -> Result<(i64, i64), Stri
                AND ne.chunk_index = 0
                AND ne.chunk_type = 'primary'
                AND n.deleted_at IS NULL
+               AND v.deleted_at IS NULL
                AND COALESCE(n.privacy_tier, '') != 'redacted'
                AND COALESCE(sv.privacy_tier, '') != 'redacted'
                AND COALESCE(v.privacy_tier, '') != 'redacted';",
@@ -502,6 +504,15 @@ mod tests {
             [],
         )?;
         let (_num, den) = count_coverage(&conn, model)?;
+        assert_eq!(den, 0);
+
+        // 3. Reset privacy_tier and soft-delete vault_test -> coverage count should be 0
+        conn.execute(
+            "UPDATE vaults SET privacy_tier = 'open', deleted_at = datetime('now') WHERE id = 'vault_test';",
+            [],
+        )?;
+        let (num, den) = count_coverage(&conn, model)?;
+        assert_eq!(num, 0);
         assert_eq!(den, 0);
 
         Ok(())
