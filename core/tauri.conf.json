@@ -18,7 +18,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' tauri://localhost http://tauri.localhost; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://www.plantuml.com; connect-src 'self' http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:* https://www.plantuml.com; frame-src 'none'; object-src 'none';"
+      "csp": "default-src 'self' tauri://localhost http://tauri.localhost; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: http: https:; connect-src 'self' http: https: ws://localhost:* ws://127.0.0.1:*; frame-src 'none'; object-src 'none';"
     }
   },
   "bundle": {
