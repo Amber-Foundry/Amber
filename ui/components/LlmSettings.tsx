@@ -396,6 +396,7 @@ function LlmSettings() {
 
   const runEmbeddingAction = useCallback(
     async (action: () => Promise<void>) => {
+      clearEmbeddingPoll();
       setEmbeddingSyncError("");
       setEmbeddingSyncState("running");
 
