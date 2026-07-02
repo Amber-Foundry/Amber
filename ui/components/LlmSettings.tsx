@@ -406,6 +406,9 @@ function LlmSettings() {
         window.dispatchEvent(new CustomEvent("amber:embedding-settings-changed"));
       } catch (err) {
         clearEmbeddingPoll();
+        if (!embeddingMountedRef.current) {
+          return;
+        }
         setEmbeddingSyncState("error");
         setEmbeddingSyncError(err instanceof Error ? err.message : String(err));
       }
