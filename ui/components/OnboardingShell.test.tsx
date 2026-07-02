@@ -387,4 +387,32 @@ describe("OnboardingShell Component", () => {
     expect(screen.getByText("1. Model Setup")).toBeInTheDocument();
     expect(backBtn.disabled).toBe(true);
   });
+
+  it("clears fetched models and status message when endpoint URL changes", async () => {
+    const user = userEvent.setup();
+    mockGetLlmModels.mockResolvedValue(["llama3", "mistral"]);
+
+    render(
+      <OnboardingShell onComplete={vi.fn()} onSkip={vi.fn()} busy={false} errorMessage={null} />
+    );
+
+    // Step 0 -> Step 1 -> Step 2
+    await user.click(screen.getByText("I’ll set this up later"));
+    await user.click(screen.getByText("Next"));
+
+    // Fetch models
+    await user.click(screen.getByText(/test connection & fetch models/i));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "llama3" })).toBeInTheDocument();
+      expect(screen.getAllByText("Connected. Found 2 model(s).")[0]).toBeInTheDocument();
+    });
+
+    // Edit endpoint URL input
+    const endpointInput = screen.getByDisplayValue("http://localhost:11434");
+    await user.type(endpointInput, "/v1");
+
+    // Models list and status message should now be cleared
+    expect(screen.queryByRole("button", { name: "llama3" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Connected. Found 2 model(s).")).not.toBeInTheDocument();
+  });
 });

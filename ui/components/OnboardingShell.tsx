@@ -562,6 +562,8 @@ function OnboardingShell({ onComplete, onSkip, busy, errorMessage }: OnboardingS
                       } else {
                         setLmStudioEndpointState(next);
                       }
+                      setModels([]);
+                      setStatusMessage(null);
                       setHasExtracted(false);
                       setExtractionFailed(false);
                     }}
