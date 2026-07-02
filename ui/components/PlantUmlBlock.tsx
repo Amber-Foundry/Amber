@@ -146,6 +146,15 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
     setEncoded("");
   }, []);
 
+  const server = getPlantUmlServer();
+  const serverHost = (() => {
+    try {
+      return new URL(server).hostname || server;
+    } catch {
+      return server;
+    }
+  })();
+
   // --- Consent gate: show privacy placeholder ---
   if (!allowed) {
     return (
@@ -191,7 +200,7 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
             <h4 className="plantuml-consent-title">Privacy Notice</h4>
             <p className="plantuml-consent-message">
               Rendering this diagram requires sending its text to an external server (
-              <strong>plantuml.com</strong>). No data is sent until you opt in.
+              <strong>{serverHost}</strong>). No data is sent until you opt in.
             </p>
             <div className="plantuml-consent-actions">
               <button type="button" className="plantuml-consent-btn" onClick={handleEnableSession}>
@@ -212,7 +221,6 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
   }
 
   // --- Consented: render normally ---
-  const server = getPlantUmlServer();
   const diagramUrl = encoded ? `${server}/svg/${encoded}` : "";
 
   return (
