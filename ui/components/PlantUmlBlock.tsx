@@ -26,6 +26,7 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
   const [loading, setLoading] = useState(() => getPlantUmlConsent() !== "disabled");
 
   const allowed = consent !== "disabled";
+  const isLoading = loading || (!encoded && !error);
 
   // Listen for external consent changes (e.g. another PlantUML block on the same page)
   useEffect(() => {
@@ -124,11 +125,17 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
   };
 
   const handleEnableSession = useCallback(() => {
+    setLoading(true);
+    setEncoded("");
+    setError(null);
     setPlantUmlConsent("session");
     setConsent("session");
   }, []);
 
   const handleAlwaysAllow = useCallback(() => {
+    setLoading(true);
+    setEncoded("");
+    setError(null);
     setPlantUmlConsent("always");
     setConsent("always");
   }, []);
@@ -219,7 +226,7 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
         </div>
 
         <div className="plantuml-block-actions">
-          {!error && !loading && (
+          {!error && !isLoading && (
             <>
               <button
                 type="button"
@@ -278,7 +285,7 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
             </button>
           )}
 
-          {!loading && (
+          {!isLoading && (
             <button
               type="button"
               className="plantuml-action-btn-icon plantuml-revoke-btn"
@@ -292,7 +299,7 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
         </div>
       </div>
 
-      {loading ? (
+      {isLoading ? (
         <div className="plantuml-block-body loading">
           <div className="plantuml-spinner" />
           <span>Encoding diagram...</span>
