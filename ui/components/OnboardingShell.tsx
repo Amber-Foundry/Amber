@@ -13,6 +13,8 @@ import {
   getOllamaEndpoint,
   setLlmModel,
   setLlmProvider,
+  setLmStudioEndpoint,
+  setOllamaEndpoint,
 } from "../utils/settings";
 
 type OnboardingShellProps = {
@@ -524,8 +526,10 @@ function OnboardingShell({ onComplete, onSkip, busy, errorMessage }: OnboardingS
                       const next = event.target.value;
                       if (provider === "ollama") {
                         setOllamaEndpointState(next);
+                        setOllamaEndpoint(next);
                       } else {
                         setLmStudioEndpointState(next);
+                        setLmStudioEndpoint(next);
                       }
                       setHasExtracted(false);
                       setExtractionFailed(false);
