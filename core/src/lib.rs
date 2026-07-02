@@ -1183,6 +1183,8 @@ fn spawn_single_node_embedding(db_path: PathBuf, node_id: String, is_unlocked: b
                             "[embed] single-node embedding failed for {}: {err}",
                             task.node_id
                         );
+                        cached_conn = None;
+                        cached_engine = None;
                     }
                     Err(_) => {
                         eprintln!(
