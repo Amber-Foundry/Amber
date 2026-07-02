@@ -1,5 +1,6 @@
 // TEMP — to be replaced with ../../types/generated
 import type { EmbeddingStatus } from "../types/generated";
+import styles from "../style/components/EmbeddingSettings.module.css";
 
 type EmbeddingSettingsProps = {
   status: EmbeddingStatus | null;
@@ -36,41 +37,75 @@ export default function EmbeddingSettings({
   onReembed,
   onCancelReembed,
 }: EmbeddingSettingsProps) {
+  const coverageLabelId = "embedding-coverage-label";
+  const lastComputedId = "embedding-last-computed";
+  const isServiceUnavailable = syncState === "error" && !status;
+  const isEmptyState = !loading && !status && !isServiceUnavailable;
+
   if (loading) {
     return (
-      <div className="embedding-settings-panel">
-        <p className="embedding-settings-item">Loading embedding status…</p>
+      <div className={styles["embedding-settings-panel"]} aria-busy="true">
+        <p className={styles["embedding-settings-title"]}>Embedding Settings</p>
+        <p className={styles["embedding-settings-item"]}>Loading embedding status…</p>
       </div>
     );
   }
 
-  if (syncState === "error" && !status) {
+  if (isServiceUnavailable) {
     return (
-      <div className="embedding-settings-panel">
-        <p className="embedding-settings-item">{syncError}</p>
+      <div className={styles["embedding-settings-panel"]}>
+        <p className={styles["embedding-settings-title"]}>Embedding Settings</p>
+        <div
+          className={styles["embedding-state-card"]}
+          role="alert"
+          aria-label="Embedding IPC unreachable"
+        >
+          <p className={styles["embedding-state-title"]}>Embedding service unavailable</p>
+          <p className={styles["embedding-state-copy"]}>
+            {syncError || "The embedding IPC could not be reached. Coverage data is unavailable."}
+          </p>
+        </div>
       </div>
     );
   }
 
-  if (!status) {
+  if (isEmptyState) {
     return (
-      <div className="embedding-settings-panel">
-        <p className="embedding-settings-item">No embedding status available.</p>
+      <div className={styles["embedding-settings-panel"]}>
+        <p className={styles["embedding-settings-title"]}>Embedding Settings</p>
+        <div className={styles["embedding-state-card"]} aria-label="No embedding status available">
+          <p className={styles["embedding-state-title"]}>No embedding data yet</p>
+          <p className={styles["embedding-state-copy"]}>
+            Start a re-embed to generate coverage metrics for your memories.
+          </p>
+        </div>
       </div>
     );
   }
 
-  const coverageClamped = Math.min(100, Math.max(0, status.coveragePercent));
-  const modelChanged = status.model !== model;
+  const embeddingStatus = status;
+
+  if (!embeddingStatus) {
+    return null;
+  }
+
+  const coverageClamped = Math.min(100, Math.max(0, embeddingStatus.coveragePercent));
+  const modelChanged = embeddingStatus.model !== model;
 
   return (
-    <div className="embedding-settings-panel">
-      <h1 className="embedding-settings-title">Embedding Settings</h1>
+    <div className={styles["embedding-settings-panel"]}>
+      <h1 className={styles["embedding-settings-title"]}>Embedding Settings</h1>
 
-      {/* Jaccard fallback warning */}
-      {status.jaccardFallbackActive && (
-        <div className="embedding-jaccard-warning">
-          <span className="embedding-jaccard-warning-icon">⚠</span>
+      {embeddingStatus.jaccardFallbackActive && (
+        <div
+          className={styles["embedding-jaccard-warning"]}
+          role="status"
+          aria-live="polite"
+          aria-label="Embedding fallback warning"
+        >
+          <span className={styles["embedding-jaccard-warning-icon"]} aria-hidden="true">
+            ⚠
+          </span>
           <span>
             Using text overlap for dedup — embedding model not available. Download a model for
             better memory matching.
@@ -78,74 +113,89 @@ export default function EmbeddingSettings({
         </div>
       )}
 
-      {/* Model info */}
-      <p className="embedding-settings-item">
-        <span className="embedding-settings-label">Model</span>
-        {status.model}
+      <p className={styles["embedding-settings-item"]}>
+        <span className={styles["embedding-settings-label"]}>Model</span>
+        {embeddingStatus.model}
       </p>
-      <p className="embedding-settings-item">
-        <span className="embedding-settings-label">Tier</span>
-        {status.tier}
+      <p className={styles["embedding-settings-item"]}>
+        <span className={styles["embedding-settings-label"]}>Tier</span>
+        {embeddingStatus.tier}
       </p>
-      <p className="embedding-settings-item">
-        <span className="embedding-settings-label">Backend</span>
-        {status.backend}
+      <p className={styles["embedding-settings-item"]}>
+        <span className={styles["embedding-settings-label"]}>Backend</span>
+        {embeddingStatus.backend}
       </p>
 
-      {/* Coverage progress */}
-      <div className="embedding-coverage">
-        <div className="embedding-coverage-header">
-          <span className="embedding-settings-label">Coverage</span>
-          <span className="embedding-coverage-pct">{coverageClamped}%</span>
+      <div className={styles["embedding-coverage"]}>
+        <div className={styles["embedding-coverage-header"]}>
+          <span id={coverageLabelId} className={styles["embedding-settings-label"]}>
+            Coverage
+          </span>
+          <span className={styles["embedding-coverage-pct"]}>{coverageClamped}%</span>
         </div>
-        <div className="embedding-progress-track">
+        <div
+          className={styles["embedding-progress-track"]}
+          role="progressbar"
+          aria-label={`Embedding coverage for ${embeddingStatus.model}`}
+          aria-labelledby={coverageLabelId}
+          aria-describedby={lastComputedId}
+          aria-valuenow={coverageClamped}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
           <div
-            className="embedding-progress-fill"
+            className={styles["embedding-progress-fill"]}
             style={{ width: `${coverageClamped}%` }}
-            role="progressbar"
-            aria-valuenow={coverageClamped}
-            aria-valuemin={0}
-            aria-valuemax={100}
+            aria-hidden="true"
           />
         </div>
-        <p className="embedding-settings-item embedding-last-computed">
-          Last computed: {formatRelativeTime(status.lastComputedAt)}
+        <p id={lastComputedId} className={styles["embedding-last-computed"]}>
+          Last computed: {formatRelativeTime(embeddingStatus.lastComputedAt)}
         </p>
       </div>
 
-      {/* Actions */}
-      <div className="embedding-settings-actions">
+      <div className={styles["embedding-settings-actions"]}>
         {syncState === "running" ? (
-          <div className="embedding-spinner-row">
-            <span className="embedding-spinner" aria-label="Polling embedding status" />
-            <span className="embedding-settings-item">Polling embedding status…</span>
+          <div className={styles["embedding-spinner-row"]} aria-live="polite">
+            <span className={styles["embedding-spinner"]} aria-hidden="true" />
+            <span className={styles["embedding-settings-item"]}>Polling embedding status…</span>
           </div>
         ) : syncState === "complete" ? (
-          <p className="embedding-settings-item">Embedding status updated.</p>
+          <p className={styles["embedding-settings-item"]}>Embedding status updated.</p>
         ) : syncState === "error" ? (
-          <p className="embedding-settings-item">{syncError}</p>
+          <p className={styles["embedding-settings-item"]}>{syncError}</p>
         ) : null}
 
-        {status.coveragePercent < 100 || modelChanged ? (
+        {embeddingStatus.coveragePercent < 100 || modelChanged ? (
           <>
-            {status.reembedInProgress ? (
+            {embeddingStatus.reembedInProgress ? (
               <>
-                <div className="embedding-spinner-row">
-                  <span className="embedding-spinner" aria-label="Re-embedding in progress" />
-                  <span className="embedding-settings-item">Re-embedding…</span>
+                <div className={styles["embedding-spinner-row"]} aria-live="polite">
+                  <span className={styles["embedding-spinner"]} aria-hidden="true" />
+                  <span className={styles["embedding-settings-item"]}>Re-embedding…</span>
                 </div>
-                <button className="embedding-settings-button" onClick={onCancelReembed}>
+                <button
+                  type="button"
+                  className={styles["embedding-settings-button"]}
+                  aria-label="Cancel the in-progress embedding re-index"
+                  onClick={onCancelReembed}
+                >
                   Cancel
                 </button>
               </>
             ) : (
-              <button className="embedding-settings-button" onClick={onReembed}>
+              <button
+                type="button"
+                className={styles["embedding-settings-button"]}
+                aria-label="Re-embed memories with the current embedding model"
+                onClick={onReembed}
+              >
                 Re-embed Memories
               </button>
             )}
           </>
         ) : (
-          <p className="embedding-settings-item">All memories are embedded.</p>
+          <p className={styles["embedding-settings-item"]}>All memories are embedded.</p>
         )}
       </div>
     </div>
