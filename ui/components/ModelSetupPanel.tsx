@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { HardwareProfile, RecommendedStack } from "../services/modelSetup";
 import { getRecommendedStacks, probeHardware, startStackDownload } from "../services/modelSetup";
 import styles from "../style/components/ModelSetupPanel.module.css";
@@ -125,6 +125,15 @@ function ModelSetupPanel({ variant = "settings", onStackSelected }: ModelSetupPa
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(true);
 
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const orderedStacks = useMemo(() => stacks.slice(0, 3), [stacks]);
   const subtitle = useMemo(() => buildSubtitle(orderedStacks), [orderedStacks]);
 
@@ -137,10 +146,12 @@ function ModelSetupPanel({ variant = "settings", onStackSelected }: ModelSetupPa
         probeHardware(),
         getRecommendedStacks(),
       ]);
+      if (!mountedRef.current) return;
       setHardware(nextHardware);
       setStacks(nextStacks);
       setPhase("results");
     } catch (error) {
+      if (!mountedRef.current) return;
       setErrorMessage(error instanceof Error ? error.message : String(error));
       setPhase("error");
     }
@@ -151,10 +162,12 @@ function ModelSetupPanel({ variant = "settings", onStackSelected }: ModelSetupPa
     setToastMessage(null);
     try {
       await startStackDownload(stackId);
+      if (!mountedRef.current) return;
       setToastMessage("Coming soon: download IPC is not wired yet.");
       setBusyStackId(null);
       onStackSelected?.(stackId);
     } catch (error) {
+      if (!mountedRef.current) return;
       setToastMessage(error instanceof Error ? error.message : String(error));
       setBusyStackId(null);
     }
