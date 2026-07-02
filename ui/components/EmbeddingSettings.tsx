@@ -184,6 +184,7 @@ export default function EmbeddingSettings({
                   className={styles["embedding-settings-button"]}
                   aria-label="Cancel the in-progress embedding re-index"
                   onClick={onCancelReembed}
+                  disabled={loading}
                 >
                   Cancel
                 </button>
@@ -194,6 +195,7 @@ export default function EmbeddingSettings({
                 className={styles["embedding-settings-button"]}
                 aria-label="Re-embed memories with the current embedding model"
                 onClick={onReembed}
+                disabled={syncState === "running" || loading}
               >
                 Re-embed Memories
               </button>
