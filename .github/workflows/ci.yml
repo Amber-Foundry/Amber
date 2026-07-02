@@ -91,15 +91,15 @@ jobs:
         run: cargo test
 
       - name: Install cargo-llvm-cov
-        if: github.event_name == 'pull_request'
+        if: github.ref_name == 'main' || github.base_ref == 'main'
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Code coverage
-        if: github.event_name == 'pull_request'
+        if: github.ref_name == 'main' || github.base_ref == 'main'
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
       - name: Upload coverage
-        if: github.event_name == 'pull_request'
+        if: github.ref_name == 'main' || github.base_ref == 'main'
         uses: codecov/codecov-action@v5
         with:
           files: ./core/lcov.info
