@@ -322,7 +322,7 @@ function LlmSettings() {
     "idle" | "running" | "complete" | "error"
   >("idle");
   const [embeddingSyncError, setEmbeddingSyncError] = useState("");
-  const embeddingPollTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const embeddingPollTimeoutRef = useRef<number | null>(null);
   const embeddingMountedRef = useRef(true);
   const refreshEmbeddingStatusRef = useRef<((pollAgain: boolean) => Promise<void>) | null>(null);
   const clearEmbeddingPoll = useCallback(() => {
@@ -333,7 +333,7 @@ function LlmSettings() {
   }, []);
 
   const loadEmbeddingStatusWithTimeout = useCallback(async (): Promise<EmbeddingStatus> => {
-    let timeoutId: ReturnType<typeof window.setTimeout> | null = null;
+    let timeoutId: number | null = null;
     try {
       return await Promise.race([
         getEmbeddingStatus(),
