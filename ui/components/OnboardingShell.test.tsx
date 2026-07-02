@@ -210,8 +210,8 @@ describe("OnboardingShell Component", () => {
       expect(screen.getByText("Connected. Found 2 model(s).")).toBeInTheDocument();
     });
 
-    const modelSelect = screen.getByRole("combobox") as HTMLSelectElement;
-    await user.selectOptions(modelSelect, "llama3");
+    const modelBtn = screen.getByRole("button", { name: "llama3" });
+    await user.click(modelBtn);
 
     // Click next (triggers extraction first)
     await user.click(screen.getByText("Next"));
@@ -260,9 +260,9 @@ describe("OnboardingShell Component", () => {
     // Set model and go to Step 3 (Review)
     await user.click(screen.getByText(/test connection & fetch models/i));
     await waitFor(() => {
-      expect(screen.getByRole("combobox")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "llama3" })).toBeInTheDocument();
     });
-    await user.selectOptions(screen.getByRole("combobox"), "llama3");
+    await user.click(screen.getByRole("button", { name: "llama3" }));
     await user.click(screen.getByText("Next"));
 
     await waitFor(() => {
@@ -337,9 +337,9 @@ describe("OnboardingShell Component", () => {
     // Step 2: LLM Setup. Set model.
     await user.click(screen.getByText(/test connection & fetch models/i));
     await waitFor(() => {
-      expect(screen.getByRole("combobox")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "llama3" })).toBeInTheDocument();
     });
-    await user.selectOptions(screen.getByRole("combobox"), "llama3");
+    await user.click(screen.getByRole("button", { name: "llama3" }));
 
     // Click Next (triggers extraction which fails)
     await user.click(screen.getByText("Next"));
