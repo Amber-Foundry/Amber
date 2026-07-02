@@ -24,7 +24,7 @@ describe("PlantUmlBlock Component", () => {
 
     await user.click(screen.getByText("Enable for this Session"));
 
-    // Privacy notice should disapear and transition to diagram view
+    // Privacy notice should disappear and transition to diagram view
     expect(screen.queryByText("Privacy Notice")).not.toBeInTheDocument();
     expect(screen.getByText("Encoding diagram...")).toBeInTheDocument();
   });
