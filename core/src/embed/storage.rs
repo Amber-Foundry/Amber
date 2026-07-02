@@ -142,7 +142,13 @@ pub fn delete_embeddings_for_model(conn: &Connection, model: &str) -> Result<(),
 pub fn count_coverage(conn: &Connection, model: &str) -> Result<(i64, i64), String> {
     let total_nodes: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM nodes WHERE deleted_at IS NULL;",
+            "SELECT COUNT(*) FROM nodes n
+             JOIN vaults v ON n.vault_id = v.id
+             LEFT JOIN sub_vaults sv ON n.sub_vault_id = sv.id
+             WHERE n.deleted_at IS NULL
+               AND COALESCE(n.privacy_tier, '') != 'redacted'
+               AND COALESCE(sv.privacy_tier, '') != 'redacted'
+               AND COALESCE(v.privacy_tier, '') != 'redacted';",
             [],
             |row| row.get(0),
         )
@@ -152,10 +158,15 @@ pub fn count_coverage(conn: &Connection, model: &str) -> Result<(i64, i64), Stri
         .query_row(
             "SELECT COUNT(DISTINCT ne.node_id) FROM node_embeddings ne
              JOIN nodes n ON ne.node_id = n.id
+             JOIN vaults v ON n.vault_id = v.id
+             LEFT JOIN sub_vaults sv ON n.sub_vault_id = sv.id
              WHERE ne.model = ?1
                AND ne.chunk_index = 0
                AND ne.chunk_type = 'primary'
-               AND n.deleted_at IS NULL;",
+               AND n.deleted_at IS NULL
+               AND COALESCE(n.privacy_tier, '') != 'redacted'
+               AND COALESCE(sv.privacy_tier, '') != 'redacted'
+               AND COALESCE(v.privacy_tier, '') != 'redacted';",
             params![model],
             |row| row.get(0),
         )
@@ -464,6 +475,34 @@ mod tests {
         // Only node_test_2 is active (denominator = 1), and it has no primary embedding (numerator = 0)
         assert_eq!(num, 0);
         assert_eq!(den, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_count_coverage_excludes_redacted_nodes() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+        let model = "test-model";
+
+        // Initial setup has 2 open nodes (total_nodes = 2)
+        let (_num, den) = count_coverage(&conn, model)?;
+        assert_eq!(den, 2);
+
+        // 1. Mark node_test_1 as redacted -> denominator should become 1
+        conn.execute(
+            "UPDATE nodes SET privacy_tier = 'redacted' WHERE id = 'node_test_1';",
+            [],
+        )?;
+        let (_num, den) = count_coverage(&conn, model)?;
+        assert_eq!(den, 1);
+
+        // 2. Mark parent vault_test as redacted -> denominator should become 0
+        conn.execute(
+            "UPDATE vaults SET privacy_tier = 'redacted' WHERE id = 'vault_test';",
+            [],
+        )?;
+        let (_num, den) = count_coverage(&conn, model)?;
+        assert_eq!(den, 0);
 
         Ok(())
     }
