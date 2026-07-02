@@ -1,4 +1,3 @@
-// TEMP — to be replaced with ../../types/generated
 import type { EmbeddingStatus } from "../types/generated";
 import styles from "../style/components/EmbeddingSettings.module.css";
 
