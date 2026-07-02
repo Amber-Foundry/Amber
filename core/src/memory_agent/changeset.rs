@@ -302,38 +302,33 @@ pub fn build_changeset(
         }
     }
 
-    let existing_nodes = if !use_embeddings {
-        let mut stmt = conn
-            .prepare(&query_str)
-            .map_err(|err| format!("Failed to prepare nodes query: {err}"))?;
+    let mut stmt = conn
+        .prepare(&query_str)
+        .map_err(|err| format!("Failed to prepare nodes query: {err}"))?;
 
-        let params_refs: Vec<&dyn rusqlite::ToSql> =
-            params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let params_refs: Vec<&dyn rusqlite::ToSql> =
+        params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
 
-        let node_rows = stmt
-            .query_map(rusqlite::params_from_iter(params_refs), |row| {
-                Ok(DbNode {
-                    id: row.get(0)?,
-                    vault_id: row.get(1)?,
-                    title: row.get(2)?,
-                    summary: row.get(3)?,
-                    node_type: row.get(4)?,
-                })
+    let node_rows = stmt
+        .query_map(rusqlite::params_from_iter(params_refs), |row| {
+            Ok(DbNode {
+                id: row.get(0)?,
+                vault_id: row.get(1)?,
+                title: row.get(2)?,
+                summary: row.get(3)?,
+                node_type: row.get(4)?,
             })
-            .map_err(|err| format!("Failed to execute nodes query: {err}"))?;
+        })
+        .map_err(|err| format!("Failed to execute nodes query: {err}"))?;
 
-        // Pre-tokenize existing nodes once (N tokenizations) to avoid re-tokenizing
-        let mut nodes: Vec<(DbNode, HashSet<String>)> = Vec::new();
+    // Pre-tokenize existing nodes once (N tokenizations) to avoid re-tokenizing
+    let mut existing_nodes: Vec<(DbNode, HashSet<String>)> = Vec::new();
 
-        for row_res in node_rows {
-            let node = row_res.map_err(|err| format!("Failed to parse database node: {err}"))?;
-            let tokens = tokenize(&combined_text(&node.title, &node.summary));
-            nodes.push((node, tokens));
-        }
-        nodes
-    } else {
-        Vec::new()
-    };
+    for row_res in node_rows {
+        let node = row_res.map_err(|err| format!("Failed to parse database node: {err}"))?;
+        let tokens = tokenize(&combined_text(&node.title, &node.summary));
+        existing_nodes.push((node, tokens));
+    }
 
     let mut items = Vec::new();
 
@@ -343,32 +338,34 @@ pub fn build_changeset(
             continue;
         }
 
-        let best_match: Option<(DbNode, f64)> = if use_embeddings {
+        let mut best_match: Option<(DbNode, f64)> = None;
+
+        if use_embeddings {
             if let Some(eng) = engine {
                 let query_vector = &candidate_vectors[idx];
-                best_match_via_embeddings(
+                best_match = best_match_via_embeddings(
                     conn,
                     query_vector,
                     eng.model_id(),
                     &relevant_vault_filter,
                     has_context,
-                )?
-            } else {
-                None
+                )?;
             }
-        } else {
+        }
+
+        if best_match.is_none() {
             // Pre-tokenize each candidate once (M tokenizations total across all candidates)
             let candidate_tokens = tokenize(&combined_text(&candidate.title, &candidate.summary));
 
             // Find best similarity match using pre-tokenized sets
-            existing_nodes
+            best_match = existing_nodes
                 .iter()
                 .map(|(existing, existing_tokens)| {
                     let score = jaccard_similarity_pretokenized(&candidate_tokens, existing_tokens);
                     (existing.clone(), score)
                 })
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-        };
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        }
 
         match candidate.action {
             CandidateAction::Delete => {
@@ -817,6 +814,38 @@ mod tests {
         let item = &changeset.items[0];
         assert_eq!(item.item_type, ChangesetItemType::Update);
         assert_eq!(item.target_node_id, Some("node_1".to_string()));
+    }
+
+    #[test]
+    fn test_unembedded_node_found_via_jaccard_when_engine_present() {
+        let conn = setup_test_db();
+        let engine = FakeEmbedEngine;
+
+        // Insert a node WITHOUT inserting an embedding in node_embeddings
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail)
+             VALUES ('unembedded_node', 'vault_learning', 'concept', 'Rust programming', 'Rust is a systems language', 'Detail');",
+            [],
+        ).unwrap();
+
+        let candidates = vec![CandidateNode {
+            title: "Rust programming".to_string(),
+            summary: "Rust is a systems language".to_string(),
+            detail: Some("New description".to_string()),
+            node_type: Some("concept".to_string()),
+            target_vault_key: Some("learning".to_string()),
+            tags: None,
+            confidence: 0.95,
+            action: CandidateAction::Add,
+        }];
+
+        let changeset = build_changeset(&conn, &candidates, "session-123", Some(&engine))
+            .expect("build_changeset should find un-embedded node via Jaccard fallback");
+
+        assert_eq!(changeset.items.len(), 1);
+        let item = &changeset.items[0];
+        assert_eq!(item.item_type, ChangesetItemType::Update);
+        assert_eq!(item.target_node_id, Some("unembedded_node".to_string()));
     }
 
     #[test]

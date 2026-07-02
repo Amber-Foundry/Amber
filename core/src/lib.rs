@@ -1158,15 +1158,21 @@ fn spawn_single_node_embedding(db_path: PathBuf, node_id: String, is_unlocked: b
                             .ok_or_else(|| "Engine caching logic error".to_string())?;
 
                         let cancel = AtomicBool::new(false);
-                        embed::embed_node(
+                        let embedded = embed::embed_node(
                             conn,
                             &task.node_id,
                             engine.as_ref(),
                             &cancel,
                             task.is_unlocked,
                         )
-                        .map(|_| ())
-                        .map_err(|err| err.to_string())
+                        .map_err(|err| err.to_string())?;
+
+                        if embedded {
+                            let now_iso = chrono::Utc::now().to_rfc3339();
+                            let _ = embed::set_embedding_last_computed_at(conn, &now_iso);
+                        }
+
+                        Ok(())
                     },
                 ));
 
