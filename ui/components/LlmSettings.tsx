@@ -340,7 +340,7 @@ function LlmSettings() {
         new Promise<EmbeddingStatus>((_, reject) => {
           timeoutId = window.setTimeout(() => {
             reject(new Error("Timed out loading embedding status."));
-          }, EMBEDDING_STATUS_TIMEOUT_MS);
+          }, EMBEDDING_STATUS_TIMEOUT_MS) as unknown as number;
         }),
       ]);
     } finally {
@@ -367,7 +367,7 @@ function LlmSettings() {
             clearEmbeddingPoll();
             embeddingPollTimeoutRef.current = window.setTimeout(() => {
               void refreshEmbeddingStatusRef.current?.(true);
-            }, 2000);
+            }, 2000) as unknown as number;
           }
         } else {
           clearEmbeddingPoll();
