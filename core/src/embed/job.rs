@@ -282,7 +282,9 @@ pub fn embed_all_nodes(
         }
     }
 
-    if let Some(model) = old_model_id.filter(|model| !model.trim().is_empty()) {
+    if let Some(model) =
+        old_model_id.filter(|model| !model.trim().is_empty() && *model != engine.model_id())
+    {
         if cancel.load(Ordering::Relaxed) {
             return EmbedJobResult::Cancelled;
         }

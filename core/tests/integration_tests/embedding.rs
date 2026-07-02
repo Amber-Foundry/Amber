@@ -328,6 +328,64 @@ fn test_model_migration_cancellation_preserves_old_vectors(
 }
 
 #[test]
+fn test_reembed_same_model_does_not_delete_new_vectors() -> Result<(), Box<dyn std::error::Error>> {
+    let db_path = unique_db_path("reembed_same_model")?;
+    amber_lib::test_helper_init_embedding_db(db_path.clone())?;
+    let mut conn = rusqlite::Connection::open(&db_path)?;
+
+    conn.execute(
+        "INSERT INTO vaults (id, name) VALUES ('vault_test', 'Test Vault');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail)
+         VALUES ('node_test', 'vault_test', 'concept', 'Title', 'Summary', 'Detail');",
+        [],
+    )?;
+
+    struct MockEngine;
+    impl amber_lib::embed::EmbedEngine for MockEngine {
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, amber_lib::embed::EmbedError> {
+            Ok(texts.iter().map(|_| vec![0.5, 0.5]).collect())
+        }
+        fn model_id(&self) -> &str {
+            "same-model"
+        }
+        fn dims(&self) -> usize {
+            2
+        }
+    }
+
+    let engine = MockEngine;
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let res = amber_lib::embed::job::embed_all_nodes(
+        &mut conn,
+        &engine,
+        &cancel,
+        Some("same-model"),
+        false,
+    );
+    assert!(matches!(
+        res,
+        amber_lib::embed::job::EmbedJobResult::Completed { .. }
+    ));
+
+    let rows = amber_lib::embed::storage::get_embeddings_for_model(&conn, "same-model")?;
+    assert_eq!(
+        rows.len(),
+        2,
+        "Embeddings for the same model must not be wiped after re-indexing"
+    );
+    assert!(
+        amber_lib::embed::storage::get_primary_embedding(&conn, "node_test", "same-model")?
+            .is_some()
+    );
+
+    let _remove_result = fs::remove_file(db_path);
+    Ok(())
+}
+
+#[test]
 fn test_reembed_cancel() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("reembed_cancel")?;
     amber_lib::test_helper_init_embedding_db(db_path.clone())?;
