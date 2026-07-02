@@ -625,7 +625,8 @@ mod tests {
         };
         let create_sql = "
             CREATE TABLE vaults (
-                id TEXT PRIMARY KEY
+                id TEXT PRIMARY KEY,
+                deleted_at TEXT
             );
             CREATE TABLE sub_vaults (
                 id TEXT PRIMARY KEY,
@@ -639,6 +640,7 @@ mod tests {
             CREATE TABLE nodes (
                 id TEXT PRIMARY KEY,
                 vault_id TEXT NOT NULL,
+                sub_vault_id TEXT,
                 node_type TEXT NOT NULL,
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL,

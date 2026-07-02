@@ -73,11 +73,15 @@ pub fn find_top_n_similar(
             "SELECT n.id, n.vault_id, n.title, n.summary, n.node_type, ne.embedding
              FROM node_embeddings ne
              JOIN nodes n ON ne.node_id = n.id
+             LEFT JOIN vaults v ON n.vault_id = v.id
+             LEFT JOIN sub_vaults sv ON n.sub_vault_id = sv.id
              WHERE ne.chunk_type = 'primary'
                AND ne.chunk_index = 0
                AND ne.model = ?
                AND n.deleted_at IS NULL
                AND n.is_archived = 0
+               AND (v.id IS NULL OR v.deleted_at IS NULL)
+               AND (sv.id IS NULL OR sv.deleted_at IS NULL)
                AND n.vault_id IN ({});",
             placeholders
         );
@@ -88,11 +92,15 @@ pub fn find_top_n_similar(
         let query = "SELECT n.id, n.vault_id, n.title, n.summary, n.node_type, ne.embedding
              FROM node_embeddings ne
              JOIN nodes n ON ne.node_id = n.id
+             LEFT JOIN vaults v ON n.vault_id = v.id
+             LEFT JOIN sub_vaults sv ON n.sub_vault_id = sv.id
              WHERE ne.chunk_type = 'primary'
                AND ne.chunk_index = 0
                AND ne.model = ?
                AND n.deleted_at IS NULL
-               AND n.is_archived = 0;"
+               AND n.is_archived = 0
+               AND (v.id IS NULL OR v.deleted_at IS NULL)
+               AND (sv.id IS NULL OR sv.deleted_at IS NULL);"
             .to_string();
         (query, vec![model.to_string()])
     };
@@ -407,6 +415,66 @@ mod tests {
         let results_empty_vaults =
             find_top_n_similar(&conn, &query, model, 10, Some(&HashSet::new()))?;
         assert!(results_empty_vaults.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_top_n_similar_excludes_soft_deleted_vaults(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+        let model = "test-model";
+        let query = vec![1.0, 0.0, 0.0];
+
+        // 1. Soft-deleted parent vault test
+        conn.execute(
+            "INSERT INTO vaults (id, name, deleted_at) VALUES ('v_del', 'Deleted Vault', datetime('now'));",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail)
+             VALUES ('n_del_v', 'v_del', 'concept', 'Title', 'Summary', 'Detail');",
+            [],
+        )?;
+        upsert_embedding(
+            &conn,
+            &EmbeddingRow {
+                node_id: "n_del_v".to_string(),
+                chunk_index: 0,
+                chunk_type: "primary".to_string(),
+                model: model.to_string(),
+                embedding: vec![1.0, 0.0, 0.0],
+                computed_at: "time".to_string(),
+            },
+        )?;
+
+        let results_del_v = find_top_n_similar(&conn, &query, model, 10, None)?;
+        assert!(!results_del_v.iter().any(|(node, _)| node.id == "n_del_v"));
+
+        // 2. Soft-deleted sub-vault test
+        conn.execute(
+            "INSERT INTO sub_vaults (id, vault_id, name, deleted_at) VALUES ('sv_del', 'vault_test', 'Deleted Sub Vault', datetime('now'));",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, sub_vault_id, node_type, title, summary, detail)
+             VALUES ('n_del_sv', 'vault_test', 'sv_del', 'concept', 'Title', 'Summary', 'Detail');",
+            [],
+        )?;
+        upsert_embedding(
+            &conn,
+            &EmbeddingRow {
+                node_id: "n_del_sv".to_string(),
+                chunk_index: 0,
+                chunk_type: "primary".to_string(),
+                model: model.to_string(),
+                embedding: vec![1.0, 0.0, 0.0],
+                computed_at: "time".to_string(),
+            },
+        )?;
+
+        let results_del_sv = find_top_n_similar(&conn, &query, model, 10, None)?;
+        assert!(!results_del_sv.iter().any(|(node, _)| node.id == "n_del_sv"));
 
         Ok(())
     }
