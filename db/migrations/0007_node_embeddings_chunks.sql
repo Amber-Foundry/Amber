@@ -21,6 +21,9 @@ AFTER UPDATE ON nodes
 WHEN NEW.title IS NOT OLD.title
    OR NEW.summary IS NOT OLD.summary
    OR NEW.detail IS NOT OLD.detail
+   OR NEW.privacy_tier IS NOT OLD.privacy_tier
+   OR NEW.vault_id IS NOT OLD.vault_id
+   OR NEW.sub_vault_id IS NOT OLD.sub_vault_id
 BEGIN
     DELETE FROM node_embeddings WHERE node_id = NEW.id;
 END;

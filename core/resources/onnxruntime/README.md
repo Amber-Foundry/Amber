@@ -20,9 +20,26 @@ in `core/tauri.conf.json`.
 
 ## Embedding model artifacts (separate from ORT runtime libs)
 
-Bundled embedding tests expect model files under `~/.amber/models/embed/`:
+Bundled embedding tests and local inference expect model files under `~/.amber/models/embed/` (sanitized model ID as filename):
 
-- `avsolatorio_GIST-small-Embedding-v0.onnx`
-- `avsolatorio_GIST-small-Embedding-v0_tokenizer.json`
+- **Light Tier**:
+  - `avsolatorio_GIST-small-Embedding-v0.onnx`
+  - `avsolatorio_GIST-small-Embedding-v0_tokenizer.json`
+- **Standard Tier**:
+  - `avsolatorio_GIST-Embedding-v0.onnx`
+  - `avsolatorio_GIST-Embedding-v0_tokenizer.json`
+- **Quality Tier**:
+  - `microsoft_harrier-oss-v1-270m.onnx`
+  - `microsoft_harrier-oss-v1-270m_tokenizer.json`
 
-Model download UX is deferred to M2.8.
+## OCR model artifacts (PP-OCRv6_small)
+
+Bundled document ingestion layout analysis and text extraction expect OCR models under `~/.amber/models/ocr/`:
+
+- `det.onnx` (Text detection model)
+- `rec.onnx` (Text recognition model)
+- `ppocrv6_dict.txt` (Vocabulary mapping file for CTC decoding)
+
+## First-Run Model Setup
+
+Rather than manual staging, the in-app Model Download Manager handles downloading these models directly from HuggingFace during the frictionless first-run onboarding setup. The manager verifies files using SHA-256 hash validation and supports HTTP range-based chunk-resume. The active embedding model tier is dynamically determined by probing system hardware resources (RAM and VRAM).

@@ -8,24 +8,9 @@ import {
 import { verifyMasterPassword } from "../services/auth";
 import { type Changeset, type ChangesetItem, type ChangesetCommitInput } from "../ipc";
 import DiffRow from "./DiffPanel/DiffRow";
+import { parseSQLiteDate, parseJSON } from "../utils/parse";
 import "../style/components/DiffPanel.css";
 import "../style/components/DiffPanelActions.css";
-
-function parseSQLiteDate(dateStr: string | null | undefined): Date {
-  if (!dateStr) return new Date();
-  // If it doesn't contain 'T', replace space with 'T' and append 'Z' for UTC.
-  const normalized = dateStr.includes("T") ? dateStr : dateStr.replace(" ", "T") + "Z";
-  return new Date(normalized);
-}
-
-function parseJSON(str: string | null | undefined) {
-  if (!str) return {};
-  try {
-    return JSON.parse(str);
-  } catch {
-    return {};
-  }
-}
 
 interface DiffPanelProps {
   onClose: () => void;
@@ -272,7 +257,7 @@ export default function DiffPanel({
 
   // Helper to extract item summary title
   const getItemTitle = useCallback((item: ChangesetItem) => {
-    const data = parseJSON(item.proposedData);
+    const data = parseJSON(item.proposedData) as { title?: string; summary?: string };
     if (
       item.itemType.toLowerCase() === "repoint_door" ||
       item.itemType.toLowerCase() === "orphan_alert"
@@ -298,7 +283,7 @@ export default function DiffPanel({
   // Filter Changeset Items
   const filteredItems = items.filter((item) => {
     const title = getItemTitle(item).toLowerCase();
-    const parsed = parseJSON(item.proposedData);
+    const parsed = parseJSON(item.proposedData) as { summary?: string; detail?: string };
     const summary = (parsed.summary || "").toLowerCase();
     const detail = (parsed.detail || "").toLowerCase();
     const matchSearch =

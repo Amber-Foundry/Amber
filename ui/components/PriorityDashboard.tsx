@@ -14,49 +14,14 @@ import {
   getPrivacyDisplayLabel,
   getVaultEffectivePrivacy,
 } from "../utils/privacy";
+import {
+  parsePriorityJson,
+  getPriorityScore,
+  getPriorityProfile,
+  isFrozen,
+  getAccessCount,
+} from "../utils/priority";
 import PriorityBar from "./PriorityBar";
-
-function parsePriorityJson(priority: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(priority);
-    if (typeof parsed === "object" && parsed !== null) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // ignore
-  }
-  return {};
-}
-
-function getPriorityScore(node: Node): number {
-  const obj = parsePriorityJson(node.priority);
-  if (typeof obj.score === "number" && Number.isFinite(obj.score)) {
-    return obj.score;
-  }
-  return 1.0;
-}
-
-function getPriorityProfile(node: Node): string {
-  const obj = parsePriorityJson(node.priority);
-  if (typeof obj.profile === "string") {
-    return obj.profile;
-  }
-  return "standard";
-}
-
-function isFrozen(node: Node): boolean {
-  const obj = parsePriorityJson(node.priority);
-  return obj.frozen === true;
-}
-
-function getAccessCount(node: Node, key: string): number {
-  const obj = parsePriorityJson(node.priority);
-  const val = obj[key];
-  if (typeof val === "number" && Number.isFinite(val)) {
-    return val;
-  }
-  return 0;
-}
 
 type PriorityDashboardProps = {
   refreshKey: number;

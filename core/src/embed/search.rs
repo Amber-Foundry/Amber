@@ -1,5 +1,5 @@
 use crate::embed::storage::deserialize_f32_vec;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 /// Compute cosine similarity between two f32 slices.
 ///
@@ -37,6 +37,17 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     raw_score.clamp(-1.0, 1.0)
 }
 
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DbNode {
+    pub id: String,
+    pub vault_id: String,
+    pub title: String,
+    pub summary: String,
+    pub node_type: String,
+}
+
 /// Find the top N similar nodes using cosine similarity over their primary embeddings.
 ///
 /// Only compares primary chunks (`chunk_type = 'primary'` and `chunk_index = 0`)
@@ -47,47 +58,83 @@ pub fn find_top_n_similar(
     query_vector: &[f32],
     model: &str,
     n: usize,
-) -> Result<Vec<(String, f64)>, String> {
+    vaults: Option<&HashSet<String>>,
+) -> Result<Vec<(DbNode, f64)>, String> {
     if n == 0 || query_vector.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT ne.node_id, ne.embedding
+    let (query_str, params_vec) = if let Some(vaults) = vaults {
+        if vaults.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; vaults.len()].join(", ");
+        let query = format!(
+            "SELECT n.id, n.vault_id, n.title, n.summary, n.node_type, ne.embedding
              FROM node_embeddings ne
              JOIN nodes n ON ne.node_id = n.id
              WHERE ne.chunk_type = 'primary'
                AND ne.chunk_index = 0
-               AND ne.model = ?1
+               AND ne.model = ?
                AND n.deleted_at IS NULL
-               AND n.is_archived = 0;",
-        )
+               AND n.is_archived = 0
+               AND n.vault_id IN ({});",
+            placeholders
+        );
+        let mut p = vec![model.to_string()];
+        p.extend(vaults.iter().cloned());
+        (query, p)
+    } else {
+        let query = "SELECT n.id, n.vault_id, n.title, n.summary, n.node_type, ne.embedding
+             FROM node_embeddings ne
+             JOIN nodes n ON ne.node_id = n.id
+             WHERE ne.chunk_type = 'primary'
+               AND ne.chunk_index = 0
+               AND ne.model = ?
+               AND n.deleted_at IS NULL
+               AND n.is_archived = 0;"
+            .to_string();
+        (query, vec![model.to_string()])
+    };
+
+    let mut stmt = conn
+        .prepare(&query_str)
         .map_err(|err| format!("Failed to prepare search statement: {}", err))?;
 
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec
+        .iter()
+        .map(|v| v as &dyn rusqlite::ToSql)
+        .collect();
+
     let rows = stmt
-        .query_map(params![model], |row| {
-            let node_id: String = row.get(0)?;
-            let embedding_bytes: Vec<u8> = row.get(1)?;
-            Ok((node_id, embedding_bytes))
+        .query_map(rusqlite::params_from_iter(params_refs), |row| {
+            let node = DbNode {
+                id: row.get(0)?,
+                vault_id: row.get(1)?,
+                title: row.get(2)?,
+                summary: row.get(3)?,
+                node_type: row.get(4)?,
+            };
+            let embedding_bytes: Vec<u8> = row.get(5)?;
+            Ok((node, embedding_bytes))
         })
         .map_err(|err| format!("Failed to execute search query: {}", err))?;
 
     let mut candidates = Vec::new();
     for row_res in rows {
-        let (node_id, bytes) = row_res.map_err(|err| format!("Failed to read row: {}", err))?;
+        let (node, bytes) = row_res.map_err(|err| format!("Failed to read row: {}", err))?;
 
         match deserialize_f32_vec(&bytes) {
             Ok(vec) => {
                 if vec.len() == query_vector.len() {
                     let score = cosine_similarity(query_vector, &vec);
                     if !score.is_nan() {
-                        candidates.push((node_id, score));
+                        candidates.push((node, score));
                     }
                 } else {
                     eprintln!(
                         "Dimension mismatch for node {}: query has {}, stored has {}",
-                        node_id,
+                        node.id,
                         query_vector.len(),
                         vec.len()
                     );
@@ -96,30 +143,30 @@ pub fn find_top_n_similar(
             Err(err) => {
                 eprintln!(
                     "Failed to deserialize embedding for node {}: {}",
-                    node_id, err
+                    node.id, err
                 );
             }
         }
     }
 
-    // Sort descending by similarity score, with a deterministic secondary sort alphabetically by node_id.
+    // Sort descending by similarity score, with a deterministic secondary sort alphabetically by node id.
     if candidates.len() > n {
         candidates.select_nth_unstable_by(n, |a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.0.id.cmp(&b.0.id))
         });
         candidates[0..n].sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.0.id.cmp(&b.0.id))
         });
         candidates.truncate(n);
     } else {
         candidates.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.0.id.cmp(&b.0.id))
         });
     }
 
@@ -193,34 +240,34 @@ mod tests {
 
         // Query vector: [1.0, 0.1, 0.0] (Very similar to node_test_1, less similar to node_test_2)
         let query = vec![1.0, 0.1, 0.0];
-        let results = find_top_n_similar(&conn, &query, model, 10)?;
+        let results = find_top_n_similar(&conn, &query, model, 10, None)?;
 
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].0, "node_test_1");
+        assert_eq!(results[0].0.id, "node_test_1");
         assert!(results[0].1 > results[1].1);
 
         // Limit truncation test: retrieve only 1 result
-        let results_limited = find_top_n_similar(&conn, &query, model, 1)?;
+        let results_limited = find_top_n_similar(&conn, &query, model, 1, None)?;
         assert_eq!(results_limited.len(), 1);
-        assert_eq!(results_limited[0].0, "node_test_1");
+        assert_eq!(results_limited[0].0.id, "node_test_1");
 
         // Soft-deleted node filter test
         conn.execute(
             "UPDATE nodes SET deleted_at = datetime('now') WHERE id = 'node_test_1';",
             [],
         )?;
-        let results_after_delete = find_top_n_similar(&conn, &query, model, 10)?;
+        let results_after_delete = find_top_n_similar(&conn, &query, model, 10, None)?;
         assert_eq!(results_after_delete.len(), 1);
-        assert_eq!(results_after_delete[0].0, "node_test_2");
+        assert_eq!(results_after_delete[0].0.id, "node_test_2");
 
         // Archived node filter test
         conn.execute(
             "UPDATE nodes SET deleted_at = NULL, is_archived = 1 WHERE id = 'node_test_1';",
             [],
         )?;
-        let results_after_archive = find_top_n_similar(&conn, &query, model, 10)?;
+        let results_after_archive = find_top_n_similar(&conn, &query, model, 10, None)?;
         assert_eq!(results_after_archive.len(), 1);
-        assert_eq!(results_after_archive[0].0, "node_test_2");
+        assert_eq!(results_after_archive[0].0.id, "node_test_2");
 
         // Detail chunk/non-primary chunk exclusion test:
         // Upsert a detail chunk (chunk_type = 'detail') with high similarity for a new node
@@ -254,10 +301,10 @@ mod tests {
         )?;
 
         // Search with query and assert that node_test_3 (which only has non-primary chunks) does not appear
-        let results_detail_excluded = find_top_n_similar(&conn, &query, model, 10)?;
+        let results_detail_excluded = find_top_n_similar(&conn, &query, model, 10, None)?;
         assert!(!results_detail_excluded
             .iter()
-            .any(|(id, _)| id == "node_test_3"));
+            .any(|(node, _)| node.id == "node_test_3"));
 
         // Zero-embedding node test:
         // Insert a node with NO embedding rows
@@ -268,8 +315,65 @@ mod tests {
         )?;
 
         // Search and assert that node_test_4 does not appear in results
-        let results_zero_emb = find_top_n_similar(&conn, &query, model, 10)?;
-        assert!(!results_zero_emb.iter().any(|(id, _)| id == "node_test_4"));
+        let results_zero_emb = find_top_n_similar(&conn, &query, model, 10, None)?;
+        assert!(!results_zero_emb
+            .iter()
+            .any(|(node, _)| node.id == "node_test_4"));
+
+        // Restore node_test_1 so it is active again
+        conn.execute(
+            "UPDATE nodes SET is_archived = 0 WHERE id = 'node_test_1';",
+            [],
+        )?;
+
+        // Vault-filtered similarity test
+        // 1. Create a second vault: vault_other
+        conn.execute(
+            "INSERT INTO vaults (id, name, icon, description, privacy_tier, priority_profile, sort_order, meta)
+             VALUES ('vault_other', 'Other Vault', 'vault', 'Fixture Vault', 'open', 'standard', 0, '{}');",
+            [],
+        )?;
+
+        // 2. Insert a node in vault_other: node_test_5
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail, source, source_type, priority, meta)
+             VALUES ('node_test_5', 'vault_other', 'concept', 'Test Node 5', 'Test summary 5', 'Test detail 5', 'test', 'manual', '{}', '{}');",
+            [],
+        )?;
+
+        // 3. Upsert a primary chunk for node_test_5 that is MORE similar to the query than node_test_1
+        // Query is [1.0, 0.1, 0.0]
+        // node_test_1 is [1.0, 0.0, 0.0] (sim ~ 0.995)
+        // node_test_5 is [1.0, 0.09, 0.0] (sim ~ 0.9999)
+        upsert_embedding(
+            &conn,
+            &EmbeddingRow {
+                node_id: "node_test_5".to_string(),
+                chunk_index: 0,
+                chunk_type: "primary".to_string(),
+                model: model.to_string(),
+                embedding: vec![1.0, 0.09, 0.0],
+                computed_at: "time".to_string(),
+            },
+        )?;
+
+        // 4. Query without vault filter -> node_test_5 should be ranked first because it is more similar
+        let results_unfiltered = find_top_n_similar(&conn, &query, model, 10, None)?;
+        assert_eq!(results_unfiltered[0].0.id, "node_test_5");
+
+        // 5. Query with vault filter for vault_test -> node_test_5 must be excluded, and node_test_1 should be first
+        let mut allowed_vaults = HashSet::new();
+        allowed_vaults.insert("vault_test".to_string());
+        let results_filtered = find_top_n_similar(&conn, &query, model, 10, Some(&allowed_vaults))?;
+        assert!(!results_filtered
+            .iter()
+            .any(|(node, _)| node.id == "node_test_5"));
+        assert_eq!(results_filtered[0].0.id, "node_test_1");
+
+        // 6. Query with empty vault set -> should return an empty result immediately due to empty guard
+        let results_empty_vaults =
+            find_top_n_similar(&conn, &query, model, 10, Some(&HashSet::new()))?;
+        assert!(results_empty_vaults.is_empty());
 
         Ok(())
     }

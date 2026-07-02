@@ -4,7 +4,10 @@ use std::sync::OnceLock;
 use rusqlite::Connection;
 use tiktoken_rs::CoreBPE;
 
-use crate::privacy::{generate_pointer_stub, get_effective_privacy};
+use crate::privacy::{
+    cloud_llm_context_policy, generate_pointer_stub, get_effective_privacy,
+    local_llm_context_policy, unrestricted_llm_context_policy, LlmContextPolicy,
+};
 
 const ATTENTION_SINK_TOKENS: usize = 50;
 const FALLBACK_CHARS_PER_TOKEN_EST: usize = 4;
@@ -200,68 +203,21 @@ pub fn build_context(
             node.vault_privacy_tier.as_deref(),
         );
 
-        let block = match config.scope.as_str() {
-            "cloud" => {
-                match effective_tier {
-                    "open" => {
-                        format!(
-                            "<document title=\"{}\">\n{}\n\n{}\n</document>",
-                            escape_xml_attr(&node.title),
-                            escape_xml_body(&node.summary),
-                            escape_xml_body(&node.detail)
-                        )
-                    }
-                    "locked" => generate_pointer_stub(&node.title, &node.id),
-                    _ => {
-                        // local_only and redacted are completely omitted from cloud scope
-                        continue;
-                    }
-                }
-            }
-            "local" => {
-                match effective_tier {
-                    "open" | "local_only" => {
-                        format!(
-                            "<document title=\"{}\">\n{}\n\n{}\n</document>",
-                            escape_xml_attr(&node.title),
-                            escape_xml_body(&node.summary),
-                            escape_xml_body(&node.detail)
-                        )
-                    }
-                    "locked" => {
-                        if config.is_unlocked {
-                            format!(
-                                "<document title=\"{}\">\n{}\n\n{}\n</document>",
-                                escape_xml_attr(&node.title),
-                                escape_xml_body(&node.summary),
-                                escape_xml_body(&node.detail)
-                            )
-                        } else {
-                            generate_pointer_stub(&node.title, &node.id)
-                        }
-                    }
-                    _ => {
-                        // redacted is completely omitted from local scope
-                        continue;
-                    }
-                }
-            }
-            _ => {
-                match effective_tier {
-                    "open" | "local_only" | "locked" => {
-                        format!(
-                            "<document title=\"{}\">\n{}\n\n{}\n</document>",
-                            escape_xml_attr(&node.title),
-                            escape_xml_body(&node.summary),
-                            escape_xml_body(&node.detail)
-                        )
-                    }
-                    _ => {
-                        // redacted is completely omitted from local scope
-                        continue;
-                    }
-                }
-            }
+        let policy = match config.scope.as_str() {
+            "cloud" => cloud_llm_context_policy(effective_tier),
+            "local" => local_llm_context_policy(effective_tier, config.is_unlocked),
+            _ => unrestricted_llm_context_policy(effective_tier),
+        };
+
+        let block = match policy {
+            LlmContextPolicy::Omit => continue,
+            LlmContextPolicy::Stub => generate_pointer_stub(&node.title, &node.id),
+            LlmContextPolicy::Full => format!(
+                "<document title=\"{}\">\n{}\n\n{}\n</document>",
+                escape_xml_attr(&node.title),
+                escape_xml_body(&node.summary),
+                escape_xml_body(&node.detail)
+            ),
         };
 
         let candidate = if assembled.is_empty() {

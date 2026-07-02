@@ -1,3 +1,4 @@
+use crate::embed::{find_top_n_similar, DbNode, EmbedEngine};
 use crate::memory_agent::parser::{CandidateAction, CandidateNode};
 use crate::memory_agent::similarity::{
     classify_similarity, jaccard_similarity, jaccard_similarity_pretokenized, tokenize,
@@ -6,6 +7,8 @@ use crate::memory_agent::similarity::{
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+
+const EMBEDDING_SEARCH_LIMIT: usize = 50;
 
 /// The type of action proposed by an individual item in a changeset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,14 +81,6 @@ struct ExistingNodeData {
     pub node_type: String,
 }
 
-struct DbNode {
-    id: String,
-    vault_id: String,
-    title: String,
-    summary: String,
-    node_type: String,
-}
-
 fn fetch_node_detail(conn: &Connection, node_id: &str) -> Result<Option<String>, String> {
     conn.query_row(
         "SELECT detail FROM nodes WHERE id = ?1;",
@@ -95,12 +90,43 @@ fn fetch_node_detail(conn: &Connection, node_id: &str) -> Result<Option<String>,
     .map_err(|err| format!("Failed to fetch node detail for {node_id}: {err}"))
 }
 
+fn combined_text(title: &str, summary: &str) -> String {
+    format!("{title} {summary}")
+}
+
+fn best_match_via_embeddings(
+    conn: &Connection,
+    query_vector: &[f32],
+    model_id: &str,
+    relevant_vaults: &HashSet<String>,
+    has_context: bool,
+) -> Result<Option<(DbNode, f64)>, String> {
+    let matches = find_top_n_similar(
+        conn,
+        query_vector,
+        model_id,
+        EMBEDDING_SEARCH_LIMIT,
+        if has_context {
+            Some(relevant_vaults)
+        } else {
+            None
+        },
+    )?;
+
+    if let Some((node, score)) = matches.into_iter().next() {
+        return Ok(Some((node, score)));
+    }
+
+    Ok(None)
+}
+
 /// Load non-deleted, non-archived nodes from the database and compare them against candidates
-/// using Jaccard token-overlap to build a pending changeset of Add, Update, Merge, and Delete tasks.
+/// using embedding cosine similarity when available, or Jaccard token-overlap as fallback.
 pub fn build_changeset(
     conn: &Connection,
     candidates: &[CandidateNode],
     session_id: &str,
+    engine: Option<&dyn EmbedEngine>,
 ) -> Result<PendingChangeset, String> {
     // 1. Resolve active vault ID from session
     let active_vault_id: Option<String> = conn
@@ -148,7 +174,55 @@ pub fn build_changeset(
         }
     }
 
+    if has_context && relevant_vaults.is_empty() {
+        let mut items = Vec::new();
+        for candidate in candidates {
+            if candidate.confidence < 0.3 {
+                continue;
+            }
+            if candidate.action == CandidateAction::Delete {
+                continue;
+            }
+            let resolved_vault_id = candidate
+                .target_vault_key
+                .as_deref()
+                .and_then(crate::onboarding::vault_id_for_category_key)
+                .unwrap_or("vault_root_graph")
+                .to_string();
+
+            let proposed = ProposedNodeData {
+                title: candidate.title.clone(),
+                summary: candidate.summary.clone(),
+                detail: candidate.detail.clone(),
+                node_type: candidate.node_type.clone(),
+                target_vault_key: candidate.target_vault_key.clone(),
+                vault_id: Some(resolved_vault_id),
+                tags: candidate.tags.clone(),
+                confidence: candidate.confidence,
+                action: candidate.action,
+                substantial_change: None,
+            };
+            let proposed_str = serde_json::to_string(&proposed)
+                .map_err(|err| format!("Failed to serialize proposed new data: {err}"))?;
+
+            items.push(PendingChangesetItem {
+                item_type: ChangesetItemType::Add,
+                target_node_id: None,
+                proposed_data: proposed_str,
+                existing_data: None,
+                similarity: None,
+                merge_with_id: None,
+            });
+        }
+        return Ok(PendingChangeset {
+            session_id: session_id.to_string(),
+            model_used: None,
+            items,
+        });
+    }
+
     // 3. Construct parameterized query to only fetch nodes in the relevant vaults
+    let relevant_vault_filter = relevant_vaults.clone();
     let (query_str, params) = if !has_context {
         (
             "SELECT id, vault_id, title, summary, node_type
@@ -168,58 +242,115 @@ pub fn build_changeset(
         (query, params_vec)
     };
 
-    let mut stmt = conn
-        .prepare(&query_str)
-        .map_err(|err| format!("Failed to prepare nodes query: {err}"))?;
+    let existing_nodes = if engine.is_none() {
+        let mut stmt = conn
+            .prepare(&query_str)
+            .map_err(|err| format!("Failed to prepare nodes query: {err}"))?;
 
-    let params_refs: Vec<&dyn rusqlite::ToSql> =
-        params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
 
-    let node_rows = stmt
-        .query_map(rusqlite::params_from_iter(params_refs), |row| {
-            Ok(DbNode {
-                id: row.get(0)?,
-                vault_id: row.get(1)?,
-                title: row.get(2)?,
-                summary: row.get(3)?,
-                node_type: row.get(4)?,
+        let node_rows = stmt
+            .query_map(rusqlite::params_from_iter(params_refs), |row| {
+                Ok(DbNode {
+                    id: row.get(0)?,
+                    vault_id: row.get(1)?,
+                    title: row.get(2)?,
+                    summary: row.get(3)?,
+                    node_type: row.get(4)?,
+                })
             })
-        })
-        .map_err(|err| format!("Failed to execute nodes query: {err}"))?;
+            .map_err(|err| format!("Failed to execute nodes query: {err}"))?;
 
-    // Pre-tokenize existing nodes once (N tokenizations) to avoid re-tokenizing
-    let mut existing_nodes: Vec<(DbNode, HashSet<String>)> = Vec::new();
+        // Pre-tokenize existing nodes once (N tokenizations) to avoid re-tokenizing
+        let mut nodes: Vec<(DbNode, HashSet<String>)> = Vec::new();
 
-    for row_res in node_rows {
-        let node = row_res.map_err(|err| format!("Failed to parse database node: {err}"))?;
-        let tokens = tokenize(&format!("{} {}", node.title, node.summary));
-        existing_nodes.push((node, tokens));
+        for row_res in node_rows {
+            let node = row_res.map_err(|err| format!("Failed to parse database node: {err}"))?;
+            let tokens = tokenize(&combined_text(&node.title, &node.summary));
+            nodes.push((node, tokens));
+        }
+        nodes
+    } else {
+        Vec::new()
+    };
+
+    // Pre-compute candidate embeddings if engine is Some
+    let mut candidate_vectors = Vec::new();
+    if let Some(eng) = engine {
+        let mut texts_to_embed = Vec::with_capacity(candidates.len());
+        candidate_vectors = vec![vec![0.0f32; eng.dims()]; candidates.len()];
+
+        for (idx, candidate) in candidates.iter().enumerate() {
+            let text = combined_text(&candidate.title, &candidate.summary);
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                texts_to_embed.push((idx, text));
+            } else {
+                if eng.dims() > 0 {
+                    candidate_vectors[idx][0] = 1.0;
+                }
+            }
+        }
+
+        if !texts_to_embed.is_empty() {
+            let raw_texts: Vec<String> = texts_to_embed.iter().map(|(_, t)| t.clone()).collect();
+            const BATCH_SIZE: usize = 32;
+            let mut embedded_count = 0;
+            for chunk in raw_texts.chunks(BATCH_SIZE) {
+                let vectors = eng.embed(chunk).map_err(|e| {
+                    format!(
+                        "Failed to generate bulk embeddings: {:?} (successfully embedded {} items)",
+                        e, embedded_count
+                    )
+                })?;
+                if vectors.len() != chunk.len() {
+                    return Err(format!(
+                        "Embedding engine returned {} vectors for a chunk of {} texts",
+                        vectors.len(),
+                        chunk.len()
+                    ));
+                }
+                let chunk_start = embedded_count;
+                for (chunk_offset, vec) in vectors.into_iter().enumerate() {
+                    let candidate_idx = texts_to_embed[chunk_start + chunk_offset].0;
+                    candidate_vectors[candidate_idx] = vec;
+                }
+                embedded_count += chunk.len();
+            }
+        }
     }
 
     let mut items = Vec::new();
 
-    for candidate in candidates {
+    for (idx, candidate) in candidates.iter().enumerate() {
         // Skip low-confidence candidates
         if candidate.confidence < 0.3 {
             continue;
         }
 
-        // Pre-tokenize each candidate once (M tokenizations total across all candidates)
-        let candidate_tokens = tokenize(&format!("{} {}", candidate.title, candidate.summary));
+        let best_match: Option<(DbNode, f64)> = if let Some(eng) = engine {
+            let query_vector = &candidate_vectors[idx];
+            best_match_via_embeddings(
+                conn,
+                query_vector,
+                eng.model_id(),
+                &relevant_vault_filter,
+                has_context,
+            )?
+        } else {
+            // Pre-tokenize each candidate once (M tokenizations total across all candidates)
+            let candidate_tokens = tokenize(&combined_text(&candidate.title, &candidate.summary));
 
-        // Find best similarity match using pre-tokenized sets
-        let mut best_match: Option<(&DbNode, f64)> = None;
-
-        for (existing, existing_tokens) in &existing_nodes {
-            let score = jaccard_similarity_pretokenized(&candidate_tokens, existing_tokens);
-            if let Some((_, best_score)) = best_match {
-                if score > best_score {
-                    best_match = Some((existing, score));
-                }
-            } else {
-                best_match = Some((existing, score));
-            }
-        }
+            // Find best similarity match using pre-tokenized sets
+            existing_nodes
+                .iter()
+                .map(|(existing, existing_tokens)| {
+                    let score = jaccard_similarity_pretokenized(&candidate_tokens, existing_tokens);
+                    (existing.clone(), score)
+                })
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        };
 
         match candidate.action {
             CandidateAction::Delete => {
@@ -458,7 +589,34 @@ pub fn build_changeset(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::embed::storage::serialize_f32_vec;
+    use crate::embed::EmbedError;
     use rusqlite::params;
+
+    struct FakeEmbedEngine;
+
+    impl EmbedEngine for FakeEmbedEngine {
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+            Ok(texts
+                .iter()
+                .map(|text| {
+                    if text.contains("Cosine Candidate") {
+                        vec![1.0, 0.0]
+                    } else {
+                        vec![0.0, 1.0]
+                    }
+                })
+                .collect())
+        }
+
+        fn model_id(&self) -> &str {
+            "fake-model"
+        }
+
+        fn dims(&self) -> usize {
+            2
+        }
+    }
 
     fn setup_test_db() -> Connection {
         let conn = match Connection::open_in_memory() {
@@ -489,6 +647,15 @@ mod tests {
                 is_archived INTEGER NOT NULL DEFAULT 0,
                 deleted_at TEXT
             );
+            CREATE TABLE node_embeddings (
+                node_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL DEFAULT 0,
+                chunk_type TEXT NOT NULL DEFAULT 'primary',
+                model TEXT NOT NULL,
+                embedding BLOB NOT NULL,
+                computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (node_id, chunk_index, chunk_type)
+            );
         ";
         if let Err(e) = conn.execute_batch(create_sql) {
             panic!("Failed to create test database: {e}");
@@ -510,7 +677,7 @@ mod tests {
             action: CandidateAction::Add,
         }];
 
-        let changeset = match build_changeset(&conn, &candidates, "session-123") {
+        let changeset = match build_changeset(&conn, &candidates, "session-123", None) {
             Ok(cs) => cs,
             Err(e) => panic!("Expected Ok changeset but got Err: {e}"),
         };
@@ -531,6 +698,59 @@ mod tests {
         };
         assert_eq!(proposed.title, "Rust programming");
         assert_eq!(proposed.vault_id, Some("vault_learning".to_string()));
+    }
+
+    #[test]
+    fn test_embedding_similarity_results_in_update() {
+        let conn = setup_test_db();
+        let engine = FakeEmbedEngine;
+        let insert_sql = "
+            INSERT INTO nodes (id, vault_id, node_type, title, summary, detail)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6);
+        ";
+        if let Err(e) = conn.execute(
+            insert_sql,
+            params![
+                "node_vector",
+                "vault_learning",
+                "concept",
+                "Stored Vector Node",
+                "Lexically unrelated existing content",
+                "Stored details"
+            ],
+        ) {
+            panic!("Insert failed: {e}");
+        }
+        if let Err(e) = conn.execute(
+            "INSERT INTO node_embeddings
+                (node_id, chunk_index, chunk_type, model, embedding, computed_at)
+             VALUES (?1, 0, 'primary', ?2, ?3, 'time');",
+            params!["node_vector", "fake-model", serialize_f32_vec(&[1.0, 0.0])],
+        ) {
+            panic!("Embedding insert failed: {e}");
+        }
+
+        let candidates = vec![CandidateNode {
+            title: "Cosine Candidate".to_string(),
+            summary: "Semantic vector only".to_string(),
+            detail: Some("New details".to_string()),
+            node_type: Some("concept".to_string()),
+            target_vault_key: Some("learning".to_string()),
+            tags: None,
+            confidence: 0.95,
+            action: CandidateAction::Add,
+        }];
+
+        let changeset = match build_changeset(&conn, &candidates, "session-123", Some(&engine)) {
+            Ok(cs) => cs,
+            Err(e) => panic!("Expected Ok changeset but got Err: {e}"),
+        };
+
+        assert_eq!(changeset.items.len(), 1);
+        let item = &changeset.items[0];
+        assert_eq!(item.item_type, ChangesetItemType::Update);
+        assert_eq!(item.target_node_id, Some("node_vector".to_string()));
+        assert!(item.similarity.unwrap_or(0.0) > 0.85);
     }
 
     #[test]
@@ -565,7 +785,7 @@ mod tests {
             action: CandidateAction::Add,
         }];
 
-        let changeset = match build_changeset(&conn, &candidates, "session-123") {
+        let changeset = match build_changeset(&conn, &candidates, "session-123", None) {
             Ok(cs) => cs,
             Err(e) => panic!("Expected Ok changeset but got Err: {e}"),
         };
@@ -616,7 +836,7 @@ mod tests {
             action: CandidateAction::Add,
         }];
 
-        let changeset = match build_changeset(&conn, &candidates, "session-123") {
+        let changeset = match build_changeset(&conn, &candidates, "session-123", None) {
             Ok(cs) => cs,
             Err(e) => panic!("Expected Ok changeset: {e}"),
         };
@@ -663,7 +883,7 @@ mod tests {
             action: CandidateAction::Add,
         }];
 
-        let cs_close = match build_changeset(&conn, &candidates_close, "session-123") {
+        let cs_close = match build_changeset(&conn, &candidates_close, "session-123", None) {
             Ok(cs) => cs,
             Err(e) => panic!("Expected Ok: {e}"),
         };
@@ -685,7 +905,7 @@ mod tests {
             action: CandidateAction::Add,
         }];
 
-        let cs_div = match build_changeset(&conn, &candidates_divergent, "session-123") {
+        let cs_div = match build_changeset(&conn, &candidates_divergent, "session-123", None) {
             Ok(cs) => cs,
             Err(e) => panic!("Expected Ok: {e}"),
         };
@@ -735,7 +955,7 @@ mod tests {
             action: CandidateAction::Add,
         }];
 
-        let changeset = match build_changeset(&conn, &candidates, "session-123") {
+        let changeset = match build_changeset(&conn, &candidates, "session-123", None) {
             Ok(cs) => cs,
             Err(e) => panic!("Expected Ok changeset: {e}"),
         };
@@ -787,7 +1007,7 @@ mod tests {
             action: CandidateAction::Delete,
         }];
 
-        let changeset = match build_changeset(&conn, &candidates, "session-123") {
+        let changeset = match build_changeset(&conn, &candidates, "session-123", None) {
             Ok(cs) => cs,
             Err(e) => panic!("Expected Ok: {e}"),
         };
@@ -828,7 +1048,7 @@ mod tests {
             },
         ];
 
-        let changeset = match build_changeset(&conn, &candidates, "session-123") {
+        let changeset = match build_changeset(&conn, &candidates, "session-123", None) {
             Ok(cs) => cs,
             Err(e) => panic!("Expected Ok: {e}"),
         };
@@ -936,7 +1156,7 @@ mod tests {
         }];
 
         // It should match since node_learning is in the active session vault
-        let cs = build_changeset(&conn, &candidates, "session_1").unwrap();
+        let cs = build_changeset(&conn, &candidates, "session_1", None).unwrap();
         assert_eq!(cs.items.len(), 1);
         assert_eq!(cs.items[0].item_type, ChangesetItemType::Update);
         assert_eq!(
@@ -957,9 +1177,29 @@ mod tests {
         }];
 
         // Since node_personal is in vault_personal (out of context), it should NOT match, and instead be proposed as an ADD
-        let cs_p = build_changeset(&conn, &candidates_personal, "session_1").unwrap();
+        let cs_p = build_changeset(&conn, &candidates_personal, "session_1", None).unwrap();
         assert_eq!(cs_p.items.len(), 1);
         assert_eq!(cs_p.items[0].item_type, ChangesetItemType::Add);
         assert_eq!(cs_p.items[0].target_node_id, None);
+    }
+
+    #[test]
+    fn test_build_changeset_with_empty_vaults() {
+        let conn = setup_test_db();
+        // Test that calling build_changeset with no sessions and some candidates works fine and maps to Add.
+        let candidates = vec![CandidateNode {
+            title: "Standalone Fact".to_string(),
+            summary: "This is a fact about systems programming".to_string(),
+            detail: None,
+            node_type: Some("fact".to_string()),
+            target_vault_key: None,
+            tags: None,
+            confidence: 0.8,
+            action: CandidateAction::Add,
+        }];
+
+        let cs = build_changeset(&conn, &candidates, "session_empty", None).unwrap();
+        assert_eq!(cs.items.len(), 1);
+        assert_eq!(cs.items[0].item_type, ChangesetItemType::Add);
     }
 }

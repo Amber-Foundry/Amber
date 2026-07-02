@@ -187,7 +187,7 @@ fn test_jaccard_dedup_classifies_correctly() -> Result<(), Box<dyn Error>> {
         },
     ];
 
-    let changeset = build_changeset(&conn, &candidates, "test-session")
+    let changeset = build_changeset(&conn, &candidates, "test-session", None)
         .map_err(|err| format!("Failed compiling changeset: {err}"))?;
 
     assert_eq!(changeset.items.len(), 4);
@@ -677,4 +677,119 @@ fn test_full_pipeline_successful_extraction_and_persistence() -> Result<(), Box<
 
         Ok(())
     })
+}
+
+struct TestEmbedEngine {
+    model_id: String,
+}
+
+impl mindvault_lib::embed::EmbedEngine for TestEmbedEngine {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, mindvault_lib::embed::EmbedError> {
+        let val_45 = std::f32::consts::FRAC_1_SQRT_2;
+        Ok(texts
+            .iter()
+            .map(|text| {
+                if text.contains("Update Candidate") {
+                    vec![1.0, 0.0]
+                } else if text.contains("Merge Candidate") {
+                    vec![val_45, val_45]
+                } else {
+                    vec![0.0, 1.0]
+                }
+            })
+            .collect())
+    }
+
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    fn dims(&self) -> usize {
+        2
+    }
+}
+
+#[test]
+fn test_cosine_dedup_classifies_correctly() -> Result<(), Box<dyn Error>> {
+    let conn = setup_test_db()?;
+    create_test_node(
+        &conn,
+        "node_existing",
+        "vault_learning",
+        "Target Node",
+        "Existing Summary",
+        "Details",
+    )?;
+
+    // Manually seed primary embedding for node_existing
+    conn.execute(
+        "INSERT INTO node_embeddings (node_id, chunk_index, chunk_type, model, embedding, computed_at)
+         VALUES ('node_existing', 0, 'primary', 'test-model', ?1, 'time');",
+        rusqlite::params![mindvault_lib::embed::storage::serialize_f32_vec(&[1.0, 0.0])],
+    )?;
+
+    let engine = TestEmbedEngine {
+        model_id: "test-model".to_string(),
+    };
+
+    let candidates = vec![
+        // 1. High similarity (> 0.85) -> Update
+        CandidateNode {
+            title: "Update Candidate".to_string(),
+            summary: "Will match vector [1.0, 0.0] with score 1.0".to_string(),
+            detail: None,
+            node_type: Some("concept".to_string()),
+            target_vault_key: Some("learning".to_string()),
+            tags: None,
+            confidence: 0.9,
+            action: CandidateAction::Add,
+        },
+        // 2. Medium similarity (0.50 - 0.85) -> Merge
+        CandidateNode {
+            title: "Merge Candidate".to_string(),
+            summary: "Will match vector [0.70710678, 0.70710678] with score 0.7071".to_string(),
+            detail: None,
+            node_type: Some("concept".to_string()),
+            target_vault_key: Some("learning".to_string()),
+            tags: None,
+            confidence: 0.9,
+            action: CandidateAction::Add,
+        },
+        // 3. Low similarity (< 0.50) -> Add (New)
+        CandidateNode {
+            title: "Add Candidate".to_string(),
+            summary: "Will match vector [0.0, 1.0] with score 0.0".to_string(),
+            detail: None,
+            node_type: Some("concept".to_string()),
+            target_vault_key: Some("learning".to_string()),
+            tags: None,
+            confidence: 0.9,
+            action: CandidateAction::Add,
+        },
+    ];
+
+    let changeset = build_changeset(&conn, &candidates, "test-session", Some(&engine))
+        .map_err(|err| format!("Failed to build changeset: {err}"))?;
+
+    assert_eq!(changeset.items.len(), 3);
+
+    // High similarity candidate -> Update
+    assert_eq!(changeset.items[0].item_type, ChangesetItemType::Update);
+    assert_eq!(
+        changeset.items[0].target_node_id,
+        Some("node_existing".to_string())
+    );
+
+    // Medium similarity candidate -> Merge
+    assert_eq!(changeset.items[1].item_type, ChangesetItemType::Merge);
+    assert_eq!(
+        changeset.items[1].merge_with_id,
+        Some("node_existing".to_string())
+    );
+
+    // Low similarity candidate -> Add
+    assert_eq!(changeset.items[2].item_type, ChangesetItemType::Add);
+    assert_eq!(changeset.items[2].target_node_id, None);
+
+    Ok(())
 }
