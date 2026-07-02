@@ -15,7 +15,10 @@ type EmbeddingSettingsProps = {
 function formatRelativeTime(isoString: string | null): string {
   if (!isoString) return "Never";
 
-  const diff = Date.now() - new Date(isoString).getTime();
+  const timestamp = new Date(isoString).getTime();
+  if (Number.isNaN(timestamp)) return "Never";
+
+  const diff = Date.now() - timestamp;
   const minutes = Math.floor(diff / 60_000);
 
   if (minutes < 1) return "Just now";
