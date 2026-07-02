@@ -150,10 +150,12 @@ const steps = [
   {
     name: "frontend build",
     cmd: async () => {
-      console.log(
-        "\n[Tip] Windows Key + Ctrl + Shift + B shortcut immediately resets your graphics driver and refreshes your display.\n" +
-          "      It is a quick troubleshooting step when your screen freezes, goes black, or shows visual glitches.\n"
-      );
+      if (process.platform === "win32") {
+        console.log(
+          "\n[Tip] Windows Key + Ctrl + Shift + B shortcut immediately resets your graphics driver and refreshes your display.\n" +
+            "      It is a quick troubleshooting step when your screen freezes, goes black, or shows visual glitches.\n"
+        );
+      }
       return run("npm run build");
     },
   },
