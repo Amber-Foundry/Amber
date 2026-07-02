@@ -147,6 +147,7 @@ pub fn count_coverage(conn: &Connection, model: &str) -> Result<(i64, i64), Stri
              LEFT JOIN sub_vaults sv ON n.sub_vault_id = sv.id
              WHERE n.deleted_at IS NULL
                AND v.deleted_at IS NULL
+               AND (n.sub_vault_id IS NULL OR sv.deleted_at IS NULL)
                AND COALESCE(n.privacy_tier, '') != 'redacted'
                AND COALESCE(sv.privacy_tier, '') != 'redacted'
                AND COALESCE(v.privacy_tier, '') != 'redacted';",
@@ -166,6 +167,7 @@ pub fn count_coverage(conn: &Connection, model: &str) -> Result<(i64, i64), Stri
                AND ne.chunk_type = 'primary'
                AND n.deleted_at IS NULL
                AND v.deleted_at IS NULL
+               AND (n.sub_vault_id IS NULL OR sv.deleted_at IS NULL)
                AND COALESCE(n.privacy_tier, '') != 'redacted'
                AND COALESCE(sv.privacy_tier, '') != 'redacted'
                AND COALESCE(v.privacy_tier, '') != 'redacted';",
@@ -514,6 +516,36 @@ mod tests {
         let (num, den) = count_coverage(&conn, model)?;
         assert_eq!(num, 0);
         assert_eq!(den, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_count_coverage_excludes_soft_deleted_sub_vaults(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+        let model = "test-model";
+
+        // Create a sub_vault and assign node_test_1 to it
+        conn.execute(
+            "INSERT INTO sub_vaults (id, vault_id, name) VALUES ('sv_1', 'vault_test', 'Sub Vault 1');",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE nodes SET sub_vault_id = 'sv_1' WHERE id = 'node_test_1';",
+            [],
+        )?;
+
+        let (_num, den) = count_coverage(&conn, model)?;
+        assert_eq!(den, 2);
+
+        // Soft-delete sub_vault sv_1 -> denominator should become 1
+        conn.execute(
+            "UPDATE sub_vaults SET deleted_at = datetime('now') WHERE id = 'sv_1';",
+            [],
+        )?;
+        let (_num, den) = count_coverage(&conn, model)?;
+        assert_eq!(den, 1);
 
         Ok(())
     }
