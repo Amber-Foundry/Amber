@@ -272,6 +272,7 @@ void (async () => {
     });
     await Promise.all(promises);
     window.dispatchEvent(new CustomEvent("mindvault:llm-settings-changed"));
+    window.dispatchEvent(new CustomEvent("mindvault:plantuml-consent-changed"));
   } catch (e) {
     console.error("Failed to initialize settings from DB:", e);
   }

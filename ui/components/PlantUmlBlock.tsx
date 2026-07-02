@@ -28,11 +28,15 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
   const allowed = consent !== "disabled";
   const isLoading = loading || (!encoded && !error);
 
-  // Listen for external consent changes (e.g. another PlantUML block on the same page)
+  // Listen for external consent changes (e.g. another PlantUML block on the same page or settings hydration)
   useEffect(() => {
     const handler = () => setConsent(getPlantUmlConsent());
     window.addEventListener("mindvault:plantuml-consent-changed", handler);
-    return () => window.removeEventListener("mindvault:plantuml-consent-changed", handler);
+    window.addEventListener("mindvault:llm-settings-changed", handler);
+    return () => {
+      window.removeEventListener("mindvault:plantuml-consent-changed", handler);
+      window.removeEventListener("mindvault:llm-settings-changed", handler);
+    };
   }, []);
 
   // Only encode + fetch when consent has been granted
