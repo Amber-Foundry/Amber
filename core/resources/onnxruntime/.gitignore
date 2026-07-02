@@ -1,0 +1,4 @@
+# Platform ONNX Runtime shared libraries are staged locally for packaging verification.
+*.dll
+*.dylib
+*.so

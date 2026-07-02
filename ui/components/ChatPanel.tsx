@@ -376,7 +376,6 @@ function ChatPanel({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
   const [existingNodeIds, setExistingNodeIds] = useState<Set<string> | null>(null);
-
   const sessionId = isOffTheRecord ? "temporary-session" : activeSessionId || "default-session";
 
   const handleToggleOtr = useCallback(async () => {

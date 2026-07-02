@@ -315,6 +315,28 @@ pub struct ItemReviewAction {
     pub edited_data: Option<Value>, // Typed JSON properties for edit payload
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../ui/types/generated/")]
+pub struct EmbeddingStatus {
+    pub model: String,
+    pub tier: String,
+    pub backend: String,
+    pub coverage_percent: f64,
+    pub last_computed_at: Option<String>,
+    pub jaccard_fallback_active: bool,
+    pub reembed_in_progress: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../ui/types/generated/")]
+pub struct EmbeddingReembedInput {
+    pub model: String,
+    pub tier: String,
+    pub backend: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +393,12 @@ mod tests {
         }
         if let Err(err) = ItemReviewAction::export() {
             panic!("failed to export ItemReviewAction: {err}");
+        }
+        if let Err(err) = EmbeddingStatus::export() {
+            panic!("failed to export EmbeddingStatus: {err}");
+        }
+        if let Err(err) = EmbeddingReembedInput::export() {
+            panic!("failed to export EmbeddingReembedInput: {err}");
         }
     }
 }

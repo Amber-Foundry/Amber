@@ -1,21 +1,48 @@
-import { useEffect, useState } from "react";
-import { TbClipboard, TbClipboardCheck, TbSourceCode, TbVector, TbLink } from "react-icons/tb";
+import { useCallback, useEffect, useState } from "react";
+import {
+  TbClipboard,
+  TbClipboardCheck,
+  TbSourceCode,
+  TbVector,
+  TbLink,
+  TbShieldLock,
+  TbShieldOff,
+} from "react-icons/tb";
 import { getPlantUmlServer } from "../utils/settings";
+import { getPlantUmlConsent, setPlantUmlConsent } from "../utils/settings";
 
 interface PlantUmlBlockProps {
   code: string;
 }
 
 export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
+  const [consent, setConsent] = useState(getPlantUmlConsent);
   const [encoded, setEncoded] = useState<string>("");
   const [viewSource, setViewSource] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedSvg, setCopiedSvg] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(() => getPlantUmlConsent() !== "disabled");
 
+  const allowed = consent !== "disabled";
+  const isLoading = loading || (!encoded && !error);
+
+  // Listen for external consent changes (e.g. another PlantUML block on the same page or settings hydration)
   useEffect(() => {
+    const handler = () => setConsent(getPlantUmlConsent());
+    window.addEventListener("mindvault:plantuml-consent-changed", handler);
+    window.addEventListener("mindvault:llm-settings-changed", handler);
+    return () => {
+      window.removeEventListener("mindvault:plantuml-consent-changed", handler);
+      window.removeEventListener("mindvault:llm-settings-changed", handler);
+    };
+  }, []);
+
+  // Only encode + fetch when consent has been granted
+  useEffect(() => {
+    if (!allowed) return;
+
     let active = true;
 
     const debounceTimer = setTimeout(() => {
@@ -60,7 +87,7 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
       active = false;
       clearTimeout(debounceTimer);
     };
-  }, [code]);
+  }, [code, allowed]);
 
   const handleCopyCode = async () => {
     try {
@@ -101,7 +128,103 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
     }
   };
 
+  const handleEnableSession = useCallback(() => {
+    setLoading(true);
+    setEncoded("");
+    setError(null);
+    setPlantUmlConsent("session");
+    setConsent("session");
+  }, []);
+
+  const handleAlwaysAllow = useCallback(() => {
+    setLoading(true);
+    setEncoded("");
+    setError(null);
+    setPlantUmlConsent("always");
+    setConsent("always");
+  }, []);
+
+  const handleRevokeConsent = useCallback(() => {
+    setPlantUmlConsent("disabled");
+    setConsent("disabled");
+    setEncoded("");
+  }, []);
+
   const server = getPlantUmlServer();
+  const serverHost = (() => {
+    try {
+      return new URL(server).hostname || server;
+    } catch {
+      return server;
+    }
+  })();
+
+  // --- Consent gate: show privacy placeholder ---
+  if (!allowed) {
+    return (
+      <div className="plantuml-block-wrapper">
+        <div className="plantuml-block-header">
+          <div className="plantuml-block-title-container">
+            <TbShieldLock className="plantuml-block-title-icon" size={16} />
+            <span className="plantuml-block-title">PlantUML Diagram</span>
+          </div>
+          <div className="plantuml-block-actions">
+            <button
+              type="button"
+              className="plantuml-action-btn-pill"
+              onClick={() => setViewSource((prev) => !prev)}
+              title={viewSource ? "Hide Source Code" : "Show Source Code"}
+            >
+              <TbSourceCode size={14} />
+              <span>Source</span>
+            </button>
+            {viewSource && (
+              <button
+                type="button"
+                className="plantuml-action-btn-icon"
+                onClick={handleCopyCode}
+                title="Copy PlantUML Code"
+                aria-label="Copy code"
+              >
+                {copied ? <TbClipboardCheck size={14} /> : <TbClipboard size={14} />}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {viewSource ? (
+          <div className="plantuml-block-source-container">
+            <pre>
+              <code>{code}</code>
+            </pre>
+          </div>
+        ) : (
+          <div className="plantuml-consent-card">
+            <TbShieldLock className="plantuml-consent-icon" size={32} />
+            <h4 className="plantuml-consent-title">Privacy Notice</h4>
+            <p className="plantuml-consent-message">
+              Rendering this diagram requires sending its text to an external server (
+              <strong>{serverHost}</strong>). No data is sent until you opt in.
+            </p>
+            <div className="plantuml-consent-actions">
+              <button type="button" className="plantuml-consent-btn" onClick={handleEnableSession}>
+                Enable for this Session
+              </button>
+              <button
+                type="button"
+                className="plantuml-consent-btn plantuml-consent-btn-primary"
+                onClick={handleAlwaysAllow}
+              >
+                Always Allow
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // --- Consented: render normally ---
   const diagramUrl = encoded ? `${server}/svg/${encoded}` : "";
 
   return (
@@ -115,7 +238,7 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
         </div>
 
         <div className="plantuml-block-actions">
-          {!error && !loading && (
+          {!error && !isLoading && (
             <>
               <button
                 type="button"
@@ -173,10 +296,22 @@ export default function PlantUmlBlock({ code }: PlantUmlBlockProps) {
               {copied ? <TbClipboardCheck size={14} /> : <TbClipboard size={14} />}
             </button>
           )}
+
+          {!isLoading && (
+            <button
+              type="button"
+              className="plantuml-action-btn-icon plantuml-revoke-btn"
+              onClick={handleRevokeConsent}
+              title="Revoke PlantUML rendering consent"
+              aria-label="Revoke consent"
+            >
+              <TbShieldOff size={14} />
+            </button>
+          )}
         </div>
       </div>
 
-      {loading ? (
+      {isLoading ? (
         <div className="plantuml-block-body loading">
           <div className="plantuml-spinner" />
           <span>Encoding diagram...</span>

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use rusqlite::{params, Connection};
 
-use mindvault_lib::memory_agent::{
+use amber_lib::memory_agent::{
     amend_or_create_changeset, detect_correction_signal, list_changeset_items,
     list_pending_changesets, mark_extraction_complete, persist_changeset, should_extract,
     should_extract_correction, CandidateAction, CandidateNode, ChangesetItemType, CorrectionSignal,
@@ -283,6 +283,7 @@ fn test_amend_existing_changeset_in_place() -> Result<(), Box<dyn Error>> {
         session_id,
         model,
         &correction_signal,
+        None,
     )?;
 
     // Assert original changeset_items row was updated in-place, not duplicated
@@ -331,6 +332,7 @@ fn test_amend_creates_new_when_no_pending_exists() -> Result<(), Box<dyn Error>>
         session_id,
         model,
         &correction_signal,
+        None,
     )?;
 
     // Assert a new changeset is created normally
@@ -392,6 +394,7 @@ fn test_amend_appends_genuinely_new_candidate() -> Result<(), Box<dyn Error>> {
         session_id,
         model,
         &correction_signal,
+        None,
     )?;
 
     // Assert B is inserted as a new row and item_count is incremented
@@ -472,6 +475,7 @@ fn test_amend_prevents_multiple_candidates_matching_same_item() -> Result<(), Bo
         session_id,
         model,
         &correction_signal,
+        None,
     )?;
 
     // The returned changeset should be the same, and it was amended.
@@ -518,7 +522,7 @@ fn test_force_extract_minimum_message_threshold() -> Result<(), Box<dyn Error>> 
         }
 
         // Call memory_extract_force via test_helper_memory_extract_force
-        let result = mindvault_lib::test_helper_memory_extract_force(
+        let result = amber_lib::test_helper_memory_extract_force(
             "ollama".to_string(),
             "http://localhost:11434".to_string(),
             "granite".to_string(),

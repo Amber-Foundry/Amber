@@ -1,3 +1,11 @@
+/**
+ * Amber privacy tiers — four tiers, two axes. Rust source of truth: core/src/privacy.rs
+ *
+ * Axis 1 (egress): open → cloud+local | local_only → local only | locked → cloud stub |
+ *   redacted → omitted from cloud
+ * Axis 2 (disclosure): open/local → full UI | locked → title visible, body gated |
+ *   redacted → metadata hidden + encrypted at rest
+ */
 const PRIVACY_RANKS: Record<string, number> = {
   open: 0,
   local_only: 1,
@@ -22,6 +30,13 @@ export const getPrivacyRank = (tier?: string | null): number => PRIVACY_RANKS[no
 
 export function isRedactedLocked(tier?: string | null, isUnlocked = false): boolean {
   return normalizeTier(tier) === "redacted" && !isUnlocked;
+}
+
+export function shouldOmitSpatialConnector(
+  effectiveTier: string,
+  isRedactedUnlocked: boolean
+): boolean {
+  return isRedactedLocked(effectiveTier, isRedactedUnlocked);
 }
 
 export function getPrivacyDisplayLabel(

@@ -16,6 +16,7 @@ import {
   getEffectivePrivacy,
   getPrivacyDisplayLabel,
   getVaultEffectivePrivacy,
+  shouldOmitSpatialConnector,
 } from "../utils/privacy";
 import type { Vault, Node, Door } from "../types/generated";
 import "../style/components/SpatialWorkspace.css";
@@ -1060,8 +1061,7 @@ export default function SpatialWorkspace({
       const srcContainerTier =
         vaultEffectivePrivacyById[srcContainerId] ?? vaultById[srcContainerId]?.privacyTier;
       const srcEffectiveTier = getEffectivePrivacy(srcNode.privacyTier, null, srcContainerTier);
-      const srcIsRedactedLocked = srcEffectiveTier === "redacted" && !isRedactedUnlocked;
-      if (srcIsRedactedLocked) return;
+      if (shouldOmitSpatialConnector(srcEffectiveTier, isRedactedUnlocked)) return;
 
       const srcPosObj = getNodeCenterPos(srcNode.vaultId, srcNode.subVaultId, srcNode.id);
       if (!srcPosObj) return;
@@ -1092,8 +1092,7 @@ export default function SpatialWorkspace({
         }
       }
 
-      const tgtIsRedactedLocked = tgtEffectiveTier === "redacted" && !isRedactedUnlocked;
-      if (tgtIsRedactedLocked) return;
+      if (shouldOmitSpatialConnector(tgtEffectiveTier, isRedactedUnlocked)) return;
 
       // Determine horizontal direction of routing
       let routeDirection: "left-to-right" | "right-to-left" = "left-to-right";

@@ -16,6 +16,7 @@ import type {
   VaultCreateInput,
   VaultUpdateInput,
   ChangesetCommitInput,
+  EmbeddingStatus,
 } from "./types/generated";
 import { getMockInvoker } from "./ipcMockState.ts";
 
@@ -56,9 +57,10 @@ export type {
   VaultCreateInput,
   VaultUpdateInput,
   ChangesetCommitInput,
+  EmbeddingStatus,
 };
 
-async function invokeTyped<T>(
+export async function invokeTyped<T>(
   command: string,
   payload?: Record<string, unknown>
 ): Promise<IpcResult<T>> {

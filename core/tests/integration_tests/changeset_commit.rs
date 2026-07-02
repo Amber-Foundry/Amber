@@ -5,12 +5,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
-use mindvault_lib::enforce_backup_retention;
-use mindvault_lib::ipc_types::{ChangesetCommitInput, ItemReviewAction};
-use mindvault_lib::memory_agent::changeset::{
+use amber_lib::enforce_backup_retention;
+use amber_lib::ipc_types::{ChangesetCommitInput, ItemReviewAction};
+use amber_lib::memory_agent::changeset::{
     ChangesetItemType, PendingChangeset, PendingChangesetItem,
 };
-use mindvault_lib::memory_agent::{
+use amber_lib::memory_agent::{
     commit_changeset_transaction, list_changeset_items, list_pending_changesets,
     list_resolved_changesets, persist_changeset,
 };

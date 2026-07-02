@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import process from "node:process";
+import { runBannedPatternChecks } from "./check-banned-patterns.mjs";
 
 const args = new Set(process.argv.slice(2));
 const fixFromArgs = args.has("--fix");
@@ -60,6 +60,8 @@ Usage:
 
 What it runs:
   - Prettier + ESLint + TypeScript (UI)
+  - Frontend + backend license checks
+  - npm audit (warn-only locally; enforced in CI)
   - cargo fmt/clippy/test (core)
 `);
   process.exit(0);
@@ -80,79 +82,36 @@ function run(command, { cwd } = {}) {
   });
 }
 
-function getBundledRipgrepPath() {
-  try {
-    const require = createRequire(import.meta.url);
-    const rgPath = require("@vscode/ripgrep").rgPath;
-    if (typeof rgPath === "string" && rgPath.length > 0) {
-      return rgPath.includes(" ") ? `"${rgPath}"` : rgPath;
-    }
-  } catch {
-    // VSCode ripgrep package is not installed or resolution failed.
-  }
-  return null;
+function runCapture(command, { cwd } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let combined = "";
+    child.stdout.on("data", (chunk) => {
+      combined += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      combined += chunk;
+    });
+    child.on("exit", (code) => resolve({ code: code ?? 1, combined }));
+    child.on("error", () => resolve({ code: 1, combined: "" }));
+  });
 }
 
-function getPathRipgrepCommand() {
-  // Fall back to the globally installed `rg` binary on system PATH.
-  return "rg";
+async function isCommandAvailable(cmd) {
+  return new Promise((resolve) => {
+    const checkCmd = process.platform === "win32" ? `where ${cmd}` : `which ${cmd}`;
+    const child = spawn(checkCmd, { shell: true, stdio: "ignore" });
+    child.on("exit", (code) => resolve(code === 0));
+  });
 }
-
-function getRgCommand() {
-  // Prefer the bundled cross-platform local ripgrep binary, falling back to system PATH.
-  return getBundledRipgrepPath() ?? getPathRipgrepCommand();
-}
-
-async function assertRgNoMatches({ name, args }) {
-  // ripgrep exit codes:
-  // 0 = matches found
-  // 1 = no matches
-  // 2 = error
-  const cmd = args.join(" ");
-  const code = await run(cmd);
-  if (code === 0) {
-    console.error(`\nBanned pattern matched: ${name}`);
-    return 1;
-  }
-  if (code === 1) {
-    return 0;
-  }
-  console.error(`\nBanned pattern check errored: ${name}`);
-  return code;
-}
-
-// Banned pattern regex to detect sensitive credentials printed in Rust logging statements.
-const BANNED_LOGGING_CREDENTIALS_REGEX =
-  '"(tracing|log)::(trace|debug|info|warn|error)!\\([^\\n]*(api_key|password|secret|token)\\s*="';
 
 async function runBannedPatterns() {
-  const rg = getRgCommand();
-  const checks = [
-    {
-      name: "XSS: dangerouslySetInnerHTML in ui/",
-      args: [rg, '"dangerouslySetInnerHTML"', "ui", "--glob", '"*.ts"', "--glob", '"*.tsx"'],
-    },
-    {
-      name: "IPC: invoke() directly in ui/components/",
-      args: [rg, '"invoke\\("', "ui/components"],
-    },
-    {
-      name: "TypeScript: explicit any in ui/",
-      args: [rg, '": any\\b|as any\\b"', "ui", "--glob", '"*.ts"', "--glob", '"*.tsx"'],
-    },
-    {
-      name: "Rust logging: secret-ish fields in core/src/",
-      args: [rg, BANNED_LOGGING_CREDENTIALS_REGEX, "core/src"],
-    },
-  ];
-
-  for (const check of checks) {
-    const code = await assertRgNoMatches(check);
-    if (code !== 0) {
-      return code;
-    }
-  }
-  return 0;
+  return runBannedPatternChecks();
 }
 
 const CARGO_MANIFEST_FLAGS = ["--manifest-path", "core/Cargo.toml"];
@@ -189,8 +148,80 @@ const steps = [
   { name: "banned patterns", cmd: runBannedPatterns },
   { name: "tsc (noEmit)", cmd: "npx tsc --noEmit" },
   {
-    name: "frontend utility tests",
-    cmd: "node --experimental-strip-types scripts/test-frontend.ts",
+    name: "frontend build",
+    cmd: async () => {
+      if (process.platform === "win32") {
+        console.log(
+          "\n[Tip] Windows Key + Ctrl + Shift + B shortcut immediately resets your graphics driver and refreshes your display.\n" +
+            "      It is a quick troubleshooting step when your screen freezes, goes black, or shows visual glitches.\n"
+        );
+      }
+      return run("npm run build");
+    },
+  },
+  {
+    name: "frontend tests",
+    cmd: "npm run test:all",
+  },
+  {
+    name: "frontend license check",
+    cmd: "npm run license-check",
+  },
+  {
+    name: "npm audit (warn-only)",
+    cmd: async () => {
+      const { code, combined } = await runCapture("npm audit --audit-level=high");
+      if (code !== 0) {
+        console.warn(
+          "\n[Warning] npm audit reported high/critical issues (preflight continues).\n" +
+            "   This check is enforced in CI via .github/workflows/security.yml.\n"
+        );
+        const lines = combined.split(/\r?\n/).filter((line) => line.trim());
+        for (const line of lines.slice(-20)) {
+          console.warn(line);
+        }
+      }
+      return 0;
+    },
+  },
+  {
+    name: "backend cargo-deny check",
+    cmd: async () => {
+      if (!(await isCommandAvailable("cargo-deny"))) {
+        console.warn(
+          "\n[Warning] cargo-deny is not installed. Backend license/security checks will be skipped locally.\n" +
+            "   To install cargo-deny locally, run: cargo install --locked cargo-deny\n" +
+            "   Note: This check is enforced in CI via .github/workflows/security.yml.\n"
+        );
+        return 0;
+      }
+
+      const { code, combined } = await runCapture(
+        "cargo deny --manifest-path core/Cargo.toml check --show-stats"
+      );
+      const lines = combined.split(/\r?\n/);
+
+      if (code === 0) {
+        for (const line of lines) {
+          if (/^\s*(advisories|bans|licenses|sources)\s+(ok|FAILED):/.test(line)) {
+            console.log(line.trimEnd());
+          }
+        }
+        return 0;
+      }
+
+      const errors = lines.filter((line) => /\berror\[/.test(line));
+      if (errors.length > 0) {
+        for (const line of errors) {
+          console.error(line);
+        }
+      } else {
+        for (const line of lines.filter((line) => line.trim()).slice(-12)) {
+          console.error(line);
+        }
+      }
+      return code;
+    },
   },
   {
     name: fix ? "cargo fmt" : "cargo fmt (check)",

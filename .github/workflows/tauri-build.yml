@@ -1,0 +1,53 @@
+name: Tauri Build Smoke
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 7 * * 1" # Monday 07:00 UTC
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+jobs:
+  tauri-build:
+    name: Tauri Build (Ubuntu)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install system dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update
+          sudo -E apt-get install -yq libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./core
+
+      - name: Build Tauri app
+        run: npx tauri build
+
+      - name: Verify bundle output
+        run: ls -la core/target/release/bundle/deb/ || ls -la core/target/release/bundle/

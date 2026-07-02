@@ -1,5 +1,5 @@
 {
-  "name": "mindvault",
+  "name": "amber",
   "private": true,
   "version": "0.1.0",
   "description": "Personalized AI Memory Architecture — A Context-Aware Knowledge System for Local and Cloud LLMs",
@@ -15,7 +15,11 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "preflight": "node scripts/preflight.mjs",
-    "preflight:fix": "node scripts/preflight.mjs --fix"
+    "preflight:fix": "node scripts/preflight.mjs --fix",
+    "license-check": "license-checker-rseidelsohn --production --excludePrivate --onlyAllow \"MIT;ISC;BSD-3-Clause;BSD-2-Clause;Apache-2.0;Unlicense;MPL-2.0\" --summary",
+    "test": "npx tsx scripts/test-frontend.ts",
+    "test:ui": "vitest run",
+    "test:all": "npm test && npm run test:ui"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
@@ -37,7 +41,11 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@size-limit/preset-app": "^12.1.0",
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
@@ -46,18 +54,29 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "husky": "^9.1.7",
+    "jsdom": "^28.1.0",
+    "license-checker-rseidelsohn": "^4.4.2",
     "lint-staged": "^16.4.0",
     "prettier": "^3.8.3",
+    "size-limit": "^12.1.0",
+    "tsx": "^4.22.5",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.59.0",
-    "vite": "^7.3.5"
+    "vite": "^7.3.5",
+    "vitest": "^4.1.9"
   },
   "overrides": {
     "@babel/core": "7.29.7",
-    "dompurify": "3.4.10",
+    "dompurify": "3.4.11",
     "esbuild": "0.28.1",
     "js-yaml": "4.2.0"
   },
+  "size-limit": [
+    {
+      "path": "dist/**/*.js",
+      "limit": "3 MB"
+    }
+  ],
   "lint-staged": {
     "*.{ts,tsx,js,jsx}": [
       "eslint --fix",

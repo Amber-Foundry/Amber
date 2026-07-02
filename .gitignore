@@ -51,3 +51,6 @@ ARCHITECTURE_RULES.md
 
 # Dev & Debug profiles
 chrome-profile/
+core/tests/search_sandbox.rs
+
+vitest_output*.txt
