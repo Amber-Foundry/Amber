@@ -242,7 +242,67 @@ pub fn build_changeset(
         (query, params_vec)
     };
 
-    let existing_nodes = if engine.is_none() {
+    // Pre-compute candidate embeddings if engine is Some
+    let mut candidate_vectors = Vec::new();
+    let mut use_embeddings = false;
+
+    if let Some(eng) = engine {
+        let mut texts_to_embed = Vec::with_capacity(candidates.len());
+        let mut vectors = vec![vec![0.0f32; eng.dims()]; candidates.len()];
+        let mut embed_failed = false;
+
+        for (idx, candidate) in candidates.iter().enumerate() {
+            let text = combined_text(&candidate.title, &candidate.summary);
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                texts_to_embed.push((idx, text));
+            } else if eng.dims() > 0 {
+                vectors[idx][0] = 1.0;
+            }
+        }
+
+        if !texts_to_embed.is_empty() {
+            let raw_texts: Vec<String> = texts_to_embed.iter().map(|(_, t)| t.clone()).collect();
+            const BATCH_SIZE: usize = 32;
+            let mut embedded_count = 0;
+            for chunk in raw_texts.chunks(BATCH_SIZE) {
+                match eng.embed(chunk) {
+                    Ok(chunk_vectors) => {
+                        if chunk_vectors.len() != chunk.len() {
+                            eprintln!(
+                                "[changeset] Embedding engine returned {} vectors for a chunk of {} texts, falling back to Jaccard",
+                                chunk_vectors.len(),
+                                chunk.len()
+                            );
+                            embed_failed = true;
+                            break;
+                        }
+                        let chunk_start = embedded_count;
+                        for (chunk_offset, vec) in chunk_vectors.into_iter().enumerate() {
+                            let candidate_idx = texts_to_embed[chunk_start + chunk_offset].0;
+                            vectors[candidate_idx] = vec;
+                        }
+                        embedded_count += chunk.len();
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[changeset] Candidate embedding generation failed: {:?}, falling back to Jaccard similarity",
+                            e
+                        );
+                        embed_failed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !embed_failed {
+            candidate_vectors = vectors;
+            use_embeddings = true;
+        }
+    }
+
+    let existing_nodes = if !use_embeddings {
         let mut stmt = conn
             .prepare(&query_str)
             .map_err(|err| format!("Failed to prepare nodes query: {err}"))?;
@@ -275,52 +335,6 @@ pub fn build_changeset(
         Vec::new()
     };
 
-    // Pre-compute candidate embeddings if engine is Some
-    let mut candidate_vectors = Vec::new();
-    if let Some(eng) = engine {
-        let mut texts_to_embed = Vec::with_capacity(candidates.len());
-        candidate_vectors = vec![vec![0.0f32; eng.dims()]; candidates.len()];
-
-        for (idx, candidate) in candidates.iter().enumerate() {
-            let text = combined_text(&candidate.title, &candidate.summary);
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                texts_to_embed.push((idx, text));
-            } else {
-                if eng.dims() > 0 {
-                    candidate_vectors[idx][0] = 1.0;
-                }
-            }
-        }
-
-        if !texts_to_embed.is_empty() {
-            let raw_texts: Vec<String> = texts_to_embed.iter().map(|(_, t)| t.clone()).collect();
-            const BATCH_SIZE: usize = 32;
-            let mut embedded_count = 0;
-            for chunk in raw_texts.chunks(BATCH_SIZE) {
-                let vectors = eng.embed(chunk).map_err(|e| {
-                    format!(
-                        "Failed to generate bulk embeddings: {:?} (successfully embedded {} items)",
-                        e, embedded_count
-                    )
-                })?;
-                if vectors.len() != chunk.len() {
-                    return Err(format!(
-                        "Embedding engine returned {} vectors for a chunk of {} texts",
-                        vectors.len(),
-                        chunk.len()
-                    ));
-                }
-                let chunk_start = embedded_count;
-                for (chunk_offset, vec) in vectors.into_iter().enumerate() {
-                    let candidate_idx = texts_to_embed[chunk_start + chunk_offset].0;
-                    candidate_vectors[candidate_idx] = vec;
-                }
-                embedded_count += chunk.len();
-            }
-        }
-    }
-
     let mut items = Vec::new();
 
     for (idx, candidate) in candidates.iter().enumerate() {
@@ -329,15 +343,19 @@ pub fn build_changeset(
             continue;
         }
 
-        let best_match: Option<(DbNode, f64)> = if let Some(eng) = engine {
-            let query_vector = &candidate_vectors[idx];
-            best_match_via_embeddings(
-                conn,
-                query_vector,
-                eng.model_id(),
-                &relevant_vault_filter,
-                has_context,
-            )?
+        let best_match: Option<(DbNode, f64)> = if use_embeddings {
+            if let Some(eng) = engine {
+                let query_vector = &candidate_vectors[idx];
+                best_match_via_embeddings(
+                    conn,
+                    query_vector,
+                    eng.model_id(),
+                    &relevant_vault_filter,
+                    has_context,
+                )?
+            } else {
+                None
+            }
         } else {
             // Pre-tokenize each candidate once (M tokenizations total across all candidates)
             let candidate_tokens = tokenize(&combined_text(&candidate.title, &candidate.summary));
@@ -586,7 +604,7 @@ pub fn build_changeset(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::embed::storage::serialize_f32_vec;
@@ -753,6 +771,52 @@ mod tests {
         assert_eq!(item.item_type, ChangesetItemType::Update);
         assert_eq!(item.target_node_id, Some("node_vector".to_string()));
         assert!(item.similarity.unwrap_or(0.0) > 0.85);
+    }
+
+    #[test]
+    fn test_embedding_failure_falls_back_to_jaccard() {
+        let conn = setup_test_db();
+
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail)
+             VALUES ('node_1', 'vault_learning', 'concept', 'Rust programming', 'Rust is a systems language', 'Detail');",
+            [],
+        ).unwrap();
+
+        struct FailingEngine;
+        impl crate::embed::EmbedEngine for FailingEngine {
+            fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, crate::embed::EmbedError> {
+                Err(crate::embed::EmbedError::InferenceFailed(
+                    "Ollama server unreachable".to_string(),
+                ))
+            }
+            fn model_id(&self) -> &str {
+                "failing-model"
+            }
+            fn dims(&self) -> usize {
+                2
+            }
+        }
+
+        let candidates = vec![CandidateNode {
+            title: "Rust programming".to_string(),
+            summary: "Rust is a systems language".to_string(),
+            detail: Some("New description".to_string()),
+            node_type: Some("concept".to_string()),
+            target_vault_key: Some("learning".to_string()),
+            tags: None,
+            confidence: 0.95,
+            action: CandidateAction::Add,
+        }];
+
+        let engine = FailingEngine;
+        let changeset = build_changeset(&conn, &candidates, "session-123", Some(&engine))
+            .expect("build_changeset should succeed by falling back to Jaccard similarity");
+
+        assert_eq!(changeset.items.len(), 1);
+        let item = &changeset.items[0];
+        assert_eq!(item.item_type, ChangesetItemType::Update);
+        assert_eq!(item.target_node_id, Some("node_1".to_string()));
     }
 
     #[test]
