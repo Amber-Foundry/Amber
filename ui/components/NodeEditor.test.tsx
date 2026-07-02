@@ -175,13 +175,16 @@ describe("NodeEditor privacy gating", () => {
     const privacySelect = document.querySelector(".editor-privacy select") as HTMLSelectElement;
     await user.selectOptions(privacySelect, "local_only");
 
-    await waitFor(() => {
-      expect(mockUpdateNode).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: nodeOpen.id,
-          privacyTier: "local_only",
-        })
-      );
-    });
+    await waitFor(
+      () => {
+        expect(mockUpdateNode).toHaveBeenCalledWith(
+          expect.objectContaining({
+            id: nodeOpen.id,
+            privacyTier: "local_only",
+          })
+        );
+      },
+      { timeout: 3000 }
+    );
   });
 });

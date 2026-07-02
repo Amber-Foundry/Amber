@@ -256,6 +256,17 @@ mod tests {
             "UPDATE nodes SET deleted_at = datetime('now') WHERE id = 'node_test_1';",
             [],
         )?;
+        upsert_embedding(
+            &conn,
+            &EmbeddingRow {
+                node_id: "node_test_1".to_string(),
+                chunk_index: 0,
+                chunk_type: "primary".to_string(),
+                model: model.to_string(),
+                embedding: vec![1.0, 0.0, 0.0],
+                computed_at: "time".to_string(),
+            },
+        )?;
         let results_after_delete = find_top_n_similar(&conn, &query, model, 10, None)?;
         assert_eq!(results_after_delete.len(), 1);
         assert_eq!(results_after_delete[0].0.id, "node_test_2");
@@ -264,6 +275,17 @@ mod tests {
         conn.execute(
             "UPDATE nodes SET deleted_at = NULL, is_archived = 1 WHERE id = 'node_test_1';",
             [],
+        )?;
+        upsert_embedding(
+            &conn,
+            &EmbeddingRow {
+                node_id: "node_test_1".to_string(),
+                chunk_index: 0,
+                chunk_type: "primary".to_string(),
+                model: model.to_string(),
+                embedding: vec![1.0, 0.0, 0.0],
+                computed_at: "time".to_string(),
+            },
         )?;
         let results_after_archive = find_top_n_similar(&conn, &query, model, 10, None)?;
         assert_eq!(results_after_archive.len(), 1);
@@ -324,6 +346,17 @@ mod tests {
         conn.execute(
             "UPDATE nodes SET is_archived = 0 WHERE id = 'node_test_1';",
             [],
+        )?;
+        upsert_embedding(
+            &conn,
+            &EmbeddingRow {
+                node_id: "node_test_1".to_string(),
+                chunk_index: 0,
+                chunk_type: "primary".to_string(),
+                model: model.to_string(),
+                embedding: vec![1.0, 0.0, 0.0],
+                computed_at: "time".to_string(),
+            },
         )?;
 
         // Vault-filtered similarity test

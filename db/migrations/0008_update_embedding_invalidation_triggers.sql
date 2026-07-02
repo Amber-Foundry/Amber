@@ -9,6 +9,7 @@ WHEN NEW.title IS NOT OLD.title
    OR NEW.privacy_tier IS NOT OLD.privacy_tier
    OR NEW.vault_id IS NOT OLD.vault_id
    OR NEW.sub_vault_id IS NOT OLD.sub_vault_id
+   OR NEW.deleted_at IS NOT OLD.deleted_at
 BEGIN
     DELETE FROM node_embeddings WHERE node_id = NEW.id;
 END;

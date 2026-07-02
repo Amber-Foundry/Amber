@@ -35,8 +35,8 @@ describe("PlantUmlBlock Component", () => {
     expect(screen.getByText("Privacy Notice")).toBeInTheDocument();
 
     // Simulate async settings hydration updating localStorage and emitting event
-    setPlantUmlConsent("always");
     act(() => {
+      setPlantUmlConsent("always");
       window.dispatchEvent(new CustomEvent("mindvault:llm-settings-changed"));
     });
 
@@ -49,8 +49,8 @@ describe("PlantUmlBlock Component", () => {
 
     expect(screen.getByText("Privacy Notice")).toBeInTheDocument();
 
-    setPlantUmlConsent("always");
     act(() => {
+      setPlantUmlConsent("always");
       window.dispatchEvent(new CustomEvent("mindvault:plantuml-consent-changed"));
     });
 

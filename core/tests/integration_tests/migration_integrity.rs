@@ -270,6 +270,12 @@ fn assert_invalidation_trigger_covers_fields(
             || sql_upper.contains("NEW.SUB_VAULT_ID IS NOT OLD.SUB_VAULT_ID"),
         "Trigger missing sub_vault_id change check"
     );
+    assert!(
+        sql_upper.contains("NEW.DELETED_AT != OLD.DELETED_AT")
+            || sql_upper.contains("NEW.DELETED_AT <> OLD.DELETED_AT")
+            || sql_upper.contains("NEW.DELETED_AT IS NOT OLD.DELETED_AT"),
+        "Trigger missing deleted_at change check"
+    );
 
     // Verify the vault update trigger
     let (v_name, v_sql): (String, String) = conn

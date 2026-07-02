@@ -375,6 +375,59 @@ fn test_invalidation_trigger_on_title_change() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
+fn test_invalidation_trigger_on_deleted_at_change() -> Result<(), Box<dyn std::error::Error>> {
+    let db_path = unique_db_path("trigger_invalidation_deleted_at")?;
+    amber_lib::test_helper_init_embedding_db(db_path.clone())?;
+    let conn = rusqlite::Connection::open(&db_path)?;
+
+    conn.execute(
+        "INSERT INTO vaults (id, name) VALUES ('vault_test', 'Test Vault');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail)
+         VALUES ('node_test', 'vault_test', 'concept', 'Title', 'Summary', 'Detail');",
+        [],
+    )?;
+
+    amber_lib::embed::storage::upsert_embedding(
+        &conn,
+        &amber_lib::embed::EmbeddingRow {
+            node_id: "node_test".to_string(),
+            chunk_index: 0,
+            chunk_type: "primary".to_string(),
+            model: "avsolatorio/GIST-small-Embedding-v0".to_string(),
+            embedding: vec![1.0, 2.0],
+            computed_at: "time".to_string(),
+        },
+    )?;
+
+    assert!(amber_lib::embed::storage::get_primary_embedding(
+        &conn,
+        "node_test",
+        "avsolatorio/GIST-small-Embedding-v0",
+    )?
+    .is_some());
+
+    // Soft-delete node
+    conn.execute(
+        "UPDATE nodes SET deleted_at = CURRENT_TIMESTAMP WHERE id = 'node_test';",
+        [],
+    )?;
+
+    // Embedding should be purged from node_embeddings by trigger
+    assert!(amber_lib::embed::storage::get_primary_embedding(
+        &conn,
+        "node_test",
+        "avsolatorio/GIST-small-Embedding-v0",
+    )?
+    .is_none());
+
+    let _remove_result = fs::remove_file(db_path);
+    Ok(())
+}
+
+#[test]
 fn test_settings_set_validation_and_auto_align() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = unique_db_path("settings_set_val")?;
     amber_lib::test_helper_init_embedding_db(db_path.clone())?;
