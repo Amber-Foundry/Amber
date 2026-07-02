@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use rusqlite::Connection;
 
-use mindvault_lib::memory_agent::{
+use amber_lib::memory_agent::{
     build_changeset, count_pending_items, list_changeset_items, list_pending_changesets,
     mark_extraction_complete, parse_candidates_from_llm_output, persist_changeset, should_extract,
     CandidateAction, CandidateNode, ChangesetItemType, PendingChangeset, PendingChangesetItem,
@@ -439,7 +439,7 @@ fn test_privacy_filtering_excludes_redacted_and_locked() -> Result<(), Box<dyn E
 
         // Now run extraction pipeline. Because msg_1 and msg_2 are filtered out, only msg_3 remains (< 3 messages).
         // It must return an Insufficient history error!
-        let result = mindvault_lib::execute_memory_extraction_pipeline(
+        let result = amber_lib::execute_memory_extraction_pipeline(
             "ollama".to_string(),
             "http://localhost:11434".to_string(),
             "granite".to_string(),
@@ -467,12 +467,12 @@ fn test_malformed_json_logging_graceful_recovery() -> Result<(), Box<dyn Error>>
     let conn = setup_test_db()?;
 
     // 1. Log a few raw error responses
-    mindvault_lib::log_memory_agent_error(&conn, "raw_error_1")?;
-    mindvault_lib::log_memory_agent_error(&conn, "raw_error_2")?;
-    mindvault_lib::log_memory_agent_error(&conn, "raw_error_3")?;
-    mindvault_lib::log_memory_agent_error(&conn, "raw_error_4")?;
-    mindvault_lib::log_memory_agent_error(&conn, "raw_error_5")?;
-    mindvault_lib::log_memory_agent_error(&conn, "raw_error_6")?;
+    amber_lib::log_memory_agent_error(&conn, "raw_error_1")?;
+    amber_lib::log_memory_agent_error(&conn, "raw_error_2")?;
+    amber_lib::log_memory_agent_error(&conn, "raw_error_3")?;
+    amber_lib::log_memory_agent_error(&conn, "raw_error_4")?;
+    amber_lib::log_memory_agent_error(&conn, "raw_error_5")?;
+    amber_lib::log_memory_agent_error(&conn, "raw_error_6")?;
 
     // 2. Query the settings table for 'memory_agent_errors'
     let val_str: String = conn.query_row(
@@ -557,7 +557,7 @@ fn test_full_pipeline_graceful_recovery_under_malformed_llm_response() -> Result
         let port = spawn_mock_llm_server(ollama_response.to_string())?;
 
         // Run pipeline pointing to our mock server
-        let result = mindvault_lib::execute_memory_extraction_pipeline(
+        let result = amber_lib::execute_memory_extraction_pipeline(
             "ollama".to_string(),
             format!("http://127.0.0.1:{}", port),
             "granite".to_string(),
@@ -636,7 +636,7 @@ fn test_full_pipeline_successful_extraction_and_persistence() -> Result<(), Box<
         let port = spawn_mock_llm_server(ollama_response)?;
 
         // Run pipeline pointing to our mock server
-        let result = mindvault_lib::execute_memory_extraction_pipeline(
+        let result = amber_lib::execute_memory_extraction_pipeline(
             "ollama".to_string(),
             format!("http://127.0.0.1:{}", port),
             "granite".to_string(),
@@ -659,10 +659,10 @@ fn test_full_pipeline_successful_extraction_and_persistence() -> Result<(), Box<
         // Verify the database contains the persisted changeset and items
         {
             let conn = rusqlite::Connection::open(&db_path)?;
-            let count = mindvault_lib::memory_agent::count_pending_items(&conn)?;
+            let count = amber_lib::memory_agent::count_pending_items(&conn)?;
             assert_eq!(count, 2);
 
-            let items = mindvault_lib::memory_agent::list_changeset_items(&conn, &changeset.id)?;
+            let items = amber_lib::memory_agent::list_changeset_items(&conn, &changeset.id)?;
             assert_eq!(items.len(), 2);
             assert_eq!(items[0].item_type, "add");
             assert!(items[0].proposed_data.contains("Baking Bread"));

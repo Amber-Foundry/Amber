@@ -1,11 +1,14 @@
 .model-setup-panel {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
   padding: 16px;
   width: 100%;
   min-width: 0;
+  flex-shrink: 0;
+  min-height: fit-content;
   box-sizing: border-box;
-  overflow-x: hidden;
+  overflow: visible;
   border-radius: 18px;
   background:
     linear-gradient(180deg, hsla(32, 42%, 98%, 0.92), hsla(32, 42%, 96%, 0.78)),
@@ -266,17 +269,43 @@
   color: hsla(28, 30%, 22%, 0.88);
 }
 
-@media (max-width: 940px) {
+.model-setup-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  width: 100%;
+  flex-wrap: wrap;
+  min-height: fit-content;
+  flex-shrink: 0;
+}
+
+.model-setup-toggle-button {
+  background: transparent;
+  border: none;
+  color: var(--primary-color, #bc6c25);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+  transition: background 150ms ease;
+  white-space: nowrap;
+}
+
+.model-setup-toggle-button:hover {
+  background: hsla(28, 56%, 44%, 0.1);
+}
+
+.variant-settings .model-setup-stack-grid {
+  grid-template-columns: 1fr;
+}
+
+@container (max-width: 680px) {
   .model-setup-stack-grid {
     grid-template-columns: 1fr;
   }
 
-  .model-setup-stack-metrics {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 680px) {
   .model-setup-summary {
     align-items: flex-start;
     flex-direction: column;

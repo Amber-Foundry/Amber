@@ -123,6 +123,7 @@ function ModelSetupPanel({ variant = "settings", onStackSelected }: ModelSetupPa
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [busyStackId, setBusyStackId] = useState<string | null>(null);
+  const [isExpanded, setIsExpanded] = useState(true);
 
   const orderedStacks = useMemo(() => stacks.slice(0, 3), [stacks]);
   const subtitle = useMemo(() => buildSubtitle(orderedStacks), [orderedStacks]);
@@ -222,29 +223,45 @@ function ModelSetupPanel({ variant = "settings", onStackSelected }: ModelSetupPa
     >
       {toastMessage ? <p className={styles["model-setup-toast"]}>{toastMessage}</p> : null}
       <div className={styles["model-setup-summary"]}>
-        <div>
-          <span className={styles["model-setup-summary-label"]}>Hardware summary</span>
-          <p className={styles["model-setup-summary-copy"]}>
-            {hardware ? formatHardwareSummary(hardware) : "Hardware unavailable"}
-          </p>
+        <div className={styles["model-setup-summary-header"]}>
+          <div>
+            <span className={styles["model-setup-summary-label"]}>Hardware summary</span>
+            <p className={styles["model-setup-summary-copy"]}>
+              {hardware ? formatHardwareSummary(hardware) : "Hardware unavailable"}
+            </p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span className={styles["model-setup-tier-badge"]}>
+              {hardware ? tierLabel(hardware.tier) : "Recommended"}
+            </span>
+            <button
+              type="button"
+              className={styles["model-setup-toggle-button"]}
+              onClick={() => setIsExpanded((prev) => !prev)}
+              aria-expanded={isExpanded}
+            >
+              {isExpanded ? "Hide recommendations ▲" : "Show recommendations ▼"}
+            </button>
+          </div>
         </div>
-        <span className={styles["model-setup-tier-badge"]}>
-          {hardware ? tierLabel(hardware.tier) : "Recommended"}
-        </span>
       </div>
 
-      <p className={styles["model-setup-subtitle"]}>{subtitle}</p>
+      {isExpanded && (
+        <>
+          <p className={styles["model-setup-subtitle"]}>{subtitle}</p>
 
-      <div className={styles["model-setup-stack-grid"]}>
-        {orderedStacks.map((stack) => (
-          <StackCard
-            key={stack.id}
-            stack={stack}
-            onDownload={handleDownload}
-            busy={busyStackId === stack.id}
-          />
-        ))}
-      </div>
+          <div className={styles["model-setup-stack-grid"]}>
+            {orderedStacks.map((stack) => (
+              <StackCard
+                key={stack.id}
+                stack={stack}
+                onDownload={handleDownload}
+                busy={busyStackId === stack.id}
+              />
+            ))}
+          </div>
+        </>
+      )}
     </section>
   );
 }

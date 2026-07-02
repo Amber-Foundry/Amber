@@ -3,8 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mindvault_lib::ipc_types::OnboardingNodeCommitInput;
-use mindvault_lib::{execute_onboarding_commit, minimal_pre_write_backup};
+use amber_lib::ipc_types::OnboardingNodeCommitInput;
+use amber_lib::{execute_onboarding_commit, minimal_pre_write_backup};
 use rusqlite::Connection;
 
 fn get_temp_db_path() -> Result<PathBuf, Box<dyn Error>> {

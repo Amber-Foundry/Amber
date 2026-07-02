@@ -1,7 +1,8 @@
 .llm-settings {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
+  width: 100%;
 }
 
 .segmented-control {
