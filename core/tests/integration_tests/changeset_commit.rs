@@ -15,10 +15,18 @@ use amber_lib::memory_agent::{
     list_resolved_changesets, persist_changeset,
 };
 
+static TEMP_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn get_temp_db_path() -> Result<PathBuf, Box<dyn Error>> {
     let mut dir = std::env::temp_dir();
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    dir.push(format!("mindvault_test_commit_{}", now));
+    let count = TEMP_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    dir.push(format!(
+        "mindvault_test_commit_{}_{}_{}",
+        std::process::id(),
+        now,
+        count
+    ));
     fs::create_dir_all(&dir)?;
     dir.push("test.db");
     Ok(dir)
