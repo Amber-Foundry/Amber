@@ -312,6 +312,120 @@ fn assert_invalidation_trigger_covers_fields(
     Ok(())
 }
 
+fn assert_import_jobs_metadata_columns_exist(
+    conn: &Connection,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stmt = conn.prepare("PRAGMA table_info(import_jobs);")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+    })?;
+
+    let mut columns = HashMap::new();
+    for r in rows {
+        let (name, col_type) = r?;
+        columns.insert(name, col_type);
+    }
+
+    let required_columns = [
+        ("total_pages", "INTEGER"),
+        ("digital_pages", "INTEGER"),
+        ("ocr_pages", "INTEGER"),
+        ("hybrid_pages", "INTEGER"),
+        ("avg_ocr_confidence", "REAL"),
+        ("rasterization_dpi", "INTEGER"),
+        ("tables_detected_unpreserved", "INTEGER"),
+        ("extraction_path", "TEXT"),
+    ];
+
+    for (col_name, expected_type) in required_columns {
+        let col_type = columns.get(col_name).unwrap_or_else(|| {
+            panic!("missing column {col_name} on import_jobs table");
+        });
+        assert_eq!(
+            col_type.to_uppercase(),
+            expected_type,
+            "column {col_name} has unexpected type: {col_type}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_manual_migration_0009_inspect() -> Result<(), Box<dyn std::error::Error>> {
+    let conn = Connection::open_in_memory()?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        "#,
+    )?;
+
+    apply_migrations(&conn);
+
+    println!("\n========================================");
+    println!("    MIGRATION 0009: IMPORT_JOBS SCHEMA   ");
+    println!("========================================");
+
+    let mut stmt = conn.prepare("PRAGMA table_info(import_jobs);")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })?;
+
+    for r in rows {
+        let (cid, name, col_type, dflt) = r?;
+        println!(
+            "Col #{:<2} {:<28} type: {:<8} default: {:?}",
+            cid,
+            name,
+            col_type,
+            dflt.unwrap_or_else(|| "NULL".to_string())
+        );
+    }
+
+    // Insert a dummy job record testing all 8 new metadata fields
+    conn.execute(
+        r#"
+        INSERT INTO import_jobs (
+            id, import_type, source_name, status, total_pages, digital_pages,
+            ocr_pages, hybrid_pages, avg_ocr_confidence, rasterization_dpi,
+            tables_detected_unpreserved, extraction_path
+        ) VALUES (
+            'job-test-001', 'pdf', 'sample_doc.pdf', 'staged', 10, 8, 2, 0,
+            0.985, 300, 1, 'hybrid'
+        );
+        "#,
+        [],
+    )?;
+
+    let (id, status, pages, conf, path): (String, String, i64, f64, String) = conn.query_row(
+        "SELECT id, status, total_pages, avg_ocr_confidence, extraction_path FROM import_jobs WHERE id = 'job-test-001';",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+
+    println!("----------------------------------------");
+    println!("Successfully inserted & queried sample import_job record:");
+    println!("  Job ID: {id}");
+    println!("  Status: {status}");
+    println!("  Total Pages: {pages}");
+    println!("  Avg OCR Confidence: {:.1}%", conf * 100.0);
+    println!("  Extraction Path: {path}");
+    println!("========================================\n");
+
+    Ok(())
+}
+
 #[test]
 fn schema_integrity_migration_has_tables_indexes_and_foreign_keys(
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -334,6 +448,7 @@ fn schema_integrity_migration_has_tables_indexes_and_foreign_keys(
     assert_foreign_keys_exist(&conn);
     assert_composite_pk_exists(&conn)?;
     assert_invalidation_trigger_covers_fields(&conn)?;
+    assert_import_jobs_metadata_columns_exist(&conn)?;
     Ok(())
 }
 
