@@ -99,6 +99,12 @@ impl std::error::Error for OcrError {
     }
 }
 
+impl From<ort::Error> for OcrError {
+    fn from(err: ort::Error) -> Self {
+        OcrError::InferenceFailed(err.to_string())
+    }
+}
+
 /// Abstract contract for OCR execution backends.
 pub trait OcrEngine: Send + Sync {
     /// Recognizes text in `image` and returns detected text blocks with bounding boxes and confidence scores.

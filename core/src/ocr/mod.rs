@@ -1,7 +1,9 @@
+pub mod bundled;
 pub mod engine;
 
 use crate::models::download::download_and_verify;
 use crate::models::registry::parse_registry_json;
+pub use bundled::BundledOcrEngine;
 pub use engine::{OcrEngine, OcrError, OcrOutput, OcrTextBlock, Rect};
 use serde::Deserialize;
 use std::env;
