@@ -1,0 +1,250 @@
+use crate::ocr::engine::OcrError;
+use crate::ocr::ocr_models_dir;
+use image::DynamicImage;
+use pdfium_render::prelude::*;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+
+/// Classification of a PDF page's content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PdfPageType {
+    /// Pure digital text layer (contains text objects, no scanned image objects).
+    Digital,
+    /// Scanned image / raster (contains image objects, no selectable text layer).
+    Ocr,
+    /// Hybrid page containing both digital text and embedded scanned image objects.
+    Hybrid,
+}
+
+impl std::fmt::Display for PdfPageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PdfPageType::Digital => write!(f, "digital"),
+            PdfPageType::Ocr => write!(f, "ocr-bundled"),
+            PdfPageType::Hybrid => write!(f, "hybrid"),
+        }
+    }
+}
+
+/// Metadata summary for a scanned PDF page.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PdfPageInfo {
+    pub page_index: usize,
+    pub page_type: PdfPageType,
+    pub width_pts: f32,
+    pub height_pts: f32,
+}
+
+/// Configuration settings for PDF page rendering.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PdfRasterizerConfig {
+    pub dpi: u16,
+}
+
+impl Default for PdfRasterizerConfig {
+    fn default() -> Self {
+        Self { dpi: 300 }
+    }
+}
+
+/// Helper for PDF object scanning, page classification, and image rendering.
+pub struct PdfRasterizer {
+    pdfium: Pdfium,
+}
+
+impl PdfRasterizer {
+    /// Initializes `PdfRasterizer` by attempting to bind to system `pdfium` library
+    /// or loading from default directory `~/.amber/resources/pdfium/`.
+    pub fn new() -> Result<Self, OcrError> {
+        let pdfium = match Pdfium::bind_to_system_library() {
+            Ok(bindings) => Pdfium::new(bindings),
+            Err(_) => {
+                let ocr_dir = ocr_models_dir().map_err(|e| OcrError::IoError(e.to_string()))?;
+                let amber_dir = ocr_dir
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .unwrap_or_else(|| Path::new("."));
+                let resources_dir = amber_dir.join("resources").join("pdfium");
+                let pdfium_file = resources_dir.join(if cfg!(target_os = "windows") {
+                    "pdfium.dll"
+                } else if cfg!(target_os = "macos") {
+                    "libpdfium.dylib"
+                } else {
+                    "libpdfium.so"
+                });
+
+                let bindings = Pdfium::bind_to_library(&pdfium_file)
+                    .or_else(|_| {
+                        let lib_name = Pdfium::pdfium_platform_library_name_at_path(&resources_dir);
+                        Pdfium::bind_to_library(lib_name)
+                    })
+                    .or_else(|_| Pdfium::bind_to_system_library())
+                    .map_err(|e| {
+                        OcrError::ModelNotFound(format!(
+                            "Failed binding to native pdfium library at {}: {e}. Place pdfium.dll / libpdfium in ~/.amber/resources/pdfium/",
+                            pdfium_file.display()
+                        ))
+                    })?;
+                Pdfium::new(bindings)
+            }
+        };
+
+        Ok(Self { pdfium })
+    }
+
+    /// Helper constructor taking a custom native library path.
+    pub fn from_library_path(library_dir: &Path) -> Result<Self, OcrError> {
+        let lib_name = Pdfium::pdfium_platform_library_name_at_path(library_dir);
+        let bindings = Pdfium::bind_to_library(lib_name).map_err(|e| {
+            OcrError::ModelNotFound(format!(
+                "Failed binding to native pdfium library at {}: {e}",
+                library_dir.display()
+            ))
+        })?;
+        Ok(Self {
+            pdfium: Pdfium::new(bindings),
+        })
+    }
+
+    /// Scans a PDF file on disk and returns metadata for all pages.
+    pub fn scan_file(&self, file_path: &Path) -> Result<Vec<PdfPageInfo>, OcrError> {
+        let mut file = File::open(file_path).map_err(|e| {
+            OcrError::IoError(format!(
+                "Failed to open PDF file at {}: {e}",
+                file_path.display()
+            ))
+        })?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(|e| {
+            OcrError::IoError(format!(
+                "Failed to read PDF file at {}: {e}",
+                file_path.display()
+            ))
+        })?;
+        self.scan_document(&bytes)
+    }
+
+    /// Scans a PDF document from bytes and returns metadata and page classification for all pages.
+    pub fn scan_document(&self, pdf_bytes: &[u8]) -> Result<Vec<PdfPageInfo>, OcrError> {
+        let document = self
+            .pdfium
+            .load_pdf_from_byte_slice(pdf_bytes, None)
+            .map_err(|e| OcrError::InferenceFailed(format!("Failed to load PDF document: {e}")))?;
+
+        let mut page_infos = Vec::new();
+
+        for (idx, page) in document.pages().iter().enumerate() {
+            let width_pts = page.width().value;
+            let height_pts = page.height().value;
+
+            let mut has_text = false;
+            let mut has_images = false;
+
+            for object in page.objects().iter() {
+                match object.object_type() {
+                    PdfPageObjectType::Text => {
+                        has_text = true;
+                    }
+                    PdfPageObjectType::Image => {
+                        has_images = true;
+                    }
+                    _ => {}
+                }
+            }
+
+            let page_type = match (has_text, has_images) {
+                (true, true) => PdfPageType::Hybrid,
+                (true, false) => PdfPageType::Digital,
+                (false, true) => PdfPageType::Ocr,
+                (false, false) => PdfPageType::Digital,
+            };
+
+            page_infos.push(PdfPageInfo {
+                page_index: idx,
+                page_type,
+                width_pts,
+                height_pts,
+            });
+        }
+
+        Ok(page_infos)
+    }
+
+    /// Renders a specific 0-indexed PDF page into a `DynamicImage` at configured DPI.
+    pub fn render_page(
+        &self,
+        pdf_bytes: &[u8],
+        page_index: usize,
+        config: &PdfRasterizerConfig,
+    ) -> Result<DynamicImage, OcrError> {
+        let document = self
+            .pdfium
+            .load_pdf_from_byte_slice(pdf_bytes, None)
+            .map_err(|e| OcrError::InferenceFailed(format!("Failed loading PDF document: {e}")))?;
+
+        let pages = document.pages();
+        let page = pages.get(page_index as u16).map_err(|_| {
+            OcrError::InferenceFailed(format!(
+                "Page index {page_index} out of bounds (total pages: {})",
+                pages.len()
+            ))
+        })?;
+
+        let target_width = (page.width().value * config.dpi as f32 / 72.0) as i32;
+        let render_config = PdfRenderConfig::new().set_target_width(target_width);
+
+        let bitmap = page.render_with_config(&render_config).map_err(|e| {
+            OcrError::InferenceFailed(format!("Failed rendering PDF page {page_index}: {e}"))
+        })?;
+
+        let image = bitmap.as_image();
+
+        Ok(image)
+    }
+
+    /// Extracts digital text layer from a PDF page if available.
+    pub fn extract_digital_text(
+        &self,
+        pdf_bytes: &[u8],
+        page_index: usize,
+    ) -> Result<String, OcrError> {
+        let document = self
+            .pdfium
+            .load_pdf_from_byte_slice(pdf_bytes, None)
+            .map_err(|e| OcrError::InferenceFailed(format!("Failed loading PDF document: {e}")))?;
+
+        let pages = document.pages();
+        let page = pages.get(page_index as u16).map_err(|_| {
+            OcrError::InferenceFailed(format!(
+                "Page index {page_index} out of bounds (total pages: {})",
+                pages.len()
+            ))
+        })?;
+
+        let text = page.text().map_err(|e| {
+            OcrError::InferenceFailed(format!(
+                "Failed extracting text from page {page_index}: {e}"
+            ))
+        })?;
+        Ok(text.all())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pdf_page_type_display() {
+        assert_eq!(PdfPageType::Digital.to_string(), "digital");
+        assert_eq!(PdfPageType::Ocr.to_string(), "ocr-bundled");
+        assert_eq!(PdfPageType::Hybrid.to_string(), "hybrid");
+    }
+
+    #[test]
+    fn test_pdf_rasterizer_config_default() {
+        let config = PdfRasterizerConfig::default();
+        assert_eq!(config.dpi, 300);
+    }
+}
