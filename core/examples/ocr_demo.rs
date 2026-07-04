@@ -1,4 +1,7 @@
-use amber_lib::ocr::{BundledOcrEngine, OcrEngine, PdfRasterizer, PdfRasterizerConfig};
+use amber_lib::ingest::{analyze_layout, assemble_markdown, RawLayoutBlock};
+use amber_lib::ocr::{
+    BundledOcrEngine, OcrEngine, PdfPageType, PdfRasterizer, PdfRasterizerConfig,
+};
 use std::env;
 use std::path::Path;
 
@@ -58,22 +61,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pages.len(),
                 p.page_type
             );
-            let img = rasterizer.render_page(&pdf_bytes, i, &config)?;
-            let output = engine.recognize(&img)?;
+
+            let raw_blocks = if p.page_type == PdfPageType::Digital {
+                println!(
+                    "[Digital Path] Extracting text & typography directly from PDF text layer..."
+                );
+                rasterizer.extract_digital_blocks(&pdf_bytes, i)?
+            } else {
+                println!("[OCR Path] Rendering page to image and running DBNet/CRNN OCR...");
+                let img = rasterizer.render_page(&pdf_bytes, i, &config)?;
+                let output = engine.recognize(&img)?;
+                output
+                    .blocks
+                    .into_iter()
+                    .map(|b| RawLayoutBlock::new(b.text, b.bbox).with_confidence(b.confidence))
+                    .collect()
+            };
+
+            let avg_conf = if raw_blocks.is_empty() {
+                1.0
+            } else {
+                let total: f32 = raw_blocks.iter().map(|b| b.confidence.unwrap_or(1.0)).sum();
+                total / (raw_blocks.len() as f32)
+            };
 
             println!(
                 "Blocks Detected: {}, Avg Confidence: {:.2}%",
-                output.blocks.len(),
-                output.avg_confidence * 100.0
+                raw_blocks.len(),
+                avg_conf * 100.0
             );
-            for (b_idx, block) in output.blocks.iter().enumerate() {
+            for (b_idx, block) in raw_blocks.iter().enumerate() {
                 println!(
                     "  [{}] (conf: {:.1}%): \"{}\"",
                     b_idx + 1,
-                    block.confidence * 100.0,
+                    block.confidence.unwrap_or(1.0) * 100.0,
                     block.text
                 );
             }
+
+            let layout_blocks = analyze_layout(raw_blocks, p.width_pts, p.height_pts);
+            let page_markdown = assemble_markdown(&layout_blocks);
+
+            println!("\n=== ASSEMBLED MARKDOWN (Page {}) ===", i + 1);
+            println!("{page_markdown}");
+            println!("=====================================");
         }
     } else {
         println!("Loading image from: {}", file_path.display());
@@ -87,33 +118,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Running OCR text detection and recognition...");
         let output = engine.recognize(&img)?;
 
-        println!("\n========================================");
-        println!("          OCR EXECUTION RESULTS         ");
-        println!("========================================");
-        println!("Total Text Blocks Detected: {}", output.blocks.len());
         println!(
-            "Overall Average Confidence: {:.2}%",
+            "\nBlocks Detected: {}, Avg Confidence: {:.2}%",
+            output.blocks.len(),
             output.avg_confidence * 100.0
         );
-        println!("----------------------------------------");
-
-        if output.blocks.is_empty() {
-            println!("No text blocks detected in this image.");
-        } else {
-            for (i, block) in output.blocks.iter().enumerate() {
-                println!(
-                    "Block [{}] (conf: {:.1}%, bbox: x={:.0}, y={:.0}, w={:.0}, h={:.0}):",
-                    i + 1,
-                    block.confidence * 100.0,
-                    block.bbox.x,
-                    block.bbox.y,
-                    block.bbox.width,
-                    block.bbox.height
-                );
-                println!("  \"{}\"", block.text);
-                println!("----------------------------------------");
-            }
+        for (b_idx, block) in output.blocks.iter().enumerate() {
+            println!(
+                "  [{}] (conf: {:.1}%): \"{}\"",
+                b_idx + 1,
+                block.confidence * 100.0,
+                block.text
+            );
         }
+
+        let raw_blocks: Vec<RawLayoutBlock> = output
+            .blocks
+            .into_iter()
+            .map(|b| RawLayoutBlock::new(b.text, b.bbox).with_confidence(b.confidence))
+            .collect();
+
+        let layout_blocks = analyze_layout(raw_blocks, img.width() as f32, img.height() as f32);
+        let markdown = assemble_markdown(&layout_blocks);
+
+        println!("\n========================================");
+        println!("          OCR & MARKDOWN RESULT         ");
+        println!("========================================");
+        println!("{markdown}");
+        println!("========================================");
     }
 
     Ok(())

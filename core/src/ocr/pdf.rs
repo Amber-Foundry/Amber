@@ -229,6 +229,75 @@ impl PdfRasterizer {
         })?;
         Ok(text.all())
     }
+
+    /// Extracts structured `RawLayoutBlock` objects containing spatial coordinates and font sizes for digital PDF pages.
+    pub fn extract_digital_blocks(
+        &self,
+        pdf_bytes: &[u8],
+        page_index: usize,
+    ) -> Result<Vec<crate::ingest::layout::RawLayoutBlock>, OcrError> {
+        let document = self
+            .pdfium
+            .load_pdf_from_byte_slice(pdf_bytes, None)
+            .map_err(|e| OcrError::InferenceFailed(format!("Failed loading PDF document: {e}")))?;
+
+        let pages = document.pages();
+        let page = pages.get(page_index as u16).map_err(|_| {
+            OcrError::InferenceFailed(format!(
+                "Page index {page_index} out of bounds (total pages: {})",
+                pages.len()
+            ))
+        })?;
+
+        let height_pts = page.height().value;
+        let mut raw_blocks = Vec::new();
+
+        for object in page.objects().iter() {
+            if let Some(text_object) = object.as_text_object() {
+                let text = text_object.text();
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let font_size = text_object.unscaled_font_size().value;
+                if let Ok(bounds) = text_object.bounds() {
+                    let pdf_left = bounds.left().value;
+                    let pdf_bottom = bounds.bottom().value;
+                    let width = bounds.width().value;
+                    let height = bounds.height().value;
+                    let screen_y = (height_pts - (pdf_bottom + height)).max(0.0);
+
+                    let bbox = crate::ocr::engine::Rect::new(pdf_left, screen_y, width, height);
+                    raw_blocks.push(
+                        crate::ingest::layout::RawLayoutBlock::new(text, bbox)
+                            .with_font_size(font_size),
+                    );
+                }
+            }
+        }
+
+        // Fallback if text object iteration returned no blocks but digital text layer exists
+        if raw_blocks.is_empty() {
+            if let Ok(text_page) = page.text() {
+                let full_text = text_page.all();
+                let page_width = page.width().value;
+                let mut y_offset = 20.0;
+                for line in full_text.lines() {
+                    if line.trim().is_empty() {
+                        y_offset += 15.0;
+                        continue;
+                    }
+                    let bbox =
+                        crate::ocr::engine::Rect::new(20.0, y_offset, page_width - 40.0, 15.0);
+                    raw_blocks.push(
+                        crate::ingest::layout::RawLayoutBlock::new(line, bbox).with_font_size(12.0),
+                    );
+                    y_offset += 20.0;
+                }
+            }
+        }
+
+        Ok(raw_blocks)
+    }
 }
 
 #[cfg(test)]
