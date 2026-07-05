@@ -72,3 +72,13 @@ export async function cancelImportJob(jobId: string): Promise<void> {
     throw new Error("cancelImportJob not implemented for non-mock mode" + jobId);
   }
 }
+
+export async function startOcrModelDownload(jobId: string): Promise<void> {
+  if (USE_MOCK) {
+    MOCK_STATUS.status = "completed";
+    MOCK_STATUS.error = "";
+    return;
+  } else {
+    throw new Error("startOcrModelDownload not implemented for non-mock mode" + jobId);
+  }
+}

@@ -1,0 +1,101 @@
+@import "../Shared.css";
+
+.jobLogPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+}
+
+.jobCard {
+  padding: 12px 14px;
+  border: 1px solid rgba(188, 108, 37, 0.15);
+  border-radius: 12px;
+  background: rgba(242, 240, 239, 0.5);
+}
+
+.jobHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.jobSourceName {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-black);
+}
+
+.jobStatusBadge {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: capitalize;
+  background: rgba(188, 108, 37, 0.1);
+  color: var(--primary-color);
+}
+
+.jobStatusBadge[data-status="error"] {
+  background: rgba(200, 60, 60, 0.12);
+  color: #c83c3c;
+}
+
+.jobStatusBadge[data-status="completed"] {
+  background: rgba(60, 150, 90, 0.12);
+  color: #3c964f;
+}
+
+.progressTrack {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(188, 108, 37, 0.1);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.progressFill {
+  height: 100%;
+  background: var(--primary-color);
+  transition: width 200ms ease;
+}
+
+.jobSummary {
+  font-size: 0.82rem;
+  color: var(--text-black);
+  margin-bottom: 6px;
+}
+
+.jobNotice {
+  font-size: 0.82rem;
+  font-style: italic;
+  color: var(--primary-color);
+}
+
+.jobError {
+  font-size: 0.82rem;
+  color: #c83c3c;
+}
+
+.jobBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.confidenceBadge,
+.warningBadge {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.confidenceBadge {
+  background: rgba(188, 108, 37, 0.08);
+  color: var(--text-black);
+}
+
+.warningBadge {
+  background: rgba(200, 140, 40, 0.15);
+  color: #a06a1a;
+}

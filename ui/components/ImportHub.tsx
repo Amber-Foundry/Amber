@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import ImportHubStyles from "../style/components/ImportHub.module.css";
+import ImportJobLog from "./ImportJobLog";
 //TEMP IMPORT, REPLACE WITH GENERATED TYPES ON MERGE WITH 2.4 BACKEND
 //import { ImportJobStatus } from "../services/import";
 
@@ -131,6 +132,12 @@ export default function ImportHub() {
           style={{ display: "none" }}
         />
       </div>
+
+      <div className="pane-header">
+        <span className="sidebar-subtitle">Job Log</span>
+      </div>
+
+      <ImportJobLog />
     </div>
   );
 }
