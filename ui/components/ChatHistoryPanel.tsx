@@ -186,9 +186,9 @@ export default function ChatHistoryPanel({
   }
 
   return (
-    <div className="chat-history-panel">
-      <div className="chat-history-header">
-        <h2>Conversations</h2>
+    <div className="pane pane-left">
+      <div className="pane-header">
+        <span className="sidebar-subtitle">Conversations</span>
         <button type="button" className="chat-history-new-btn" onClick={handleCreateSession}>
           ➕ New Chat
         </button>

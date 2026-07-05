@@ -2,7 +2,7 @@ const USE_MOCK = import.meta.env.VITE_USE_IMPORT_MOCK !== "false";
 
 //TEMP TYPES TO BE REPLACED ON MERGE WITH 2.4 BACKEND
 
-type ImportJobStatus = {
+export type ImportJobStatus = {
   id: string;
   status: string;
   sourceName: string;
