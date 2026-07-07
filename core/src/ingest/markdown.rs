@@ -122,4 +122,26 @@ mod tests {
 
         assert_eq!(markdown, expected);
     }
+
+    #[test]
+    fn test_markdown_assembler_list_items_cross_pages() {
+        let blocks = vec![
+            IngestBlock {
+                formatted_text: "- Item 1 on Page 0".to_string(),
+                block_type: BlockType::ListItem,
+                confidence: None,
+                page_index: 0,
+            },
+            IngestBlock {
+                formatted_text: "- Item 2 on Page 1".to_string(),
+                block_type: BlockType::ListItem,
+                confidence: None,
+                page_index: 1,
+            },
+        ];
+
+        let result = join_ingest_blocks(&blocks);
+        // Should be joined with double newlines "\n\n" since they are on different pages
+        assert_eq!(result, "- Item 1 on Page 0\n\n- Item 2 on Page 1");
+    }
 }

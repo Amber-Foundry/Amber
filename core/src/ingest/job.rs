@@ -1,6 +1,7 @@
 use crate::embed::chunking::count_tokens;
 use crate::ingest::layout::{analyze_layout, RawLayoutBlock};
 use crate::ingest::markdown::{assemble_markdown_blocks, join_ingest_blocks, IngestBlock};
+use crate::memory_agent::parser::{CandidateAction, CandidateNode};
 use crate::ocr::bundled::BundledOcrEngine;
 use crate::ocr::engine::{OcrEngine, OcrError};
 use crate::ocr::pdf::{PdfPageType, PdfRasterizer, PdfRasterizerConfig};
@@ -19,6 +20,10 @@ pub struct IngestJobConfig {
     pub target_chunk_tokens: usize,
     /// Token overlap between consecutive import chunks (default: 60).
     pub overlap_chunk_tokens: usize,
+    pub provider: Option<String>,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    pub allowed_vault_keys: Option<Vec<String>>,
 }
 
 impl Default for IngestJobConfig {
@@ -27,6 +32,10 @@ impl Default for IngestJobConfig {
             rasterization_dpi: 300,
             target_chunk_tokens: 350,
             overlap_chunk_tokens: 60,
+            provider: None,
+            endpoint: None,
+            model: None,
+            allowed_vault_keys: None,
         }
     }
 }
@@ -69,6 +78,7 @@ pub struct IngestJobResult {
     pub chunks: Vec<ImportChunkSpec>,
     pub avg_ocr_confidence: f32,
     pub tables_detected_unpreserved: i32,
+    pub candidates: Vec<CandidateNode>,
 }
 
 /// Core background engine managing job execution, lazy ONNX initialization, and chunking.
@@ -145,12 +155,12 @@ impl IngestJobEngine {
             }
 
             let layout_blocks = match p.page_type {
-                PdfPageType::Digital => {
+                PdfPageType::Digital | PdfPageType::Hybrid => {
                     let raw_blocks = rasterizer.extract_digital_blocks(&pdf_bytes, i)?;
                     analyze_layout(raw_blocks, p.width_pts, p.height_pts)
                 }
-                PdfPageType::Ocr | PdfPageType::Hybrid => {
-                    // Lazily initialize BundledOcrEngine on first OCR/Hybrid page
+                PdfPageType::Ocr => {
+                    // Lazily initialize BundledOcrEngine on first OCR page
                     if cached_ocr_engine.is_none() {
                         cached_ocr_engine = Some(BundledOcrEngine::new()?);
                     }
@@ -216,6 +226,15 @@ impl IngestJobEngine {
             });
         }
 
+        let mut candidates = Vec::new();
+        for chunk in &chunks {
+            candidates.extend(IngestJobEngine::extract_chunk_candidates(
+                chunk,
+                &source_name,
+                &config,
+            ));
+        }
+
         Ok(IngestJobResult {
             job_id,
             source_name,
@@ -227,6 +246,7 @@ impl IngestJobEngine {
             chunks,
             avg_ocr_confidence,
             tables_detected_unpreserved,
+            candidates,
         })
     }
 
@@ -274,6 +294,15 @@ impl IngestJobEngine {
             config.overlap_chunk_tokens,
         );
 
+        let mut candidates = Vec::new();
+        for chunk in &chunks {
+            candidates.extend(IngestJobEngine::extract_chunk_candidates(
+                chunk,
+                &source_name,
+                &config,
+            ));
+        }
+
         Ok(IngestJobResult {
             job_id,
             source_name,
@@ -285,7 +314,180 @@ impl IngestJobEngine {
             chunks,
             avg_ocr_confidence: ocr_output.avg_confidence,
             tables_detected_unpreserved,
+            candidates,
         })
+    }
+
+    fn run_fallback_extraction(
+        chunk: &ImportChunkSpec,
+        source_name: &str,
+        reason: Option<&str>,
+    ) -> CandidateNode {
+        let title = chunk
+            .heading_context
+            .clone()
+            .unwrap_or_else(|| format!("Imported Chunk {}", chunk.chunk_index));
+        let detail = Some(chunk.text.clone());
+        let mut summary = String::new();
+        if let Some(first_sentence) = chunk.text.split(&['.', '?', '!']).next() {
+            let trimmed = first_sentence.trim();
+            if !trimmed.is_empty() {
+                summary = trimmed.to_string();
+            }
+        }
+        if summary.is_empty() {
+            summary = chunk.text.chars().take(120).collect();
+        } else if summary.chars().count() > 120 {
+            summary = summary.chars().take(120).collect::<String>() + "...";
+        }
+
+        let mut meta_obj = serde_json::json!({
+            "ocr_confidence": chunk.ocr_confidence,
+            "tables_unstructured": chunk.tables_unstructured,
+        });
+        if let Some(r) = reason {
+            if let Some(map) = meta_obj.as_object_mut() {
+                map.insert("fallback_reason".to_string(), serde_json::json!(r));
+            }
+        }
+
+        CandidateNode {
+            title,
+            summary,
+            detail,
+            node_type: Some("fact".to_string()),
+            target_vault_key: Some("learning".to_string()),
+            tags: Some(vec!["pdf_import".to_string()]),
+            confidence: 0.5,
+            action: CandidateAction::Add,
+            source: Some(source_name.to_string()),
+            source_type: Some("pdf_import".to_string()),
+            meta: Some(meta_obj),
+        }
+    }
+
+    fn extract_chunk_candidates(
+        chunk: &ImportChunkSpec,
+        source_name: &str,
+        config: &IngestJobConfig,
+    ) -> Vec<CandidateNode> {
+        if crate::ingest::security::scan_prompt_injection(&chunk.text) {
+            let mut fallback_node =
+                Self::run_fallback_extraction(chunk, source_name, Some("injection_flagged"));
+            if let Some(ref mut meta) = fallback_node.meta {
+                if let Some(map) = meta.as_object_mut() {
+                    map.insert("injection_flagged".to_string(), serde_json::json!(true));
+                }
+            }
+            return vec![fallback_node];
+        }
+
+        let (provider, endpoint, model) = match (&config.provider, &config.model) {
+            (Some(p), Some(m)) => (p, config.endpoint.as_deref().unwrap_or(""), m),
+            _ => {
+                return vec![Self::run_fallback_extraction(
+                    chunk,
+                    source_name,
+                    Some("no_llm_configured"),
+                )]
+            }
+        };
+
+        let parsed_provider = match provider.trim().to_lowercase().as_str() {
+            "ollama" => crate::llm::client::LlmProvider::Ollama,
+            "lmstudio" => crate::llm::client::LlmProvider::LmStudio,
+            "anthropic" => crate::llm::client::LlmProvider::Anthropic,
+            "openai" => crate::llm::client::LlmProvider::OpenAi,
+            "google" => crate::llm::client::LlmProvider::Google,
+            "xai" => crate::llm::client::LlmProvider::XAi,
+            _ => {
+                eprintln!(
+                    "[ingest] Unsupported LLM provider '{}', falling back to layout extraction.",
+                    provider
+                );
+                return vec![Self::run_fallback_extraction(
+                    chunk,
+                    source_name,
+                    Some("unsupported_provider"),
+                )];
+            }
+        };
+
+        let user_content = crate::ingest::prompt::wrap_ingestion_payload(&chunk.text);
+        let messages = [crate::llm::client::LlmMessage {
+            role: "user".to_string(),
+            content: user_content,
+        }];
+
+        let client = crate::llm::client::UniversalClient::new(
+            parsed_provider,
+            endpoint.trim().to_string(),
+            model.trim().to_string(),
+        );
+
+        let allowed_keys = config.allowed_vault_keys.clone().unwrap_or_default();
+        let sys_prompt = crate::ingest::prompt::get_system_prompt(&allowed_keys);
+
+        let handle = tokio::runtime::Handle::try_current();
+        let raw_res = match handle {
+            Ok(h) => h.block_on(crate::llm::client::LlmClient::complete(
+                &client,
+                &sys_prompt,
+                &messages,
+            )),
+            Err(_) => match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(crate::llm::client::LlmClient::complete(
+                    &client,
+                    &sys_prompt,
+                    &messages,
+                )),
+                Err(err) => Err(format!("Failed to build temporary runtime: {err}")),
+            },
+        };
+
+        let raw = match raw_res {
+            Ok(r) => r,
+            Err(err) => {
+                eprintln!(
+                    "[ingest] LLM extraction failed: {err:?}. Falling back to layout extraction."
+                );
+                return vec![Self::run_fallback_extraction(
+                    chunk,
+                    source_name,
+                    Some("llm_call_failed"),
+                )];
+            }
+        };
+
+        match crate::memory_agent::parser::parse_candidates_from_llm_output(
+            &raw,
+            config.allowed_vault_keys.as_deref(),
+        ) {
+            Ok(mut candidates) => {
+                for node in &mut candidates {
+                    node.source = Some(source_name.to_string());
+                    node.source_type = Some("pdf_import".to_string());
+                    node.meta = Some(serde_json::json!({
+                        "ocr_confidence": chunk.ocr_confidence,
+                        "tables_unstructured": chunk.tables_unstructured,
+                    }));
+                }
+                candidates
+            }
+            Err(err) => {
+                eprintln!(
+                    "[ingest] Failed to parse candidate nodes from LLM JSON: {err}. Falling back to layout extraction."
+                );
+                vec![Self::run_fallback_extraction(
+                    chunk,
+                    source_name,
+                    Some("llm_parse_failed"),
+                )]
+            }
+        }
     }
 }
 
@@ -489,6 +691,7 @@ mod tests {
             rasterization_dpi: 150,
             target_chunk_tokens: 300,
             overlap_chunk_tokens: 50,
+            ..Default::default()
         };
 
         let (tx, rx) = mpsc::channel();

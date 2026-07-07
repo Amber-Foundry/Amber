@@ -1,6 +1,8 @@
 pub mod job;
 pub mod layout;
 pub mod markdown;
+pub mod prompt;
+pub mod security;
 
 pub use job::{
     chunk_ingest_blocks, ImportChunkSpec, ImportJobProgress, IngestJobConfig, IngestJobEngine,

@@ -37,7 +37,7 @@ pub enum CandidateAction {
 }
 
 /// A parsed candidate memory extracted from LLM session completions.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CandidateNode {
     /// The short, descriptive title of the candidate node.
     pub title: String,
@@ -141,13 +141,24 @@ fn validate_node_type(value: Option<String>, index: usize) -> Option<String> {
     }
 }
 
-fn validate_target_vault_key(value: Option<String>, index: usize) -> Option<String> {
+fn validate_target_vault_key(
+    value: Option<String>,
+    allowed_keys: Option<&[String]>,
+    index: usize,
+) -> Option<String> {
     let raw_value = value?;
     let normalized = raw_value.trim().to_lowercase();
     if normalized.is_empty() {
         return None;
     }
-    if ALLOWED_VAULT_KEYS.contains(&normalized.as_str()) {
+
+    let is_valid = if let Some(keys) = allowed_keys {
+        keys.iter().any(|k| k.to_lowercase() == normalized)
+    } else {
+        ALLOWED_VAULT_KEYS.contains(&normalized.as_str())
+    };
+
+    if is_valid {
         Some(normalized)
     } else {
         eprintln!(
@@ -183,7 +194,10 @@ fn normalize_tags(tags: Option<Vec<String>>, index: usize) -> Result<Option<Vec<
 /// Parses and validates a raw strict JSON string representing memory extraction candidates.
 ///
 /// Enforces correct structures, node types, target vault keys, and normalizes tags and confidence scores.
-pub fn parse_candidates_json(raw_json: &str) -> Result<Vec<CandidateNode>, String> {
+pub fn parse_candidates_json(
+    raw_json: &str,
+    allowed_vault_keys: Option<&[String]>,
+) -> Result<Vec<CandidateNode>, String> {
     let envelope: CandidateEnvelope =
         serde_json::from_str(raw_json).map_err(|err| format!("Invalid candidates JSON: {err}"))?;
 
@@ -196,7 +210,8 @@ pub fn parse_candidates_json(raw_json: &str) -> Result<Vec<CandidateNode>, Strin
             let summary = normalize_required(raw.summary, "summary", index)?;
             let detail = normalize_non_empty(raw.detail);
             let node_type = validate_node_type(raw.node_type, index);
-            let target_vault_key = validate_target_vault_key(raw.target_vault_key, index);
+            let target_vault_key =
+                validate_target_vault_key(raw.target_vault_key, allowed_vault_keys, index);
             let tags = normalize_tags(raw.tags, index)?;
 
             // Clamp confidence score to 0.0 - 1.0
@@ -229,9 +244,10 @@ pub fn parse_candidates_json(raw_json: &str) -> Result<Vec<CandidateNode>, Strin
 /// Normalizes raw LLM output (removing markdown code blocks/fences) and parses candidate nodes.
 pub fn parse_candidates_from_llm_output(
     raw_model_output: &str,
+    allowed_vault_keys: Option<&[String]>,
 ) -> Result<Vec<CandidateNode>, String> {
     let normalized = normalize_llm_json_response(raw_model_output);
-    parse_candidates_json(&normalized)
+    parse_candidates_json(&normalized, allowed_vault_keys)
 }
 
 #[cfg(test)]
@@ -267,7 +283,7 @@ mod tests {
   ]
 }"#;
 
-        let parsed = match parse_candidates_json(payload) {
+        let parsed = match parse_candidates_json(payload, None) {
             Ok(val) => val,
             Err(err) => panic!("Expected valid candidates: {err}"),
         };
@@ -302,7 +318,7 @@ mod tests {
     #[test]
     fn parse_empty_candidates() {
         let payload = r#"{"candidates":[]}"#;
-        let parsed = match parse_candidates_json(payload) {
+        let parsed = match parse_candidates_json(payload, None) {
             Ok(val) => val,
             Err(err) => panic!("Expected empty candidates to parse: {err}"),
         };
@@ -319,7 +335,7 @@ mod tests {
     }
   ]
 }"#;
-        let err = match parse_candidates_json(payload) {
+        let err = match parse_candidates_json(payload, None) {
             Ok(_) => panic!("expected missing required field payload to fail"),
             Err(e) => e,
         };
@@ -338,7 +354,7 @@ mod tests {
     }
   ]
 }"#;
-        let parsed = match parse_candidates_json(payload) {
+        let parsed = match parse_candidates_json(payload, None) {
             Ok(val) => val,
             Err(err) => panic!("Expected unknown field payload to parse successfully: {err}"),
         };
@@ -356,7 +372,7 @@ mod tests {
     }
   ]
 }"#;
-        let parsed = match parse_candidates_json(payload) {
+        let parsed = match parse_candidates_json(payload, None) {
             Ok(val) => val,
             Err(err) => panic!("Expected omitted confidence payload to parse successfully: {err}"),
         };
@@ -377,7 +393,7 @@ mod tests {
     }
   ]
 }"#;
-        let parsed = match parse_candidates_json(payload) {
+        let parsed = match parse_candidates_json(payload, None) {
             Ok(val) => val,
             Err(err) => panic!("expected invalid node type to fall back to None, not fail: {err}"),
         };
@@ -406,7 +422,7 @@ mod tests {
     ]
 }"#;
 
-        let parsed = match parse_candidates_json(payload) {
+        let parsed = match parse_candidates_json(payload, None) {
             Ok(val) => val,
             Err(err) => {
                 panic!("Expected invalid node_type to be downgraded, not fail parsing: {err}")
@@ -439,7 +455,7 @@ mod tests {
     }
   ]
 }"#;
-        let parsed = match parse_candidates_json(payload) {
+        let parsed = match parse_candidates_json(payload, None) {
             Ok(val) => val,
             Err(err) => panic!("Expected confidence clamping candidates to parse: {err}"),
         };
@@ -464,7 +480,7 @@ mod tests {
     }
   ]
 }"#;
-        let parsed = match parse_candidates_json(payload) {
+        let parsed = match parse_candidates_json(payload, None) {
             Ok(val) => val,
             Err(err) => {
                 panic!("expected invalid target vault key to fall back to None, not fail: {err}")
@@ -472,5 +488,35 @@ mod tests {
         };
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].target_vault_key, None);
+    }
+
+    #[test]
+    fn parse_custom_target_vault_key_with_allowed_keys() {
+        let payload = r#"{
+  "candidates": [
+    {
+      "title": "Cooking",
+      "summary": "Likes to cook Italian food.",
+      "target_vault_key": "recipes",
+      "confidence": 0.95
+    },
+    {
+      "title": "Tax records",
+      "summary": "Wants to keep tax files.",
+      "target_vault_key": "finance",
+      "confidence": 0.90
+    }
+  ]
+}"#;
+        let allowed = vec!["recipes".to_string(), "taxes".to_string()];
+        let parsed = match parse_candidates_json(payload, Some(&allowed)) {
+            Ok(v) => v,
+            Err(e) => panic!("Expected parsing to succeed: {e}"),
+        };
+        assert_eq!(parsed.len(), 2);
+        // "recipes" should be preserved because it's in the allowed list
+        assert_eq!(parsed[0].target_vault_key.as_deref(), Some("recipes"));
+        // "finance" should be dropped to None because it's not in the allowed list
+        assert_eq!(parsed[1].target_vault_key, None);
     }
 }

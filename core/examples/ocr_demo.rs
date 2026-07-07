@@ -1,5 +1,7 @@
 use amber_lib::ingest::{ImportJobProgress, IngestJobConfig, IngestJobEngine};
 use std::env;
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
@@ -29,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rasterization_dpi: 300,
         target_chunk_tokens: 300,
         overlap_chunk_tokens: 50,
+        ..Default::default()
     };
 
     println!("==================================================");
@@ -59,47 +62,117 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let _ = progress_handle.join();
 
-        println!("\n==================================================");
-        println!("               INGESTION JOB METRICS");
-        println!("==================================================");
-        println!("Total Pages:   {}", result.total_pages);
-        println!("Digital Pages: {}", result.digital_pages);
-        println!("OCR Pages:     {}", result.ocr_pages);
-        println!("Hybrid Pages:  {}", result.hybrid_pages);
-        println!("Avg Confidence: {:.2}%", result.avg_ocr_confidence * 100.0);
-        println!("Total Chunks:  {}", result.chunks.len());
+        let mut output_log = String::new();
+        output_log.push_str("==================================================\n");
+        output_log.push_str("               INGESTION JOB METRICS\n");
+        output_log.push_str("==================================================\n");
+        output_log.push_str(&format!("Total Pages:   {}\n", result.total_pages));
+        output_log.push_str(&format!("Digital Pages: {}\n", result.digital_pages));
+        output_log.push_str(&format!("OCR Pages:     {}\n", result.ocr_pages));
+        output_log.push_str(&format!("Hybrid Pages:  {}\n", result.hybrid_pages));
+        output_log.push_str(&format!(
+            "Avg Confidence: {:.2}%\n",
+            result.avg_ocr_confidence * 100.0
+        ));
+        output_log.push_str(&format!("Total Chunks:  {}\n", result.chunks.len()));
 
-        println!("\n==================================================");
-        println!("            GENERATED IMPORT CHUNKS");
-        println!("==================================================");
+        output_log.push_str("\n==================================================\n");
+        output_log.push_str("            GENERATED IMPORT CHUNKS\n");
+        output_log.push_str("==================================================\n");
         for chunk in &result.chunks {
-            println!(
-                "\n--- [Chunk #{}] (Tokens: {}, Heading: {:?}, Type: {}) ---",
+            output_log.push_str(&format!(
+                "\n--- [Chunk #{}] (Tokens: {}, Heading: {:?}, Type: {}) ---\n",
                 chunk.chunk_index, chunk.token_count, chunk.heading_context, chunk.chunk_type
-            );
-            println!("{}", chunk.text);
+            ));
+            output_log.push_str(&chunk.text);
+            output_log.push('\n');
         }
+
+        output_log.push_str("\n==================================================\n");
+        output_log.push_str("            EXTRACTED CANDIDATE NODES\n");
+        output_log.push_str("==================================================\n");
+        output_log.push_str(&format!("Total Candidates: {}\n", result.candidates.len()));
+        for (i, candidate) in result.candidates.iter().enumerate() {
+            output_log.push_str(&format!(
+                "\n--- [Candidate #{}] Title: {} (Confidence: {:.2}) ---\n",
+                i + 1,
+                candidate.title,
+                candidate.confidence
+            ));
+            output_log.push_str(&format!("Type:      {:?}\n", candidate.node_type));
+            output_log.push_str(&format!("Vault Key: {:?}\n", candidate.target_vault_key));
+            output_log.push_str(&format!("Summary:   {}\n", candidate.summary));
+            if let Some(ref detail) = candidate.detail {
+                output_log.push_str(&format!("Detail:\n{}\n", detail));
+            }
+            if let Some(ref meta) = candidate.meta {
+                output_log.push_str(&format!(
+                    "Meta JSON: {}\n",
+                    serde_json::to_string_pretty(meta).unwrap_or_default()
+                ));
+            }
+        }
+
+        let mut file = File::create("ocr_output.txt")?;
+        file.write_all(output_log.as_bytes())?;
+        println!("\nIngestion completed successfully!");
+        println!("Detailed metrics, chunks, and candidate nodes written to: ocr_output.txt");
     } else {
         println!("Running single image ingestion job...");
         let result = IngestJobEngine::process_image_job("job-cli-image-demo", file_path, config)?;
 
-        println!("\n==================================================");
-        println!("               INGESTION JOB METRICS");
-        println!("==================================================");
-        println!("Total Pages:   {}", result.total_pages);
-        println!("Avg Confidence: {:.2}%", result.avg_ocr_confidence * 100.0);
-        println!("Total Chunks:  {}", result.chunks.len());
+        let mut output_log = String::new();
+        output_log.push_str("==================================================\n");
+        output_log.push_str("               INGESTION JOB METRICS\n");
+        output_log.push_str("==================================================\n");
+        output_log.push_str(&format!("Total Pages:   {}\n", result.total_pages));
+        output_log.push_str(&format!(
+            "Avg Confidence: {:.2}%\n",
+            result.avg_ocr_confidence * 100.0
+        ));
+        output_log.push_str(&format!("Total Chunks:  {}\n", result.chunks.len()));
 
-        println!("\n==================================================");
-        println!("            GENERATED IMPORT CHUNKS");
-        println!("==================================================");
+        output_log.push_str("\n==================================================\n");
+        output_log.push_str("            GENERATED IMPORT CHUNKS\n");
+        output_log.push_str("==================================================\n");
         for chunk in &result.chunks {
-            println!(
-                "\n--- [Chunk #{}] (Tokens: {}, Heading: {:?}, Type: {}) ---",
+            output_log.push_str(&format!(
+                "\n--- [Chunk #{}] (Tokens: {}, Heading: {:?}, Type: {}) ---\n",
                 chunk.chunk_index, chunk.token_count, chunk.heading_context, chunk.chunk_type
-            );
-            println!("{}", chunk.text);
+            ));
+            output_log.push_str(&chunk.text);
+            output_log.push('\n');
         }
+
+        output_log.push_str("\n==================================================\n");
+        output_log.push_str("            EXTRACTED CANDIDATE NODES\n");
+        output_log.push_str("==================================================\n");
+        output_log.push_str(&format!("Total Candidates: {}\n", result.candidates.len()));
+        for (i, candidate) in result.candidates.iter().enumerate() {
+            output_log.push_str(&format!(
+                "\n--- [Candidate #{}] Title: {} (Confidence: {:.2}) ---\n",
+                i + 1,
+                candidate.title,
+                candidate.confidence
+            ));
+            output_log.push_str(&format!("Type:      {:?}\n", candidate.node_type));
+            output_log.push_str(&format!("Vault Key: {:?}\n", candidate.target_vault_key));
+            output_log.push_str(&format!("Summary:   {}\n", candidate.summary));
+            if let Some(ref detail) = candidate.detail {
+                output_log.push_str(&format!("Detail:\n{}\n", detail));
+            }
+            if let Some(ref meta) = candidate.meta {
+                output_log.push_str(&format!(
+                    "Meta JSON: {}\n",
+                    serde_json::to_string_pretty(meta).unwrap_or_default()
+                ));
+            }
+        }
+
+        let mut file = File::create("ocr_output.txt")?;
+        file.write_all(output_log.as_bytes())?;
+        println!("\nIngestion completed successfully!");
+        println!("Detailed metrics, chunks, and candidate nodes written to: ocr_output.txt");
     }
 
     println!("\n==================================================");

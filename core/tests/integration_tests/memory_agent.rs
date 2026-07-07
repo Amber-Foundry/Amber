@@ -104,7 +104,7 @@ fn test_extraction_parser_golden_output() -> Result<(), Box<dyn Error>> {
   ]
 }"#;
 
-    let parsed = parse_candidates_from_llm_output(raw_output)
+    let parsed = parse_candidates_from_llm_output(raw_output, None)
         .map_err(|err| format!("Failed LLM parsing: {err}"))?;
     assert_eq!(parsed.len(), 1);
     assert_eq!(parsed[0].title, "React and TypeScript");
