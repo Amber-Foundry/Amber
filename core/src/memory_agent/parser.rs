@@ -55,6 +55,27 @@ pub struct CandidateNode {
     pub confidence: f64,
     /// The action to perform (Add, Update, or Delete).
     pub action: CandidateAction,
+    pub source: Option<String>,
+    pub source_type: Option<String>,
+    pub meta: Option<serde_json::Value>,
+}
+
+impl Default for CandidateNode {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            summary: String::new(),
+            detail: None,
+            node_type: None,
+            target_vault_key: None,
+            tags: None,
+            confidence: 1.0,
+            action: CandidateAction::Add,
+            source: None,
+            source_type: None,
+            meta: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,6 +211,9 @@ pub fn parse_candidates_json(raw_json: &str) -> Result<Vec<CandidateNode>, Strin
                 tags,
                 confidence,
                 action: raw.action,
+                source: None,
+                source_type: None,
+                meta: None,
             })
         })
         .collect::<Result<Vec<CandidateNode>, String>>()?;

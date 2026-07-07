@@ -271,6 +271,10 @@ fn test_amend_existing_changeset_in_place() -> Result<(), Box<dyn Error>> {
         tags: None,
         confidence: 0.95,
         action: CandidateAction::Add,
+
+        source: None,
+        source_type: None,
+        meta: None,
     }];
 
     let correction_signal = CorrectionSignal::ExplicitPhrase {
@@ -321,6 +325,10 @@ fn test_amend_creates_new_when_no_pending_exists() -> Result<(), Box<dyn Error>>
         tags: None,
         confidence: 0.95,
         action: CandidateAction::Add,
+
+        source: None,
+        source_type: None,
+        meta: None,
     }];
     let correction_signal = CorrectionSignal::ExplicitPhrase {
         phrase: "actually".to_string(),
@@ -382,6 +390,10 @@ fn test_amend_appends_genuinely_new_candidate() -> Result<(), Box<dyn Error>> {
         tags: None,
         confidence: 0.9,
         action: CandidateAction::Add,
+
+        source: None,
+        source_type: None,
+        meta: None,
     }];
 
     let correction_signal = CorrectionSignal::ExplicitPhrase {
@@ -452,6 +464,10 @@ fn test_amend_prevents_multiple_candidates_matching_same_item() -> Result<(), Bo
             tags: None,
             confidence: 0.95,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         },
         CandidateNode {
             title: "Blue Theme".to_string(),
@@ -462,6 +478,10 @@ fn test_amend_prevents_multiple_candidates_matching_same_item() -> Result<(), Bo
             tags: None,
             confidence: 0.95,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         },
     ];
 

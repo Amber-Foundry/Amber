@@ -151,6 +151,10 @@ fn test_jaccard_dedup_classifies_correctly() -> Result<(), Box<dyn Error>> {
             tags: None,
             confidence: 0.9,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         },
         // 2. Divergent details Jaccard check (Merge zone upgraded to Update)
         CandidateNode {
@@ -162,6 +166,10 @@ fn test_jaccard_dedup_classifies_correctly() -> Result<(), Box<dyn Error>> {
             tags: None,
             confidence: 0.95,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         },
         // 3. Completely new concept (Add bucket)
         CandidateNode {
@@ -173,6 +181,10 @@ fn test_jaccard_dedup_classifies_correctly() -> Result<(), Box<dyn Error>> {
             tags: None,
             confidence: 0.9,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         },
         // 4. Delete request matching node_1 (Delete bucket)
         CandidateNode {
@@ -184,6 +196,10 @@ fn test_jaccard_dedup_classifies_correctly() -> Result<(), Box<dyn Error>> {
             tags: None,
             confidence: 0.9,
             action: CandidateAction::Delete,
+
+            source: None,
+            source_type: None,
+            meta: None,
         },
     ];
 
@@ -743,6 +759,10 @@ fn test_cosine_dedup_classifies_correctly() -> Result<(), Box<dyn Error>> {
             tags: None,
             confidence: 0.9,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         },
         // 2. Medium similarity (0.50 - 0.85) -> Merge
         CandidateNode {
@@ -754,6 +774,10 @@ fn test_cosine_dedup_classifies_correctly() -> Result<(), Box<dyn Error>> {
             tags: None,
             confidence: 0.9,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         },
         // 3. Low similarity (< 0.50) -> Add (New)
         CandidateNode {
@@ -765,6 +789,10 @@ fn test_cosine_dedup_classifies_correctly() -> Result<(), Box<dyn Error>> {
             tags: None,
             confidence: 0.9,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         },
     ];
 

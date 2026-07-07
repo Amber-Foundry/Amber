@@ -56,18 +56,25 @@ pub struct PendingChangeset {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-struct ProposedNodeData {
+pub struct ProposedNodeData {
     pub title: String,
     pub summary: String,
     pub detail: Option<String>,
     pub node_type: Option<String>,
     pub target_vault_key: Option<String>,
+    /// Note: For display/round-trip only; do not read as the write-time authority inside insert/update functions. Use the vault_id parameter instead.
     pub vault_id: Option<String>,
     pub tags: Option<Vec<String>>,
     pub confidence: f64,
     pub action: CandidateAction,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub substantial_change: Option<bool>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub source_type: Option<String>,
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -201,6 +208,9 @@ pub fn build_changeset(
                 confidence: candidate.confidence,
                 action: candidate.action,
                 substantial_change: None,
+                source: candidate.source.clone(),
+                source_type: candidate.source_type.clone(),
+                meta: candidate.meta.clone(),
             };
             let proposed_str = serde_json::to_string(&proposed)
                 .map_err(|err| format!("Failed to serialize proposed new data: {err}"))?;
@@ -383,6 +393,9 @@ pub fn build_changeset(
                             confidence: candidate.confidence,
                             action: candidate.action,
                             substantial_change: None,
+                            source: candidate.source.clone(),
+                            source_type: candidate.source_type.clone(),
+                            meta: candidate.meta.clone(),
                         };
                         let proposed_str = serde_json::to_string(&proposed).map_err(|err| {
                             format!("Failed to serialize proposed deletion data: {err}")
@@ -434,6 +447,9 @@ pub fn build_changeset(
                                 confidence: candidate.confidence,
                                 action: candidate.action,
                                 substantial_change: None,
+                                source: candidate.source.clone(),
+                                source_type: candidate.source_type.clone(),
+                                meta: candidate.meta.clone(),
                             };
                             let proposed_str = serde_json::to_string(&proposed).map_err(|err| {
                                 format!("Failed to serialize proposed new data: {err}")
@@ -474,6 +490,9 @@ pub fn build_changeset(
                                 confidence: candidate.confidence,
                                 action: candidate.action,
                                 substantial_change: None,
+                                source: candidate.source.clone(),
+                                source_type: candidate.source_type.clone(),
+                                meta: candidate.meta.clone(),
                             };
 
                             let existing_ser = ExistingNodeData {
@@ -535,6 +554,9 @@ pub fn build_changeset(
                                 confidence: candidate.confidence,
                                 action: candidate.action,
                                 substantial_change: None,
+                                source: candidate.source.clone(),
+                                source_type: candidate.source_type.clone(),
+                                meta: candidate.meta.clone(),
                             };
                             let proposed_str = serde_json::to_string(&proposed).map_err(|err| {
                                 format!("Failed to serialize proposed update data: {err}")
@@ -576,6 +598,9 @@ pub fn build_changeset(
                         confidence: candidate.confidence,
                         action: candidate.action,
                         substantial_change: None,
+                        source: candidate.source.clone(),
+                        source_type: candidate.source_type.clone(),
+                        meta: candidate.meta.clone(),
                     };
                     let proposed_str = serde_json::to_string(&proposed)
                         .map_err(|err| format!("Failed to serialize proposed new data: {err}"))?;
@@ -692,6 +717,10 @@ mod tests {
             tags: Some(vec!["rust".to_string(), "systems".to_string()]),
             confidence: 0.9,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         let changeset = match build_changeset(&conn, &candidates, "session-123", None) {
@@ -756,6 +785,10 @@ mod tests {
             tags: None,
             confidence: 0.95,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         let changeset = match build_changeset(&conn, &candidates, "session-123", Some(&engine)) {
@@ -804,6 +837,10 @@ mod tests {
             tags: None,
             confidence: 0.95,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         let engine = FailingEngine;
@@ -837,6 +874,10 @@ mod tests {
             tags: None,
             confidence: 0.95,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         let changeset = build_changeset(&conn, &candidates, "session-123", Some(&engine))
@@ -878,6 +919,10 @@ mod tests {
             tags: None,
             confidence: 0.95,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         let changeset = match build_changeset(&conn, &candidates, "session-123", None) {
@@ -929,6 +974,10 @@ mod tests {
             tags: None,
             confidence: 0.90,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         let changeset = match build_changeset(&conn, &candidates, "session-123", None) {
@@ -976,6 +1025,10 @@ mod tests {
             tags: None,
             confidence: 0.80,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         let cs_close = match build_changeset(&conn, &candidates_close, "session-123", None) {
@@ -998,6 +1051,10 @@ mod tests {
             tags: None,
             confidence: 0.80,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         let cs_div = match build_changeset(&conn, &candidates_divergent, "session-123", None) {
@@ -1048,6 +1105,10 @@ mod tests {
             tags: None,
             confidence: 0.80,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         let changeset = match build_changeset(&conn, &candidates, "session-123", None) {
@@ -1100,6 +1161,10 @@ mod tests {
             tags: None,
             confidence: 0.90,
             action: CandidateAction::Delete,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         let changeset = match build_changeset(&conn, &candidates, "session-123", None) {
@@ -1129,6 +1194,10 @@ mod tests {
                 tags: None,
                 confidence: 0.25,
                 action: CandidateAction::Add,
+
+                source: None,
+                source_type: None,
+                meta: None,
             },
             // Silently discard delete with no matching node (similarity < 0.5)
             CandidateNode {
@@ -1140,6 +1209,10 @@ mod tests {
                 tags: None,
                 confidence: 0.90,
                 action: CandidateAction::Delete,
+
+                source: None,
+                source_type: None,
+                meta: None,
             },
         ];
 
@@ -1248,6 +1321,10 @@ mod tests {
             tags: None,
             confidence: 0.90,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         // It should match since node_learning is in the active session vault
@@ -1269,6 +1346,10 @@ mod tests {
             tags: None,
             confidence: 0.90,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         // Since node_personal is in vault_personal (out of context), it should NOT match, and instead be proposed as an ADD
@@ -1291,6 +1372,10 @@ mod tests {
             tags: None,
             confidence: 0.8,
             action: CandidateAction::Add,
+
+            source: None,
+            source_type: None,
+            meta: None,
         }];
 
         let cs = build_changeset(&conn, &candidates, "session_empty", None).unwrap();

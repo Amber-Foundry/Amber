@@ -25,15 +25,10 @@ fn resolve_effective_privacy(
     Ok(vault_privacy)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn insert_changeset_node(
     tx: &Transaction,
     vault_id: &str,
-    title: &str,
-    summary: &str,
-    detail: Option<&str>,
-    node_type: &str,
-    tags: Option<&Vec<String>>,
+    proposed: &crate::memory_agent::changeset::ProposedNodeData,
     session_key: Option<&redacted::SessionKey>,
 ) -> Result<String, String> {
     let parent_vault_id: Option<String> = tx
@@ -63,15 +58,23 @@ fn insert_changeset_node(
         resolve_effective_privacy(tx, &resolved_vault_id, sub_vault_privacy.as_deref())?;
     let is_redacted = effective_privacy == "redacted";
 
+    let source = proposed.source.as_deref().unwrap_or("agent_extract");
+    let source_type = proposed.source_type.as_deref().unwrap_or("agent_extract");
+    let meta_str = proposed
+        .meta
+        .as_ref()
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| "{}".to_string());
+
     let encrypted_payload = if is_redacted {
         let key = session_key.ok_or_else(|| "VAULT_LOCKED".to_string())?;
         Some(redacted::encrypt_json(
             &redacted::NodeSecretPayload {
-                title: title.to_string(),
-                summary: summary.to_string(),
-                detail: detail.map(String::from),
-                source: Some("agent_extract".to_string()),
-                source_type: Some("agent_extract".to_string()),
+                title: proposed.title.to_string(),
+                summary: proposed.summary.to_string(),
+                detail: proposed.detail.clone(),
+                source: Some(source.to_string()),
+                source_type: Some(source_type.to_string()),
             },
             key,
         )?)
@@ -82,13 +85,13 @@ fn insert_changeset_node(
     let stored_title = if is_redacted {
         "[REDACTED]".to_string()
     } else {
-        title.to_string()
+        proposed.title.to_string()
     };
 
     let stored_summary = if is_redacted {
         "[Metadata Locked]".to_string()
     } else {
-        summary.to_string()
+        proposed.summary.to_string()
     };
 
     let node_id = crate::generate_id(tx, "node")?;
@@ -98,22 +101,29 @@ fn insert_changeset_node(
         "INSERT INTO nodes (
             id, vault_id, sub_vault_id, node_type, title, summary, detail, source, source_type,
             privacy_tier, priority, meta, encrypted_payload
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'agent_extract', 'agent_extract', NULL, ?8, '{}', ?9);",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12);",
         params![
             node_id,
             resolved_vault_id,
             resolved_sub_vault_id,
-            node_type,
+            proposed.node_type.as_deref().unwrap_or("concept"),
             stored_title,
             stored_summary,
-            if is_redacted { None } else { detail },
+            if is_redacted {
+                None
+            } else {
+                proposed.detail.as_deref()
+            },
+            source,
+            source_type,
             priority_json,
+            meta_str,
             encrypted_payload
         ],
     )
     .map_err(|err| format!("Failed to insert changeset node: {err}"))?;
 
-    if let Some(tag_list) = tags {
+    if let Some(tag_list) = &proposed.tags {
         for tag_name in tag_list {
             let clean_name = tag_name.trim();
             if clean_name.is_empty() {
@@ -149,16 +159,11 @@ fn insert_changeset_node(
     Ok(node_id)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn update_changeset_node(
     tx: &Transaction,
     node_id: &str,
     vault_id: &str,
-    title: &str,
-    summary: &str,
-    detail: Option<&str>,
-    node_type: &str,
-    tags: Option<&Vec<String>>,
+    proposed: &crate::memory_agent::changeset::ProposedNodeData,
     session_key: Option<&redacted::SessionKey>,
 ) -> Result<(), String> {
     let parent_vault_id: Option<String> = tx
@@ -207,15 +212,18 @@ fn update_changeset_node(
         );
     }
 
+    let source = proposed.source.as_deref().unwrap_or("agent_extract");
+    let source_type = proposed.source_type.as_deref().unwrap_or("agent_extract");
+
     let encrypted_payload = if is_redacted {
         let key = session_key.ok_or_else(|| "VAULT_LOCKED".to_string())?;
         Some(redacted::encrypt_json(
             &redacted::NodeSecretPayload {
-                title: title.to_string(),
-                summary: summary.to_string(),
-                detail: detail.map(String::from),
-                source: Some("agent_extract".to_string()),
-                source_type: Some("agent_extract".to_string()),
+                title: proposed.title.to_string(),
+                summary: proposed.summary.to_string(),
+                detail: proposed.detail.clone(),
+                source: Some(source.to_string()),
+                source_type: Some(source_type.to_string()),
             },
             key,
         )?)
@@ -226,13 +234,13 @@ fn update_changeset_node(
     let stored_title = if is_redacted {
         "[REDACTED]".to_string()
     } else {
-        title.to_string()
+        proposed.title.to_string()
     };
 
     let stored_summary = if is_redacted {
         "[Metadata Locked]".to_string()
     } else {
-        summary.to_string()
+        proposed.summary.to_string()
     };
 
     let rows_affected = tx
@@ -252,10 +260,14 @@ fn update_changeset_node(
                 node_id,
                 resolved_vault_id,
                 resolved_sub_vault_id,
-                node_type,
+                proposed.node_type.as_deref().unwrap_or("concept"),
                 stored_title,
                 stored_summary,
-                if is_redacted { None } else { detail },
+                if is_redacted {
+                    None
+                } else {
+                    proposed.detail.as_deref()
+                },
                 encrypted_payload
             ],
         )
@@ -271,7 +283,7 @@ fn update_changeset_node(
     tx.execute("DELETE FROM node_tags WHERE node_id = ?1;", [node_id])
         .map_err(|err| format!("Failed clearing node tags: {err}"))?;
 
-    if let Some(tag_list) = tags {
+    if let Some(tag_list) = &proposed.tags {
         for tag_name in tag_list {
             let clean_name = tag_name.trim();
             if clean_name.is_empty() {
@@ -604,18 +616,34 @@ pub fn commit_changeset_transaction(
                     current_tags
                 };
 
+                let source = parsed_props
+                    .get("source")
+                    .and_then(|v| v.as_str().map(String::from));
+                let source_type = parsed_props
+                    .get("sourceType")
+                    .or_else(|| parsed_props.get("source_type"))
+                    .and_then(|v| v.as_str().map(String::from));
+                let meta = parsed_props.get("meta").cloned();
+
                 match item_type.as_str() {
                     "add" => {
-                        let _new_node_id = insert_changeset_node(
-                            &tx,
-                            vault_id,
-                            title,
-                            summary,
-                            detail,
-                            node_type,
-                            tags.as_ref(),
-                            session_key.as_ref(),
-                        )?;
+                        let proposed = crate::memory_agent::changeset::ProposedNodeData {
+                            title: title.to_string(),
+                            summary: summary.to_string(),
+                            detail: detail.map(String::from),
+                            node_type: Some(node_type.to_string()),
+                            target_vault_key: None,
+                            vault_id: Some(vault_id.to_string()),
+                            tags: tags.clone(),
+                            confidence: 1.0,
+                            action: crate::memory_agent::parser::CandidateAction::Add,
+                            substantial_change: None,
+                            source,
+                            source_type,
+                            meta,
+                        };
+                        let _new_node_id =
+                            insert_changeset_node(&tx, vault_id, &proposed, session_key.as_ref())?;
                     }
                     "update" => {
                         let nid = target_node_id.as_ref().ok_or_else(|| {
@@ -624,17 +652,22 @@ pub fn commit_changeset_transaction(
                                 item_action.item_id
                             )
                         })?;
-                        update_changeset_node(
-                            &tx,
-                            nid,
-                            vault_id,
-                            title,
-                            summary,
-                            detail,
-                            node_type,
-                            tags.as_ref(),
-                            session_key.as_ref(),
-                        )?;
+                        let proposed = crate::memory_agent::changeset::ProposedNodeData {
+                            title: title.to_string(),
+                            summary: summary.to_string(),
+                            detail: detail.map(String::from),
+                            node_type: Some(node_type.to_string()),
+                            target_vault_key: None,
+                            vault_id: Some(vault_id.to_string()),
+                            tags: tags.clone(),
+                            confidence: 1.0,
+                            action: crate::memory_agent::parser::CandidateAction::Update,
+                            substantial_change: None,
+                            source,
+                            source_type,
+                            meta,
+                        };
+                        update_changeset_node(&tx, nid, vault_id, &proposed, session_key.as_ref())?;
                     }
                     "merge" => {
                         let mid = merge_with_id.as_ref().ok_or_else(|| {
@@ -706,19 +739,30 @@ pub fn commit_changeset_transaction(
                         }
                         let merged_tags_vec: Vec<String> = merged_tags.into_iter().collect();
 
+                        let proposed = crate::memory_agent::changeset::ProposedNodeData {
+                            title: ex_title.clone(),
+                            summary: ex_summary.clone(),
+                            detail: if merged_detail.is_empty() {
+                                None
+                            } else {
+                                Some(merged_detail.clone())
+                            },
+                            node_type: Some(ex_node_type.clone()),
+                            target_vault_key: None,
+                            vault_id: Some(ex_vault_id.clone()),
+                            tags: Some(merged_tags_vec.clone()),
+                            confidence: 1.0,
+                            action: crate::memory_agent::parser::CandidateAction::Update,
+                            substantial_change: None,
+                            source: None,
+                            source_type: None,
+                            meta: None,
+                        };
                         update_changeset_node(
                             &tx,
                             mid,
                             &ex_vault_id,
-                            &ex_title,
-                            &ex_summary,
-                            if merged_detail.is_empty() {
-                                None
-                            } else {
-                                Some(merged_detail.as_str())
-                            },
-                            &ex_node_type,
-                            Some(&merged_tags_vec),
+                            &proposed,
                             session_key.as_ref(),
                         )?;
                     }
@@ -1993,18 +2037,23 @@ mod tests {
 
         let tx = conn.transaction()?;
 
+        let proposed = crate::memory_agent::changeset::ProposedNodeData {
+            title: "New Title".to_string(),
+            summary: "New Summary".to_string(),
+            detail: Some("New Detail".to_string()),
+            node_type: Some("concept".to_string()),
+            target_vault_key: None,
+            vault_id: Some("vault_open".to_string()),
+            tags: None,
+            confidence: 1.0,
+            action: crate::memory_agent::parser::CandidateAction::Update,
+            substantial_change: None,
+            source: None,
+            source_type: None,
+            meta: None,
+        };
         // Call update_changeset_node to move node_encrypted to vault_open without session key
-        let res = update_changeset_node(
-            &tx,
-            "node_encrypted",
-            "vault_open",
-            "New Title",
-            "New Summary",
-            Some("New Detail"),
-            "concept",
-            None,
-            None,
-        );
+        let res = update_changeset_node(&tx, "node_encrypted", "vault_open", &proposed, None);
 
         let err = res.err().ok_or("Expected error from guard")?;
         assert!(err.contains("Unlock redacted content with your master password before changing the node to a non-redacted tier."));
