@@ -249,22 +249,95 @@ impl PdfRasterizer {
             ))
         })?;
 
+        let height_pts = page.height().value;
         let mut raw_blocks = Vec::new();
 
-        if let Ok(text_page) = page.text() {
-            let full_text = text_page.all();
-            let page_width = page.width().value;
-            let mut y_offset = 20.0;
-            for line in full_text.lines() {
-                if line.trim().is_empty() {
-                    y_offset += 15.0;
+        // Collect objects upfront to avoid the known pdfium-render bug where
+        // chars_for_object() resets the page's object iterator mid-loop.
+        let objects: Vec<_> = page.objects().iter().collect();
+        let text_page = page.text().ok();
+
+        for object in &objects {
+            if let Some(text_object) = object.as_text_object() {
+                let font_size = text_object.unscaled_font_size().value;
+                let bounds = match text_object.bounds() {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+
+                // Reconstruct text with proper spacing from character positions.
+                // text_object.text() returns concatenated glyphs without spaces
+                // on PDFs that don't embed space characters. Instead, we use
+                // chars_for_object to detect gaps between character bounding boxes.
+                let reconstructed = if let Some(ref tp) = text_page {
+                    match tp.chars_for_object(text_object) {
+                        Ok(chars) => {
+                            let mut result = String::new();
+                            let mut prev_right: Option<f32> = None;
+                            for c in chars.iter() {
+                                if let Ok(char_bounds) = c.loose_bounds() {
+                                    let char_left = char_bounds.left().value;
+                                    let char_right = char_bounds.right().value;
+                                    let char_width = (char_right - char_left).max(0.1);
+                                    if let Some(prev) = prev_right {
+                                        let gap = char_left - prev;
+                                        if gap > 0.18 * char_width {
+                                            result.push(' ');
+                                        }
+                                    }
+                                    if let Some(ch) = c.unicode_char() {
+                                        result.push(ch);
+                                    }
+                                    prev_right = Some(char_right);
+                                } else if let Some(ch) = c.unicode_char() {
+                                    result.push(ch);
+                                }
+                            }
+                            result
+                        }
+                        Err(_) => text_object.text(),
+                    }
+                } else {
+                    text_object.text()
+                };
+
+                if reconstructed.trim().is_empty() {
                     continue;
                 }
-                let bbox = crate::ocr::engine::Rect::new(20.0, y_offset, page_width - 40.0, 15.0);
+
+                let pdf_left = bounds.left().value;
+                let pdf_bottom = bounds.bottom().value;
+                let width = bounds.width().value;
+                let height = bounds.height().value;
+                let screen_y = (height_pts - (pdf_bottom + height)).max(0.0);
+
+                let bbox = crate::ocr::engine::Rect::new(pdf_left, screen_y, width, height);
                 raw_blocks.push(
-                    crate::ingest::layout::RawLayoutBlock::new(line, bbox).with_font_size(12.0),
+                    crate::ingest::layout::RawLayoutBlock::new(reconstructed, bbox)
+                        .with_font_size(font_size),
                 );
-                y_offset += 20.0;
+            }
+        }
+
+        // Fallback: if text object iteration returned no blocks but a digital
+        // text layer exists, use page.text().all() with synthetic coordinates.
+        if raw_blocks.is_empty() {
+            if let Some(ref tp) = text_page {
+                let full_text = tp.all();
+                let page_width = page.width().value;
+                let mut y_offset = 20.0;
+                for line in full_text.lines() {
+                    if line.trim().is_empty() {
+                        y_offset += 15.0;
+                        continue;
+                    }
+                    let bbox =
+                        crate::ocr::engine::Rect::new(20.0, y_offset, page_width - 40.0, 15.0);
+                    raw_blocks.push(
+                        crate::ingest::layout::RawLayoutBlock::new(line, bbox).with_font_size(12.0),
+                    );
+                    y_offset += 20.0;
+                }
             }
         }
 

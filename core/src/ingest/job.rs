@@ -11,6 +11,23 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::mpsc;
 
+/// Which extraction pipeline a page should be routed through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractionPath {
+    /// Digital text extraction via pdfium character-level API.
+    Digital,
+    /// OCR via BundledOcrEngine (rasterize → detect → recognize).
+    Ocr,
+}
+
+/// Determines the extraction path for a given page classification.
+pub fn extraction_path_for_page(page_type: PdfPageType) -> ExtractionPath {
+    match page_type {
+        PdfPageType::Digital => ExtractionPath::Digital,
+        PdfPageType::Ocr | PdfPageType::Hybrid => ExtractionPath::Ocr,
+    }
+}
+
 /// Configuration options for an import job execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestJobConfig {
@@ -154,13 +171,13 @@ impl IngestJobEngine {
                 });
             }
 
-            let layout_blocks = match p.page_type {
-                PdfPageType::Digital | PdfPageType::Hybrid => {
+            let layout_blocks = match extraction_path_for_page(p.page_type) {
+                ExtractionPath::Digital => {
                     let raw_blocks = rasterizer.extract_digital_blocks(&pdf_bytes, i)?;
                     analyze_layout(raw_blocks, p.width_pts, p.height_pts)
                 }
-                PdfPageType::Ocr => {
-                    // Lazily initialize BundledOcrEngine on first OCR page
+                ExtractionPath::Ocr => {
+                    // Lazily initialize BundledOcrEngine on first OCR/Hybrid page
                     if cached_ocr_engine.is_none() {
                         cached_ocr_engine = Some(BundledOcrEngine::new()?);
                     }
@@ -322,6 +339,7 @@ impl IngestJobEngine {
         chunk: &ImportChunkSpec,
         source_name: &str,
         reason: Option<&str>,
+        target_vault_key: Option<String>,
     ) -> CandidateNode {
         let title = chunk
             .heading_context
@@ -356,7 +374,7 @@ impl IngestJobEngine {
             summary,
             detail,
             node_type: Some("fact".to_string()),
-            target_vault_key: Some("learning".to_string()),
+            target_vault_key,
             tags: Some(vec!["pdf_import".to_string()]),
             confidence: 0.5,
             action: CandidateAction::Add,
@@ -371,15 +389,20 @@ impl IngestJobEngine {
         source_name: &str,
         config: &IngestJobConfig,
     ) -> Vec<CandidateNode> {
+        let resolved_vault = config
+            .allowed_vault_keys
+            .as_ref()
+            .and_then(|keys| keys.first())
+            .cloned()
+            .or_else(|| Some("learning".to_string()));
+
         if crate::ingest::security::scan_prompt_injection(&chunk.text) {
-            let mut fallback_node =
-                Self::run_fallback_extraction(chunk, source_name, Some("injection_flagged"));
-            if let Some(ref mut meta) = fallback_node.meta {
-                if let Some(map) = meta.as_object_mut() {
-                    map.insert("injection_flagged".to_string(), serde_json::json!(true));
-                }
-            }
-            return vec![fallback_node];
+            return vec![Self::run_fallback_extraction(
+                chunk,
+                source_name,
+                Some("injection_flagged"),
+                resolved_vault,
+            )];
         }
 
         let (provider, endpoint, model) = match (&config.provider, &config.model) {
@@ -389,6 +412,7 @@ impl IngestJobEngine {
                     chunk,
                     source_name,
                     Some("no_llm_configured"),
+                    resolved_vault,
                 )]
             }
         };
@@ -409,6 +433,7 @@ impl IngestJobEngine {
                     chunk,
                     source_name,
                     Some("unsupported_provider"),
+                    resolved_vault.clone(),
                 )];
             }
         };
@@ -458,6 +483,7 @@ impl IngestJobEngine {
                     chunk,
                     source_name,
                     Some("llm_call_failed"),
+                    resolved_vault,
                 )];
             }
         };
@@ -485,6 +511,7 @@ impl IngestJobEngine {
                     chunk,
                     source_name,
                     Some("llm_parse_failed"),
+                    resolved_vault,
                 )]
             }
         }
@@ -710,5 +737,64 @@ mod tests {
         assert!(!result.assembled_markdown.is_empty());
         assert!(!result.chunks.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn test_extraction_path_digital() {
+        assert_eq!(
+            extraction_path_for_page(PdfPageType::Digital),
+            ExtractionPath::Digital
+        );
+    }
+
+    #[test]
+    fn test_extraction_path_ocr() {
+        assert_eq!(
+            extraction_path_for_page(PdfPageType::Ocr),
+            ExtractionPath::Ocr
+        );
+    }
+
+    #[test]
+    fn test_extraction_path_hybrid_routes_to_ocr() {
+        assert_eq!(
+            extraction_path_for_page(PdfPageType::Hybrid),
+            ExtractionPath::Ocr
+        );
+    }
+
+    #[test]
+    fn test_fallback_extraction_uses_configured_vault_key() {
+        let chunk = ImportChunkSpec {
+            chunk_index: 0,
+            text: "Some document text for testing.".to_string(),
+            token_count: 6,
+            heading_context: None,
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+        };
+        let node = IngestJobEngine::run_fallback_extraction(
+            &chunk,
+            "test.pdf",
+            Some("no_llm_configured"),
+            Some("finance".to_string()),
+        );
+        assert_eq!(node.target_vault_key, Some("finance".to_string()));
+    }
+
+    #[test]
+    fn test_fallback_extraction_defaults_to_none_when_no_vault() {
+        let chunk = ImportChunkSpec {
+            chunk_index: 0,
+            text: "Some document text for testing.".to_string(),
+            token_count: 6,
+            heading_context: None,
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+        };
+        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+        assert_eq!(node.target_vault_key, None);
     }
 }
