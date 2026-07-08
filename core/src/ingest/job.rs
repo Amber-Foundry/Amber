@@ -23,8 +23,8 @@ pub enum ExtractionPath {
 /// Determines the extraction path for a given page classification.
 pub fn extraction_path_for_page(page_type: PdfPageType) -> ExtractionPath {
     match page_type {
-        PdfPageType::Digital => ExtractionPath::Digital,
-        PdfPageType::Ocr | PdfPageType::Hybrid => ExtractionPath::Ocr,
+        PdfPageType::Digital | PdfPageType::Hybrid => ExtractionPath::Digital,
+        PdfPageType::Ocr => ExtractionPath::Ocr,
     }
 }
 
@@ -191,6 +191,8 @@ impl IngestJobEngine {
                     };
 
                     let page_img = rasterizer.render_page(&pdf_bytes, i, &rasterizer_config)?;
+                    let (image_width, image_height) =
+                        (page_img.width() as f32, page_img.height() as f32);
                     let ocr_output = ocr_engine.recognize(&page_img)?;
 
                     total_ocr_confidence_sum += ocr_output.avg_confidence;
@@ -202,7 +204,7 @@ impl IngestJobEngine {
                         .map(|b| RawLayoutBlock::new(b.text, b.bbox).with_confidence(b.confidence))
                         .collect();
 
-                    analyze_layout(raw_blocks, p.width_pts, p.height_pts)
+                    analyze_layout(raw_blocks, image_width, image_height)
                 }
             };
 
@@ -756,10 +758,10 @@ mod tests {
     }
 
     #[test]
-    fn test_extraction_path_hybrid_routes_to_ocr() {
+    fn test_extraction_path_hybrid_prefers_digital_text() {
         assert_eq!(
             extraction_path_for_page(PdfPageType::Hybrid),
-            ExtractionPath::Ocr
+            ExtractionPath::Digital
         );
     }
 
@@ -796,5 +798,27 @@ mod tests {
         };
         let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
         assert_eq!(node.target_vault_key, None);
+    }
+
+    #[test]
+    fn test_extract_chunk_candidates_defaults_to_learning_vault() {
+        let chunk = ImportChunkSpec {
+            chunk_index: 0,
+            text: "This chunk goes to fallback because provider is None.".to_string(),
+            token_count: 9,
+            heading_context: None,
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+        };
+        let config = IngestJobConfig {
+            provider: None, // Forces the 'no_llm_configured' fallback path
+            allowed_vault_keys: None,
+            ..Default::default()
+        };
+
+        let nodes = IngestJobEngine::extract_chunk_candidates(&chunk, "test.pdf", &config);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].target_vault_key, Some("learning".to_string()));
     }
 }

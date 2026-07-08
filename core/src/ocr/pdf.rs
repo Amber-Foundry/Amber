@@ -259,17 +259,19 @@ impl PdfRasterizer {
 
         for object in &objects {
             if let Some(text_object) = object.as_text_object() {
+                let object_text = text_object.text();
                 let font_size = text_object.unscaled_font_size().value;
                 let bounds = match text_object.bounds() {
                     Ok(b) => b,
                     Err(_) => continue,
                 };
 
-                // Reconstruct text with proper spacing from character positions.
-                // text_object.text() returns concatenated glyphs without spaces
-                // on PDFs that don't embed space characters. Instead, we use
-                // chars_for_object to detect gaps between character bounding boxes.
-                let reconstructed = if let Some(ref tp) = text_page {
+                // Prefer pdfium's object text when it already preserves spaces.
+                // Some PDFs expose character boxes that are too tight for reliable
+                // gap-based word reconstruction even though object text is usable.
+                let reconstructed = if object_text.chars().any(char::is_whitespace) {
+                    object_text
+                } else if let Some(ref tp) = text_page {
                     match tp.chars_for_object(text_object) {
                         Ok(chars) => {
                             let mut result = String::new();
@@ -295,10 +297,10 @@ impl PdfRasterizer {
                             }
                             result
                         }
-                        Err(_) => text_object.text(),
+                        Err(_) => object_text,
                     }
                 } else {
-                    text_object.text()
+                    object_text
                 };
 
                 if reconstructed.trim().is_empty() {
