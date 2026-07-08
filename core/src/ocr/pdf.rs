@@ -1,5 +1,6 @@
 use crate::ocr::engine::OcrError;
 use crate::ocr::ocr_models_dir;
+use crate::{ingest::layout::RawLayoutBlock, ocr::engine::Rect};
 use image::DynamicImage;
 use pdfium_render::prelude::*;
 use std::fs::File;
@@ -235,7 +236,7 @@ impl PdfRasterizer {
         &self,
         pdf_bytes: &[u8],
         page_index: usize,
-    ) -> Result<Vec<crate::ingest::layout::RawLayoutBlock>, OcrError> {
+    ) -> Result<Vec<RawLayoutBlock>, OcrError> {
         let document = self
             .pdfium
             .load_pdf_from_byte_slice(pdf_bytes, None)
@@ -287,11 +288,11 @@ impl PdfRasterizer {
                                             result.push(' ');
                                         }
                                     }
-                                    if let Some(ch) = c.unicode_char() {
+                                    if let Some(ch) = printable_pdf_char(c.unicode_char()) {
                                         result.push(ch);
                                     }
                                     prev_right = Some(char_right);
-                                } else if let Some(ch) = c.unicode_char() {
+                                } else if let Some(ch) = printable_pdf_char(c.unicode_char()) {
                                     result.push(ch);
                                 }
                             }
@@ -303,6 +304,7 @@ impl PdfRasterizer {
                     object_text
                 };
 
+                let reconstructed = sanitize_pdf_text(&reconstructed);
                 if reconstructed.trim().is_empty() {
                     continue;
                 }
@@ -313,11 +315,8 @@ impl PdfRasterizer {
                 let height = bounds.height().value;
                 let screen_y = (height_pts - (pdf_bottom + height)).max(0.0);
 
-                let bbox = crate::ocr::engine::Rect::new(pdf_left, screen_y, width, height);
-                raw_blocks.push(
-                    crate::ingest::layout::RawLayoutBlock::new(reconstructed, bbox)
-                        .with_font_size(font_size),
-                );
+                let bbox = Rect::new(pdf_left, screen_y, width, height);
+                raw_blocks.push(RawLayoutBlock::new(reconstructed, bbox).with_font_size(font_size));
             }
         }
 
@@ -333,18 +332,210 @@ impl PdfRasterizer {
                         y_offset += 15.0;
                         continue;
                     }
-                    let bbox =
-                        crate::ocr::engine::Rect::new(20.0, y_offset, page_width - 40.0, 15.0);
-                    raw_blocks.push(
-                        crate::ingest::layout::RawLayoutBlock::new(line, bbox).with_font_size(12.0),
-                    );
+                    let bbox = Rect::new(20.0, y_offset, page_width - 40.0, 15.0);
+                    raw_blocks.push(RawLayoutBlock::new(line, bbox).with_font_size(12.0));
                     y_offset += 20.0;
                 }
             }
         }
 
-        Ok(raw_blocks)
+        Ok(merge_text_objects_on_visual_lines(
+            raw_blocks,
+            page.width().value,
+        ))
     }
+}
+
+fn printable_pdf_char(ch: Option<char>) -> Option<char> {
+    let ch = ch?;
+    if ch == '\t' || ch == '\n' || ch == '\r' || !ch.is_control() {
+        Some(ch)
+    } else {
+        None
+    }
+}
+
+fn sanitize_pdf_text(text: &str) -> String {
+    text.chars()
+        .filter(|&ch| ch == '\t' || ch == '\n' || ch == '\r' || !ch.is_control())
+        .collect()
+}
+
+fn merge_text_objects_on_visual_lines(
+    mut blocks: Vec<RawLayoutBlock>,
+    page_width: f32,
+) -> Vec<RawLayoutBlock> {
+    if blocks.len() <= 1 {
+        return blocks;
+    }
+
+    blocks.sort_by(|a, b| {
+        a.bbox
+            .y
+            .partial_cmp(&b.bbox.y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.bbox
+                    .x
+                    .partial_cmp(&b.bbox.x)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    #[derive(Debug)]
+    struct Line {
+        center_y: f32,
+        max_height: f32,
+        blocks: Vec<RawLayoutBlock>,
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    for block in blocks {
+        let center_y = block.bbox.y + (block.bbox.height / 2.0);
+        if let Some(line) = lines.iter_mut().find(|line| {
+            let tolerance = (line.max_height.min(block.bbox.height) * 0.6).max(2.0);
+            (line.center_y - center_y).abs() <= tolerance
+        }) {
+            let line_len = line.blocks.len() as f32;
+            line.center_y = ((line.center_y * line_len) + center_y) / (line_len + 1.0);
+            line.max_height = line.max_height.max(block.bbox.height);
+            line.blocks.push(block);
+        } else {
+            lines.push(Line {
+                center_y,
+                max_height: block.bbox.height,
+                blocks: vec![block],
+            });
+        }
+    }
+
+    lines.sort_by(|a, b| {
+        a.center_y
+            .partial_cmp(&b.center_y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    lines
+        .into_iter()
+        .flat_map(|mut line| {
+            line.blocks.sort_by(|a, b| {
+                a.bbox
+                    .x
+                    .partial_cmp(&b.bbox.x)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            merge_line_blocks(line.blocks, page_width)
+        })
+        .collect()
+}
+
+fn merge_line_blocks(blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<RawLayoutBlock> {
+    let mut merged_blocks = Vec::new();
+    let mut current_run = Vec::new();
+    let mut prev_right: Option<f32> = None;
+    let mut prev_char_width: Option<f32> = None;
+
+    for block in blocks {
+        let text = block.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+
+        let char_width = average_char_width(text, block.bbox.width);
+        if let Some(prev) = prev_right {
+            let gap = block.bbox.x - prev;
+            let crosses_midpoint = prev < page_width / 2.0
+                && block.bbox.x + (block.bbox.width / 2.0) > page_width / 2.0;
+            let column_split_threshold = prev_char_width
+                .map(|prev_width| prev_width.min(char_width))
+                .unwrap_or(char_width)
+                .mul_add(8.0, 0.0)
+                .max(24.0);
+            if (gap > column_split_threshold || (crosses_midpoint && gap > 4.0))
+                && !current_run.is_empty()
+            {
+                if let Some(merged) = merge_nearby_line_run(std::mem::take(&mut current_run)) {
+                    merged_blocks.push(merged);
+                }
+            }
+        }
+
+        prev_right = Some(block.bbox.x + block.bbox.width);
+        prev_char_width = Some(char_width);
+        current_run.push(block);
+    }
+
+    if let Some(merged) = merge_nearby_line_run(current_run) {
+        merged_blocks.push(merged);
+    }
+
+    merged_blocks
+}
+
+fn merge_nearby_line_run(blocks: Vec<RawLayoutBlock>) -> Option<RawLayoutBlock> {
+    let mut merged_text = String::new();
+    let mut prev_right: Option<f32> = None;
+    let mut prev_char_width: Option<f32> = None;
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_right = f32::MIN;
+    let mut max_bottom = f32::MIN;
+    let mut font_sum = 0.0f32;
+    let mut font_count = 0usize;
+
+    for block in blocks {
+        let text = block.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+
+        let char_width = average_char_width(text, block.bbox.width);
+        if let Some(prev) = prev_right {
+            let gap = block.bbox.x - prev;
+            let threshold = prev_char_width
+                .map(|prev_width| prev_width.min(char_width))
+                .unwrap_or(char_width)
+                .mul_add(0.5, 0.0)
+                .max(1.0);
+            if gap > threshold
+                && !merged_text.ends_with(char::is_whitespace)
+                && !text.starts_with(char::is_whitespace)
+            {
+                merged_text.push(' ');
+            }
+        }
+        merged_text.push_str(text);
+
+        min_x = min_x.min(block.bbox.x);
+        min_y = min_y.min(block.bbox.y);
+        max_right = max_right.max(block.bbox.x + block.bbox.width);
+        max_bottom = max_bottom.max(block.bbox.y + block.bbox.height);
+        prev_right = Some(prev_right.map_or(block.bbox.x + block.bbox.width, |right| {
+            right.max(block.bbox.x + block.bbox.width)
+        }));
+        prev_char_width = Some(char_width);
+
+        if let Some(font_size) = block.font_size {
+            font_sum += font_size;
+            font_count += 1;
+        }
+    }
+
+    if merged_text.trim().is_empty() {
+        return None;
+    }
+
+    let bbox = Rect::new(min_x, min_y, max_right - min_x, max_bottom - min_y);
+    let mut merged = RawLayoutBlock::new(merged_text, bbox);
+    if font_count > 0 {
+        merged.font_size = Some(font_sum / font_count as f32);
+    }
+    Some(merged)
+}
+
+fn average_char_width(text: &str, width: f32) -> f32 {
+    let char_count = text.chars().filter(|ch| !ch.is_whitespace()).count().max(1) as f32;
+    (width / char_count).max(0.1)
 }
 
 #[cfg(test)]
@@ -362,5 +553,40 @@ mod tests {
     fn test_pdf_rasterizer_config_default() {
         let config = PdfRasterizerConfig::default();
         assert_eq!(config.dpi, 300);
+    }
+
+    #[test]
+    fn test_sanitize_pdf_text_filters_control_chars() {
+        assert_eq!(sanitize_pdf_text("Sen\u{0002}ate"), "Senate");
+    }
+
+    #[test]
+    fn test_merge_text_objects_on_visual_lines_joins_word_fragments() {
+        let blocks = vec![
+            RawLayoutBlock::new("Mem", Rect::new(10.0, 20.0, 18.0, 8.0)).with_font_size(8.0),
+            RawLayoutBlock::new("bers", Rect::new(28.2, 20.1, 24.0, 8.0)).with_font_size(8.0),
+            RawLayoutBlock::new("chosen", Rect::new(70.0, 20.0, 36.0, 8.0)).with_font_size(8.0),
+        ];
+
+        let merged = merge_text_objects_on_visual_lines(blocks, 300.0);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "Members chosen");
+    }
+
+    #[test]
+    fn test_merge_text_objects_on_visual_lines_keeps_columns_separate() {
+        let blocks = vec![
+            RawLayoutBlock::new("Left column", Rect::new(10.0, 20.0, 60.0, 8.0))
+                .with_font_size(8.0),
+            RawLayoutBlock::new("Right column", Rect::new(220.0, 20.0, 70.0, 8.0))
+                .with_font_size(8.0),
+        ];
+
+        let merged = merge_text_objects_on_visual_lines(blocks, 300.0);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].text, "Left column");
+        assert_eq!(merged[1].text, "Right column");
     }
 }

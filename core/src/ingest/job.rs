@@ -3,7 +3,7 @@ use crate::ingest::layout::{analyze_layout, RawLayoutBlock};
 use crate::ingest::markdown::{assemble_markdown_blocks, join_ingest_blocks, IngestBlock};
 use crate::memory_agent::parser::{CandidateAction, CandidateNode};
 use crate::ocr::bundled::BundledOcrEngine;
-use crate::ocr::engine::{OcrEngine, OcrError};
+use crate::ocr::engine::{OcrEngine, OcrError, Rect};
 use crate::ocr::pdf::{PdfPageType, PdfRasterizer, PdfRasterizerConfig};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -23,8 +23,8 @@ pub enum ExtractionPath {
 /// Determines the extraction path for a given page classification.
 pub fn extraction_path_for_page(page_type: PdfPageType) -> ExtractionPath {
     match page_type {
-        PdfPageType::Digital | PdfPageType::Hybrid => ExtractionPath::Digital,
-        PdfPageType::Ocr => ExtractionPath::Ocr,
+        PdfPageType::Digital => ExtractionPath::Digital,
+        PdfPageType::Ocr | PdfPageType::Hybrid => ExtractionPath::Ocr,
     }
 }
 
@@ -171,38 +171,44 @@ impl IngestJobEngine {
                 });
             }
 
-            let layout_blocks = match extraction_path_for_page(p.page_type) {
-                ExtractionPath::Digital => {
+            let layout_blocks = match p.page_type {
+                PdfPageType::Digital => {
                     let raw_blocks = rasterizer.extract_digital_blocks(&pdf_bytes, i)?;
                     analyze_layout(raw_blocks, p.width_pts, p.height_pts)
                 }
-                ExtractionPath::Ocr => {
-                    // Lazily initialize BundledOcrEngine on first OCR/Hybrid page
-                    if cached_ocr_engine.is_none() {
-                        cached_ocr_engine = Some(BundledOcrEngine::new()?);
-                    }
-                    let ocr_engine = match cached_ocr_engine.as_mut() {
-                        Some(e) => e,
-                        None => {
-                            return Err(OcrError::InferenceFailed(
-                                "Failed initializing OCR engine session".to_string(),
-                            ));
-                        }
-                    };
-
-                    let page_img = rasterizer.render_page(&pdf_bytes, i, &rasterizer_config)?;
-                    let (image_width, image_height) =
-                        (page_img.width() as f32, page_img.height() as f32);
-                    let ocr_output = ocr_engine.recognize(&page_img)?;
-
-                    total_ocr_confidence_sum += ocr_output.avg_confidence;
+                PdfPageType::Ocr => {
+                    let (raw_blocks, image_width, image_height, confidence) =
+                        Self::recognize_ocr_page(
+                            &rasterizer,
+                            &pdf_bytes,
+                            i,
+                            &rasterizer_config,
+                            &mut cached_ocr_engine,
+                        )?;
+                    total_ocr_confidence_sum += confidence;
                     ocr_pass_count += 1;
 
-                    let raw_blocks: Vec<RawLayoutBlock> = ocr_output
-                        .blocks
-                        .into_iter()
-                        .map(|b| RawLayoutBlock::new(b.text, b.bbox).with_confidence(b.confidence))
-                        .collect();
+                    analyze_layout(raw_blocks, image_width, image_height)
+                }
+                PdfPageType::Hybrid => {
+                    let (ocr_blocks, image_width, image_height, confidence) =
+                        Self::recognize_ocr_page(
+                            &rasterizer,
+                            &pdf_bytes,
+                            i,
+                            &rasterizer_config,
+                            &mut cached_ocr_engine,
+                        )?;
+                    total_ocr_confidence_sum += confidence;
+                    ocr_pass_count += 1;
+
+                    let digital_blocks = rasterizer.extract_digital_blocks(&pdf_bytes, i)?;
+                    let scaled_digital_blocks = scale_blocks_to_page(
+                        digital_blocks,
+                        image_width / p.width_pts.max(1.0),
+                        image_height / p.height_pts.max(1.0),
+                    );
+                    let raw_blocks = merge_hybrid_raw_blocks(scaled_digital_blocks, ocr_blocks);
 
                     analyze_layout(raw_blocks, image_width, image_height)
                 }
@@ -335,6 +341,33 @@ impl IngestJobEngine {
             tables_detected_unpreserved,
             candidates,
         })
+    }
+
+    fn recognize_ocr_page(
+        rasterizer: &PdfRasterizer,
+        pdf_bytes: &[u8],
+        page_index: usize,
+        rasterizer_config: &PdfRasterizerConfig,
+        cached_ocr_engine: &mut Option<BundledOcrEngine>,
+    ) -> Result<(Vec<RawLayoutBlock>, f32, f32, f32), OcrError> {
+        if cached_ocr_engine.is_none() {
+            *cached_ocr_engine = Some(BundledOcrEngine::new()?);
+        }
+        let ocr_engine = cached_ocr_engine.as_mut().ok_or_else(|| {
+            OcrError::InferenceFailed("Failed initializing OCR engine session".to_string())
+        })?;
+
+        let page_img = rasterizer.render_page(pdf_bytes, page_index, rasterizer_config)?;
+        let (image_width, image_height) = (page_img.width() as f32, page_img.height() as f32);
+        let ocr_output = ocr_engine.recognize(&page_img)?;
+        let confidence = ocr_output.avg_confidence;
+        let raw_blocks = ocr_output
+            .blocks
+            .into_iter()
+            .map(|b| RawLayoutBlock::new(b.text, b.bbox).with_confidence(b.confidence))
+            .collect();
+
+        Ok((raw_blocks, image_width, image_height, confidence))
     }
 
     fn run_fallback_extraction(
@@ -518,6 +551,60 @@ impl IngestJobEngine {
             }
         }
     }
+}
+
+fn scale_blocks_to_page(
+    blocks: Vec<RawLayoutBlock>,
+    scale_x: f32,
+    scale_y: f32,
+) -> Vec<RawLayoutBlock> {
+    blocks
+        .into_iter()
+        .map(|mut block| {
+            block.bbox = Rect::new(
+                block.bbox.x * scale_x,
+                block.bbox.y * scale_y,
+                block.bbox.width * scale_x,
+                block.bbox.height * scale_y,
+            );
+            if let Some(font_size) = block.font_size {
+                block.font_size = Some(font_size * scale_y);
+            }
+            block
+        })
+        .collect()
+}
+
+fn merge_hybrid_raw_blocks(
+    digital_blocks: Vec<RawLayoutBlock>,
+    ocr_blocks: Vec<RawLayoutBlock>,
+) -> Vec<RawLayoutBlock> {
+    if digital_blocks.is_empty() {
+        return ocr_blocks;
+    }
+
+    let mut merged = digital_blocks;
+    let non_overlapping_ocr: Vec<RawLayoutBlock> = ocr_blocks
+        .into_iter()
+        .filter(|ocr| !merged.iter().any(|digital| blocks_overlap(digital, ocr)))
+        .collect();
+    merged.extend(non_overlapping_ocr);
+    merged
+}
+
+fn blocks_overlap(a: &RawLayoutBlock, b: &RawLayoutBlock) -> bool {
+    let left = a.bbox.x.max(b.bbox.x);
+    let top = a.bbox.y.max(b.bbox.y);
+    let right = (a.bbox.x + a.bbox.width).min(b.bbox.x + b.bbox.width);
+    let bottom = (a.bbox.y + a.bbox.height).min(b.bbox.y + b.bbox.height);
+    let intersection = (right - left).max(0.0) * (bottom - top).max(0.0);
+    if intersection <= 0.0 {
+        return false;
+    }
+
+    let a_area = (a.bbox.width * a.bbox.height).max(1.0);
+    let b_area = (b.bbox.width * b.bbox.height).max(1.0);
+    intersection / a_area.min(b_area) > 0.35
 }
 
 /// Chunks structured `IngestBlock`s into logical import sections, calculating chunk-level
@@ -758,10 +845,10 @@ mod tests {
     }
 
     #[test]
-    fn test_extraction_path_hybrid_prefers_digital_text() {
+    fn test_extraction_path_hybrid_routes_to_ocr() {
         assert_eq!(
             extraction_path_for_page(PdfPageType::Hybrid),
-            ExtractionPath::Digital
+            ExtractionPath::Ocr
         );
     }
 
@@ -820,5 +907,26 @@ mod tests {
         let nodes = IngestJobEngine::extract_chunk_candidates(&chunk, "test.pdf", &config);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].target_vault_key, Some("learning".to_string()));
+    }
+
+    #[test]
+    fn test_merge_hybrid_raw_blocks_keeps_digital_text_and_non_overlapping_ocr() {
+        let digital = vec![RawLayoutBlock::new(
+            "Congress of the United States",
+            Rect::new(10.0, 10.0, 120.0, 12.0),
+        )];
+        let ocr = vec![
+            RawLayoutBlock::new(
+                "CongressoftheUnitedStates",
+                Rect::new(12.0, 10.0, 118.0, 12.0),
+            ),
+            RawLayoutBlock::new("Image-only caption", Rect::new(10.0, 50.0, 90.0, 12.0)),
+        ];
+
+        let merged = merge_hybrid_raw_blocks(digital, ocr);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].text, "Congress of the United States");
+        assert_eq!(merged[1].text, "Image-only caption");
     }
 }
