@@ -28,8 +28,20 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
 
         if block.block_type == BlockType::Body {
             if let Some(ref mut pending) = pending_body {
-                if should_merge_body_line(pending.bbox.as_ref(), block.bbox.as_ref()) {
-                    append_body_line(&mut pending.text, text);
+                if should_merge_body_line(
+                    pending.bbox.as_ref(),
+                    pending.last_bbox.as_ref(),
+                    block.bbox.as_ref(),
+                ) {
+                    append_body_line(
+                        &mut pending.text,
+                        text,
+                        pending.last_bbox.as_ref(),
+                        block.bbox.as_ref(),
+                        &pending.last_text,
+                    );
+                    pending.last_text = text.to_string();
+                    pending.last_bbox = block.bbox.clone();
                     pending.bbox = union_optional_rects(pending.bbox.take(), block.bbox.clone());
                     if let Some(confidence) = block.confidence {
                         pending.confidence_sum += confidence;
@@ -70,6 +82,9 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
 struct PendingBody {
     text: String,
     bbox: Option<Rect>,
+    /// Last fragment only — used for mid-word gap detection (not the union bbox).
+    last_bbox: Option<Rect>,
+    last_text: String,
     confidence_sum: f32,
     confidence_count: usize,
 }
@@ -78,7 +93,9 @@ impl PendingBody {
     fn new(text: &str, bbox: Option<Rect>, confidence: Option<f32>) -> Self {
         Self {
             text: text.to_string(),
-            bbox,
+            bbox: bbox.clone(),
+            last_bbox: bbox,
+            last_text: text.to_string(),
             confidence_sum: confidence.unwrap_or(0.0),
             confidence_count: usize::from(confidence.is_some()),
         }
@@ -109,25 +126,45 @@ fn flush_pending_body(
     }
 }
 
-fn should_merge_body_line(prev: Option<&Rect>, next: Option<&Rect>) -> bool {
-    let (Some(prev), Some(next)) = (prev, next) else {
+fn should_merge_body_line(
+    union_prev: Option<&Rect>,
+    last_prev: Option<&Rect>,
+    next: Option<&Rect>,
+) -> bool {
+    let (Some(union_prev), Some(next)) = (union_prev, next) else {
         return true;
     };
 
-    let vertical_gap = next.y - (prev.y + prev.height);
-    let line_height = prev.height.max(next.height).max(1.0);
-    let same_column =
-        horizontal_overlap_ratio(prev, next) > 0.15 || (prev.x - next.x).abs() <= line_height * 3.0;
+    // Prefer the last fragment for same-line detection so mid-word splits are merged
+    // even when the pending union bbox already spans prior wrapped lines.
+    if let Some(last_prev) = last_prev {
+        let line_height = last_prev.height.max(next.height).max(1.0);
+        if (next.y - last_prev.y).abs() <= line_height * 0.5 {
+            return next.x >= last_prev.x - line_height * 0.25;
+        }
+    }
+
+    let vertical_gap = next.y - (union_prev.y + union_prev.height);
+    let line_height = union_prev.height.max(next.height).max(1.0);
+    let same_column = horizontal_overlap_ratio(union_prev, next) > 0.15
+        || (union_prev.x - next.x).abs() <= line_height * 3.0;
 
     vertical_gap >= -line_height * 0.5 && vertical_gap <= line_height * 1.8 && same_column
 }
 
-fn append_body_line(current: &mut String, next: &str) {
+fn append_body_line(
+    current: &mut String,
+    next: &str,
+    prev_bbox: Option<&Rect>,
+    next_bbox: Option<&Rect>,
+    prev_text: &str,
+) {
     let next_starts_lowercase = next.chars().next().is_some_and(char::is_lowercase);
     if current.ends_with('-') && next_starts_lowercase {
         current.pop();
         current.push_str(next);
-    } else if next_starts_lowercase && starts_with_word_continuation(next) {
+    } else if is_mid_word_split(prev_bbox, next_bbox, prev_text, next) {
+        // Same-line fragments whose boxes sit tighter than a normal word gap.
         current.push_str(next);
     } else {
         if !current.chars().last().is_some_and(char::is_whitespace) {
@@ -137,18 +174,39 @@ fn append_body_line(current: &mut String, next: &str) {
     }
 }
 
-fn starts_with_word_continuation(text: &str) -> bool {
-    let first_word = text
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .trim_matches(|ch: char| !ch.is_alphanumeric())
-        .to_ascii_lowercase();
+/// True when `next` continues the same word as `prev` based on horizontal gap,
+/// matching the threshold used when merging PDF text objects on a visual line.
+fn is_mid_word_split(
+    prev: Option<&Rect>,
+    next: Option<&Rect>,
+    prev_text: &str,
+    next_text: &str,
+) -> bool {
+    let (Some(prev), Some(next)) = (prev, next) else {
+        return false;
+    };
 
-    matches!(
-        first_word.as_str(),
-        "ate" | "bers" | "cations" | "cies" | "sequence" | "ment" | "tion" | "sion"
-    )
+    let line_height = prev.height.max(next.height).max(1.0);
+    // Mid-word splits only occur between fragments on the same visual line.
+    if (next.y - prev.y).abs() > line_height * 0.5 {
+        return false;
+    }
+
+    let gap = next.x - (prev.x + prev.width);
+    let prev_char_width = average_char_width(prev_text, prev.width);
+    let next_char_width = average_char_width(next_text, next.width);
+    let space_threshold = prev_char_width
+        .min(next_char_width)
+        .mul_add(0.5, 0.0)
+        .max(1.0);
+
+    // Allow tiny negative gaps from measurement noise; anything larger is overlap/wrap.
+    gap <= space_threshold && gap >= -space_threshold * 0.25
+}
+
+fn average_char_width(text: &str, width: f32) -> f32 {
+    let char_count = text.chars().filter(|ch| !ch.is_whitespace()).count().max(1) as f32;
+    (width / char_count).max(0.1)
 }
 
 fn horizontal_overlap_ratio(a: &Rect, b: &Rect) -> f32 {
@@ -302,7 +360,8 @@ mod tests {
     }
 
     #[test]
-    fn test_markdown_assembler_joins_capitalized_word_fragments() {
+    fn test_markdown_assembler_joins_same_line_word_fragments_by_gap() {
+        // "Mem" + "bers" sit flush on one line (gap << inter-word space).
         let blocks = vec![
             TextBlock {
                 text: "The House shall be composed of Mem".to_string(),
@@ -313,7 +372,7 @@ mod tests {
             TextBlock {
                 text: "bers chosen every second Year".to_string(),
                 block_type: BlockType::Body,
-                bbox: Some(Rect::new(10.0, 22.0, 160.0, 10.0)),
+                bbox: Some(Rect::new(190.2, 10.1, 160.0, 10.0)),
                 confidence: None,
             },
         ];
@@ -323,6 +382,32 @@ mod tests {
         assert_eq!(
             ingest_blocks[0].formatted_text,
             "The House shall be composed of Members chosen every second Year"
+        );
+    }
+
+    #[test]
+    fn test_markdown_assembler_joins_novel_word_fragments_by_gap() {
+        // Novel split not in any vocabulary — gap alone must join it.
+        let blocks = vec![
+            TextBlock {
+                text: "Gov".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(10.0, 10.0, 18.0, 10.0)),
+                confidence: None,
+            },
+            TextBlock {
+                text: "ernment of the United States".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(28.2, 10.0, 150.0, 10.0)),
+                confidence: None,
+            },
+        ];
+
+        let ingest_blocks = assemble_markdown_blocks(&blocks, 0);
+
+        assert_eq!(
+            ingest_blocks[0].formatted_text,
+            "Government of the United States"
         );
     }
 
@@ -349,5 +434,28 @@ mod tests {
             ingest_blocks[0].formatted_text,
             "CONSTITUTION of the United States"
         );
+    }
+
+    #[test]
+    fn test_markdown_assembler_keeps_same_line_word_space() {
+        // Same line, but gap looks like a normal inter-word space.
+        let blocks = vec![
+            TextBlock {
+                text: "United".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(10.0, 10.0, 42.0, 10.0)),
+                confidence: None,
+            },
+            TextBlock {
+                text: "States".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(58.0, 10.0, 40.0, 10.0)),
+                confidence: None,
+            },
+        ];
+
+        let ingest_blocks = assemble_markdown_blocks(&blocks, 0);
+
+        assert_eq!(ingest_blocks[0].formatted_text, "United States");
     }
 }
