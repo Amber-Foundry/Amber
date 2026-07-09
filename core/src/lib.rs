@@ -954,6 +954,8 @@ pub(crate) struct DbState {
     pub(crate) db_path: PathBuf,
     pub(crate) redacted_session_key: Mutex<Option<redacted::SessionKey>>,
     pub(crate) embed_job: Arc<Mutex<Option<embed::EmbedJobHandle>>>,
+    #[allow(dead_code)]
+    pub(crate) import_job: Arc<Mutex<Option<ingest::ImportJobHandle>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1576,6 +1578,7 @@ pub fn run() {
                 db_path: db_path.clone(),
                 redacted_session_key: Mutex::new(None),
                 embed_job: Arc::new(Mutex::new(None)),
+                import_job: Arc::new(Mutex::new(None)),
             });
 
             let bg_path = db_path;
@@ -1991,6 +1994,7 @@ pub async fn test_helper_memory_extract_force(
         db_path,
         redacted_session_key: std::sync::Mutex::new(None),
         embed_job: Arc::new(std::sync::Mutex::new(None)),
+        import_job: Arc::new(std::sync::Mutex::new(None)),
     });
     let state = app.state::<AppState>();
     memory_extract_force(provider, endpoint, model, state).await
@@ -2016,6 +2020,7 @@ pub fn test_helper_embedding_get_status(
         db_path,
         redacted_session_key: std::sync::Mutex::new(None),
         embed_job: Arc::new(std::sync::Mutex::new(None)),
+        import_job: Arc::new(std::sync::Mutex::new(None)),
     });
     let state = app.state::<AppState>();
     match embedding_get_status(state) {
@@ -2034,6 +2039,7 @@ pub fn test_helper_embedding_reembed_cancel(db_path: std::path::PathBuf) -> Resu
         embed_job: Arc::new(std::sync::Mutex::new(Some(embed::EmbedJobHandle {
             cancel: Arc::clone(&cancel),
         }))),
+        import_job: Arc::new(std::sync::Mutex::new(None)),
     });
     let state = app.state::<AppState>();
     match embedding_reembed_cancel(state) {
@@ -2053,6 +2059,7 @@ pub fn test_helper_settings_set(
         db_path,
         redacted_session_key: std::sync::Mutex::new(None),
         embed_job: Arc::new(std::sync::Mutex::new(None)),
+        import_job: Arc::new(std::sync::Mutex::new(None)),
     });
     let state = app.state::<AppState>();
     match settings_set(key, value, state) {

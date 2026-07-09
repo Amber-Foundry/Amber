@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
+use std::sync::Arc;
 
 /// Which extraction pipeline a page should be routed through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +28,22 @@ pub fn extraction_path_for_page(page_type: PdfPageType) -> ExtractionPath {
         PdfPageType::Digital => ExtractionPath::Digital,
         PdfPageType::Ocr | PdfPageType::Hybrid => ExtractionPath::Ocr,
     }
+}
+
+/// Derives the document-level extraction path label stored on `import_jobs.extraction_path`.
+pub fn derive_document_extraction_path(digital: usize, ocr: usize, hybrid: usize) -> &'static str {
+    if hybrid > 0 || (digital > 0 && ocr > 0) {
+        "hybrid"
+    } else if ocr > 0 {
+        "ocr-bundled"
+    } else {
+        "digital"
+    }
+}
+
+pub struct ImportJobHandle {
+    pub job_id: String,
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// Configuration options for an import job execution.
@@ -793,6 +811,31 @@ mod tests {
             assert_eq!(chunk.chunk_type, "import");
             assert!(chunk.token_count > 0);
         }
+    }
+
+    #[test]
+    fn test_derive_document_extraction_path_digital_only() {
+        assert_eq!(derive_document_extraction_path(10, 0, 0), "digital");
+    }
+
+    #[test]
+    fn test_derive_document_extraction_path_ocr_only() {
+        assert_eq!(derive_document_extraction_path(0, 5, 0), "ocr-bundled");
+    }
+
+    #[test]
+    fn test_derive_document_extraction_path_hybrid_only() {
+        assert_eq!(derive_document_extraction_path(0, 0, 3), "hybrid");
+    }
+
+    #[test]
+    fn test_derive_document_extraction_path_mixed_digital_and_ocr() {
+        assert_eq!(derive_document_extraction_path(8, 2, 0), "hybrid");
+    }
+
+    #[test]
+    fn test_derive_document_extraction_path_all_zero_defaults_digital() {
+        assert_eq!(derive_document_extraction_path(0, 0, 0), "digital");
     }
 
     #[test]
