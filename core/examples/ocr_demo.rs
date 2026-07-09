@@ -10,8 +10,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("Usage: cargo run --example ocr_demo -- <path_to_image_or_pdf>");
-        println!("Example: cargo run --example ocr_demo -- C:\\Users\\name\\Desktop\\sample.pdf");
-        println!("Example: cargo run --example ocr_demo -- C:\\Users\\name\\Desktop\\sample.png");
+        println!("Example: cargo run --example ocr_demo -- ./sample.pdf");
+        println!("Example: cargo run --example ocr_demo -- ./sample.png");
         return Ok(());
     }
 

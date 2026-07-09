@@ -267,36 +267,25 @@ impl PdfRasterizer {
                     Err(_) => continue,
                 };
 
-                // Prefer pdfium's object text when it already preserves spaces.
-                // Some PDFs expose character boxes that are too tight for reliable
-                // gap-based word reconstruction even though object text is usable.
-                let reconstructed = if object_text.chars().any(char::is_whitespace) {
-                    object_text
-                } else if let Some(ref tp) = text_page {
+                // Gap-reconstruct from per-character boxes when available. pdfium's object_text
+                // often already contains phantom spaces around narrow glyphs in Word/Docs PDFs,
+                // so we must not prefer it just because it contains whitespace.
+                let reconstructed = if let Some(ref tp) = text_page {
                     match tp.chars_for_object(text_object) {
                         Ok(chars) => {
-                            let mut result = String::new();
-                            let mut prev_right: Option<f32> = None;
-                            for c in chars.iter() {
-                                if let Ok(char_bounds) = c.loose_bounds() {
-                                    let char_left = char_bounds.left().value;
-                                    let char_right = char_bounds.right().value;
-                                    let char_width = (char_right - char_left).max(0.1);
-                                    if let Some(prev) = prev_right {
-                                        let gap = char_left - prev;
-                                        if gap > 0.18 * char_width {
-                                            result.push(' ');
-                                        }
-                                    }
-                                    if let Some(ch) = printable_pdf_char(c.unicode_char()) {
-                                        result.push(ch);
-                                    }
-                                    prev_right = Some(char_right);
-                                } else if let Some(ch) = printable_pdf_char(c.unicode_char()) {
-                                    result.push(ch);
-                                }
-                            }
-                            result
+                            let char_boxes: Vec<PdfCharBox> = chars
+                                .iter()
+                                .filter_map(|c| {
+                                    let ch = printable_pdf_char(c.unicode_char())?;
+                                    let bounds = c.loose_bounds().ok()?;
+                                    Some(PdfCharBox {
+                                        left: bounds.left().value,
+                                        right: bounds.right().value,
+                                        ch,
+                                    })
+                                })
+                                .collect();
+                            choose_text_object_reconstruction(&object_text, &char_boxes, font_size)
                         }
                         Err(_) => object_text,
                     }
@@ -304,6 +293,7 @@ impl PdfRasterizer {
                     object_text
                 };
 
+                let reconstructed = normalize_short_text_object(&reconstructed);
                 let reconstructed = sanitize_pdf_text(&reconstructed);
                 if reconstructed.trim().is_empty() {
                     continue;
@@ -353,6 +343,121 @@ fn printable_pdf_char(ch: Option<char>) -> Option<char> {
     } else {
         None
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PdfCharBox {
+    left: f32,
+    right: f32,
+    ch: char,
+}
+
+/// Reconstruct spaced text from per-character boxes using object-level metrics.
+///
+/// Thresholding against each glyph's own width treats narrow letters (`i`, `l`) as if they
+/// define the expected gap, inserting phantom spaces around them in proportional fonts.
+fn reconstruct_text_from_char_boxes(char_boxes: &[PdfCharBox], font_size: f32) -> String {
+    if char_boxes.is_empty() {
+        return String::new();
+    }
+
+    let avg_char_width = char_boxes
+        .iter()
+        .map(|b| (b.right - b.left).max(0.1))
+        .sum::<f32>()
+        / char_boxes.len() as f32;
+    // Inter-word gaps are ~¼ em; intra-letter kerning is much tighter than either heuristic.
+    let space_threshold = font_size
+        .mul_add(0.25, 0.0)
+        .max(avg_char_width.mul_add(0.5, 0.0))
+        .max(1.0);
+
+    let mut result = String::with_capacity(char_boxes.len());
+    let mut prev_right: Option<f32> = None;
+    for b in char_boxes {
+        if let Some(prev) = prev_right {
+            let gap = b.left - prev;
+            if gap > space_threshold {
+                result.push(' ');
+            }
+        }
+        result.push(b.ch);
+        prev_right = Some(b.right);
+    }
+    result
+}
+
+/// Pick gap-reconstructed text, falling back to pdfium object text only when reconstruction
+/// cannot recover word boundaries (very tight character boxes).
+fn choose_text_object_reconstruction(
+    object_text: &str,
+    char_boxes: &[PdfCharBox],
+    font_size: f32,
+) -> String {
+    if char_boxes.is_empty() {
+        return object_text.to_string();
+    }
+
+    let from_chars = reconstruct_text_from_char_boxes(char_boxes, font_size);
+    if from_chars.is_empty() {
+        return object_text.to_string();
+    }
+
+    let object_has_spaces = object_text.chars().any(char::is_whitespace);
+    let chars_have_spaces = from_chars.chars().any(char::is_whitespace);
+    if object_has_spaces
+        && !chars_have_spaces
+        && from_chars.len() > 10
+        && object_text.len().saturating_sub(from_chars.len()) <= object_text.len() / 4
+    {
+        // Tight character boxes with no measurable inter-word gaps — trust pdfium's object text.
+        return object_text.to_string();
+    }
+
+    from_chars
+}
+
+/// Word/Docs PDFs often emit one glyph per text object. Interior glyphs are bare letters;
+/// word-final glyphs carry trailing whitespace in `object_text` that marks the boundary.
+fn normalize_short_text_object(text: &str) -> String {
+    if text.chars().all(char::is_whitespace) {
+        return " ".to_string();
+    }
+    let letters: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    if letters.chars().count() <= 3 {
+        if text.chars().last().is_some_and(char::is_whitespace) {
+            let narrow_word_final = letters.chars().count() == 1
+                && letters
+                    .chars()
+                    .next()
+                    .is_some_and(|c| matches!(c, 'i' | 'l' | 'I' | '1'));
+            if narrow_word_final {
+                letters
+            } else {
+                format!("{letters} ")
+            }
+        } else {
+            letters
+        }
+    } else {
+        text.to_string()
+    }
+}
+
+fn inter_block_space_threshold(prev: &RawLayoutBlock, next: &RawLayoutBlock) -> f32 {
+    let prev_letters = prev.text.chars().filter(|c| !c.is_whitespace()).count();
+    let next_letters = next.text.chars().filter(|c| !c.is_whitespace()).count();
+    // Per-glyph Word exports: kerning gaps ~1pt, word gaps ~3–5pt.
+    if prev_letters <= 2 && next_letters <= 2 {
+        return 2.0;
+    }
+
+    let font_size = next.font_size.or(prev.font_size).unwrap_or_else(|| {
+        average_char_width(&next.text, next.bbox.width)
+            .max(average_char_width(&prev.text, prev.bbox.width))
+            * 2.0
+    });
+    font_size.mul_add(0.25, 0.0).max(1.0)
 }
 
 fn sanitize_pdf_text(text: &str) -> String {
@@ -429,26 +534,32 @@ fn merge_text_objects_on_visual_lines(
         .collect()
 }
 
+fn merge_object_text_for_line(text: &str) -> Option<&str> {
+    if text.is_empty() {
+        None
+    } else if text.chars().all(char::is_whitespace) {
+        Some(" ")
+    } else {
+        Some(text.trim())
+    }
+}
+
 fn merge_line_blocks(blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<RawLayoutBlock> {
     let mut merged_blocks = Vec::new();
     let mut current_run = Vec::new();
     let mut prev_right: Option<f32> = None;
-    let mut prev_char_width: Option<f32> = None;
+    let mut prev_block: Option<RawLayoutBlock> = None;
 
     for block in blocks {
-        let text = block.text.trim();
-        if text.is_empty() {
+        let Some(_text) = merge_object_text_for_line(&block.text) else {
             continue;
-        }
+        };
 
-        let char_width = average_char_width(text, block.bbox.width);
-        if let Some(prev) = prev_right {
+        if let (Some(prev), Some(prev_block)) = (prev_right, prev_block.as_ref()) {
             let gap = block.bbox.x - prev;
             let crosses_midpoint = prev < page_width / 2.0
                 && block.bbox.x + (block.bbox.width / 2.0) > page_width / 2.0;
-            let column_split_threshold = prev_char_width
-                .map(|prev_width| prev_width.min(char_width))
-                .unwrap_or(char_width)
+            let column_split_threshold = inter_block_space_threshold(prev_block, &block)
                 .mul_add(8.0, 0.0)
                 .max(24.0);
             if (gap > column_split_threshold || (crosses_midpoint && gap > 4.0))
@@ -461,7 +572,7 @@ fn merge_line_blocks(blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<RawLay
         }
 
         prev_right = Some(block.bbox.x + block.bbox.width);
-        prev_char_width = Some(char_width);
+        prev_block = Some(block.clone());
         current_run.push(block);
     }
 
@@ -475,7 +586,7 @@ fn merge_line_blocks(blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<RawLay
 fn merge_nearby_line_run(blocks: Vec<RawLayoutBlock>) -> Option<RawLayoutBlock> {
     let mut merged_text = String::new();
     let mut prev_right: Option<f32> = None;
-    let mut prev_char_width: Option<f32> = None;
+    let mut prev_block: Option<RawLayoutBlock> = None;
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
     let mut max_right = f32::MIN;
@@ -484,24 +595,20 @@ fn merge_nearby_line_run(blocks: Vec<RawLayoutBlock>) -> Option<RawLayoutBlock> 
     let mut font_count = 0usize;
 
     for block in blocks {
-        let text = block.text.trim();
-        if text.is_empty() {
+        let Some(text) = merge_object_text_for_line(&block.text) else {
             continue;
-        }
+        };
 
-        let char_width = average_char_width(text, block.bbox.width);
-        if let Some(prev) = prev_right {
-            let gap = block.bbox.x - prev;
-            let threshold = prev_char_width
-                .map(|prev_width| prev_width.min(char_width))
-                .unwrap_or(char_width)
-                .mul_add(0.5, 0.0)
-                .max(1.0);
-            if gap > threshold
-                && !merged_text.ends_with(char::is_whitespace)
-                && !text.starts_with(char::is_whitespace)
-            {
-                merged_text.push(' ');
+        if let Some(prev_block) = prev_block.as_ref() {
+            if let Some(prev) = prev_right {
+                let gap = block.bbox.x - prev;
+                let threshold = inter_block_space_threshold(prev_block, &block);
+                if gap > threshold
+                    && !merged_text.ends_with(char::is_whitespace)
+                    && !text.starts_with(char::is_whitespace)
+                {
+                    merged_text.push(' ');
+                }
             }
         }
         merged_text.push_str(text);
@@ -513,7 +620,7 @@ fn merge_nearby_line_run(blocks: Vec<RawLayoutBlock>) -> Option<RawLayoutBlock> 
         prev_right = Some(prev_right.map_or(block.bbox.x + block.bbox.width, |right| {
             right.max(block.bbox.x + block.bbox.width)
         }));
-        prev_char_width = Some(char_width);
+        prev_block = Some(block.clone());
 
         if let Some(font_size) = block.font_size {
             font_sum += font_size;
@@ -543,6 +650,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_normalize_short_text_object_strips_per_glyph_spaces() {
+        assert_eq!(normalize_short_text_object("i "), "i");
+        assert_eq!(normalize_short_text_object("s "), "s ");
+        assert_eq!(normalize_short_text_object("d "), "d ");
+        assert_eq!(normalize_short_text_object(" "), " ");
+        assert_eq!(normalize_short_text_object("Th"), "Th");
+        assert_eq!(normalize_short_text_object("This report"), "This report");
+    }
+
+    #[test]
     fn test_pdf_page_type_display() {
         assert_eq!(PdfPageType::Digital.to_string(), "digital");
         assert_eq!(PdfPageType::Ocr.to_string(), "ocr-bundled");
@@ -558,6 +675,196 @@ mod tests {
     #[test]
     fn test_sanitize_pdf_text_filters_control_chars() {
         assert_eq!(sanitize_pdf_text("Sen\u{0002}ate"), "Senate");
+    }
+
+    #[test]
+    fn test_reconstruct_text_keeps_narrow_letters_unspaced() {
+        // Proportional sans-serif at 12pt: `i`/`l` boxes are much narrower than average.
+        let font_size = 12.0;
+        let boxes = vec![
+            PdfCharBox {
+                left: 0.0,
+                right: 7.0,
+                ch: 'C',
+            },
+            PdfCharBox {
+                left: 7.0,
+                right: 13.0,
+                ch: 'o',
+            },
+            PdfCharBox {
+                left: 13.0,
+                right: 19.0,
+                ch: 'n',
+            },
+            PdfCharBox {
+                left: 19.0,
+                right: 24.0,
+                ch: 't',
+            },
+            PdfCharBox {
+                left: 24.0,
+                right: 29.0,
+                ch: 'r',
+            },
+            PdfCharBox {
+                left: 29.0,
+                right: 31.0,
+                ch: 'i',
+            },
+            PdfCharBox {
+                left: 31.0,
+                right: 37.0,
+                ch: 'b',
+            },
+            PdfCharBox {
+                left: 37.0,
+                right: 43.0,
+                ch: 'u',
+            },
+            PdfCharBox {
+                left: 43.0,
+                right: 49.0,
+                ch: 't',
+            },
+            PdfCharBox {
+                left: 49.0,
+                right: 53.0,
+                ch: 'i',
+            },
+            PdfCharBox {
+                left: 53.0,
+                right: 59.0,
+                ch: 'o',
+            },
+            PdfCharBox {
+                left: 59.0,
+                right: 65.0,
+                ch: 'n',
+            },
+            PdfCharBox {
+                left: 65.0,
+                right: 71.0,
+                ch: 's',
+            },
+        ];
+
+        assert_eq!(
+            reconstruct_text_from_char_boxes(&boxes, font_size),
+            "Contributions"
+        );
+    }
+
+    #[test]
+    fn test_reconstruct_text_inserts_word_spaces() {
+        let font_size = 12.0;
+        let mut boxes = vec![
+            PdfCharBox {
+                left: 0.0,
+                right: 6.0,
+                ch: 'T',
+            },
+            PdfCharBox {
+                left: 6.0,
+                right: 12.0,
+                ch: 'h',
+            },
+            PdfCharBox {
+                left: 12.0,
+                right: 14.0,
+                ch: 'i',
+            },
+            PdfCharBox {
+                left: 14.0,
+                right: 19.0,
+                ch: 's',
+            },
+        ];
+        // ~¼ em word gap before "report".
+        let word_gap = font_size * 0.3;
+        let next_left = 19.0 + word_gap;
+        boxes.extend([
+            PdfCharBox {
+                left: next_left,
+                right: next_left + 6.0,
+                ch: 'r',
+            },
+            PdfCharBox {
+                left: next_left + 6.0,
+                right: next_left + 12.0,
+                ch: 'e',
+            },
+            PdfCharBox {
+                left: next_left + 12.0,
+                right: next_left + 18.0,
+                ch: 'p',
+            },
+            PdfCharBox {
+                left: next_left + 18.0,
+                right: next_left + 24.0,
+                ch: 'o',
+            },
+            PdfCharBox {
+                left: next_left + 24.0,
+                right: next_left + 30.0,
+                ch: 'r',
+            },
+            PdfCharBox {
+                left: next_left + 30.0,
+                right: next_left + 35.0,
+                ch: 't',
+            },
+        ]);
+
+        assert_eq!(
+            reconstruct_text_from_char_boxes(&boxes, font_size),
+            "This report"
+        );
+    }
+
+    #[test]
+    fn test_reconstruct_text_old_threshold_would_break_narrow_letters() {
+        // Typical kerning gaps (~0.5–1pt) exceed 0.18× a narrow glyph's width.
+        let font_size = 12.0;
+        let boxes = vec![
+            PdfCharBox {
+                left: 0.0,
+                right: 6.0,
+                ch: 'T',
+            },
+            PdfCharBox {
+                left: 6.5,
+                right: 12.0,
+                ch: 'h',
+            },
+            PdfCharBox {
+                left: 12.5,
+                right: 14.5,
+                ch: 'i',
+            },
+            PdfCharBox {
+                left: 15.5,
+                right: 20.0,
+                ch: 's',
+            },
+        ];
+
+        let mut broken = String::new();
+        let mut prev_right: Option<f32> = None;
+        for b in &boxes {
+            if let Some(prev) = prev_right {
+                let gap = b.left - prev;
+                let char_width = (b.right - b.left).max(0.1);
+                if gap > 0.18 * char_width {
+                    broken.push(' ');
+                }
+            }
+            broken.push(b.ch);
+            prev_right = Some(b.right);
+        }
+        assert_eq!(broken, "Th i s");
+
+        assert_eq!(reconstruct_text_from_char_boxes(&boxes, font_size), "This");
     }
 
     #[test]

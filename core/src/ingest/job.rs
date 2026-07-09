@@ -796,39 +796,6 @@ mod tests {
     }
 
     #[test]
-    fn test_process_pdf_job_digital() -> Result<(), Box<dyn std::error::Error>> {
-        let pdf_path = Path::new(r"C:\Users\aashi\Downloads\constitution.pdf");
-        if !pdf_path.is_file() {
-            eprintln!("Skipping test_process_pdf_job_digital: constitution.pdf not found");
-            return Ok(());
-        }
-
-        let config = IngestJobConfig {
-            rasterization_dpi: 150,
-            target_chunk_tokens: 300,
-            overlap_chunk_tokens: 50,
-            ..Default::default()
-        };
-
-        let (tx, rx) = mpsc::channel();
-        let result = IngestJobEngine::process_pdf_job("job-test-1", pdf_path, config, Some(tx))?;
-
-        let mut progress_count = 0;
-        while let Ok(prog) = rx.try_recv() {
-            progress_count += 1;
-            assert!(prog.total_pages > 0);
-        }
-
-        assert!(progress_count > 0);
-        assert_eq!(result.job_id, "job-test-1");
-        assert!(result.total_pages > 0);
-        assert!(result.digital_pages > 0);
-        assert!(!result.assembled_markdown.is_empty());
-        assert!(!result.chunks.is_empty());
-        Ok(())
-    }
-
-    #[test]
     fn test_extraction_path_digital() {
         assert_eq!(
             extraction_path_for_page(PdfPageType::Digital),
