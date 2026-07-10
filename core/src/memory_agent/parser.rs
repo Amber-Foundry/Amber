@@ -55,8 +55,11 @@ pub struct CandidateNode {
     pub confidence: f64,
     /// The action to perform (Add, Update, or Delete).
     pub action: CandidateAction,
+    #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
     pub source_type: Option<String>,
+    #[serde(default)]
     pub meta: Option<serde_json::Value>,
 }
 
