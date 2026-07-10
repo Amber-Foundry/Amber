@@ -603,7 +603,7 @@ fn is_likely_abbreviation_period(text: &str, period_idx: usize) -> bool {
             | "Inc"
             | "Ltd"
             | "No"
-    ) || (token.len() <= 2 && token.chars().all(|c| c.is_ascii_uppercase()))
+    ) || (!token.is_empty() && token.len() <= 2 && token.chars().all(|c| c.is_ascii_uppercase()))
 }
 
 fn prepare_job_runtime() -> Result<(tokio::runtime::Handle, tokio::runtime::Runtime), OcrError> {
@@ -973,6 +973,25 @@ mod tests {
         };
         let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
         assert_eq!(node.summary, "Mr. Smith met Dr. Jones at the clinic");
+    }
+
+    #[test]
+    fn test_fallback_summary_does_not_treat_leading_period_as_abbreviation() {
+        let chunk = ImportChunkSpec {
+            chunk_index: 0,
+            text: ". This sentence starts with a period and is long enough to summarize."
+                .to_string(),
+            token_count: 12,
+            heading_context: None,
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+        };
+        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+        assert_eq!(
+            node.summary,
+            ". This sentence starts with a period and is long enough to summarize"
+        );
     }
 
     #[test]
