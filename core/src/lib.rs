@@ -2895,18 +2895,37 @@ fn import_start_job(
                         return;
                     }
                 };
+                let mut last_write = Instant::now() - Duration::from_millis(250);
                 let mut last_emit = Instant::now() - Duration::from_millis(250);
+                let mut pending_progress: Option<ingest::ImportJobProgress> = None;
                 while let Ok(progress) = progress_rx.recv() {
-                    if ingest::update_import_job_from_progress(&conn, &progress_job_id, &progress)
-                        .is_err()
-                    {
-                        continue;
-                    }
                     let is_final = progress.current_page == progress.total_pages
                         || progress.status == "staged";
-                    if is_final || last_emit.elapsed() >= Duration::from_millis(250) {
+                    pending_progress = Some(progress);
+                    if is_final || last_write.elapsed() >= Duration::from_millis(250) {
+                        if let Some(ref pending) = pending_progress {
+                            if ingest::update_import_job_from_progress(
+                                &conn,
+                                &progress_job_id,
+                                pending,
+                            )
+                            .is_ok()
+                            {
+                                pending_progress = None;
+                                last_write = Instant::now();
+                                if is_final || last_emit.elapsed() >= Duration::from_millis(250) {
+                                    emit_import_job_status(&progress_app, &conn, &progress_job_id);
+                                    last_emit = Instant::now();
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(ref pending) = pending_progress {
+                    if ingest::update_import_job_from_progress(&conn, &progress_job_id, pending)
+                        .is_ok()
+                    {
                         emit_import_job_status(&progress_app, &conn, &progress_job_id);
-                        last_emit = Instant::now();
                     }
                 }
             });
