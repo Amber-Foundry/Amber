@@ -2888,8 +2888,12 @@ fn import_start_job(
             let progress_app = app_handle_worker.clone();
 
             let progress_handle = std::thread::spawn(move || {
-                let Ok(conn) = open_connection(&progress_db_path) else {
-                    return;
+                let conn = match open_connection(&progress_db_path) {
+                    Ok(conn) => conn,
+                    Err(err) => {
+                        eprintln!("[import] Failed to open progress thread connection: {err}");
+                        return;
+                    }
                 };
                 let mut last_emit = Instant::now() - Duration::from_millis(250);
                 while let Ok(progress) = progress_rx.recv() {
