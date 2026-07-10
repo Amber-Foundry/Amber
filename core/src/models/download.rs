@@ -97,6 +97,7 @@ pub fn download_and_verify(
 
     let mut tmp_file = File::create(&tmp_path).map_err(|err| DownloadError::Io(err.to_string()))?;
     if let Err(err) = io::copy(&mut response, &mut tmp_file) {
+        drop(tmp_file);
         let _ = fs::remove_file(&tmp_path);
         return Err(DownloadError::Network(err.to_string()));
     }
