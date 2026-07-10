@@ -269,9 +269,10 @@ fn classify_block_type(block: &RawLayoutBlock, median_metric: f32) -> BlockType 
         1.0
     };
 
-    let is_short = text.len() <= 60;
+    let char_count = text.chars().count();
+    let is_short = char_count <= 60;
     let is_all_caps =
-        is_short && text.len() >= 3 && text.chars().all(|c| !c.is_alphabetic() || c.is_uppercase());
+        is_short && char_count >= 3 && text.chars().all(|c| !c.is_alphabetic() || c.is_uppercase());
     let matches_heading_keyword = matches_heading_pattern(text);
 
     // Heading Classification Rules:
