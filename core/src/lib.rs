@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chat::ChatMessage;
 use rusqlite::OptionalExtension;
@@ -2877,7 +2877,8 @@ fn import_start_job(
                 cancel: Arc::clone(&worker_cancel),
             };
 
-            let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+            let (progress_tx, progress_rx) =
+                std::sync::mpsc::channel::<ingest::ImportJobProgress>();
             let progress_db_path = db_path.clone();
             let progress_job_id = worker_job_id.clone();
             let progress_app = app_handle_worker.clone();
@@ -2886,13 +2887,20 @@ fn import_start_job(
                 let Ok(conn) = open_connection(&progress_db_path) else {
                     return;
                 };
+                let mut last_emit = Instant::now() - Duration::from_millis(250);
                 while let Ok(progress) = progress_rx.recv() {
+                    let is_final = progress.current_page == progress.total_pages
+                        || progress.status == "staged";
+                    if !is_final && last_emit.elapsed() < Duration::from_millis(250) {
+                        continue;
+                    }
                     if ingest::update_import_job_from_progress(&conn, &progress_job_id, &progress)
                         .is_err()
                     {
                         continue;
                     }
                     emit_import_job_status(&progress_app, &conn, &progress_job_id);
+                    last_emit = Instant::now();
                 }
             });
 
