@@ -3,7 +3,21 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+static TMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_tmp_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_else(|_| {
+            let pid = u128::from(std::process::id());
+            let counter = TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            pid * 10_000 + u128::from(counter)
+        })
+}
 
 #[derive(Debug)]
 pub enum DownloadError {
@@ -64,11 +78,7 @@ pub fn download_and_verify(
     })?;
     fs::create_dir_all(parent).map_err(|err| DownloadError::Io(err.to_string()))?;
 
-    let tmp_suffix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let tmp_path = dest_path.with_extension(format!("tmp.{tmp_suffix}"));
+    let tmp_path = dest_path.with_extension(format!("tmp.{}", unique_tmp_suffix()));
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600))
         .build()
