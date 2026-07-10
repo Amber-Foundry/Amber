@@ -1,5 +1,5 @@
 use crate::ocr::engine::{OcrEngine, OcrError, OcrOutput, OcrTextBlock, Rect};
-use crate::ocr::{load_ocr_registry, ocr_models_dir};
+use crate::ocr::{download_ocr_models_if_needed, load_ocr_registry, ocr_models_dir};
 use image::GenericImageView;
 use ort::execution_providers::CPUExecutionProvider;
 #[cfg(target_os = "windows")]
@@ -21,6 +21,7 @@ impl BundledOcrEngine {
     /// Loads DBNet (`det.onnx`), CRNN (`rec.onnx`), and vocabulary (`ppocrv6_dict.txt`)
     /// from default models directory `~/.amber/models/ocr/`.
     pub fn new() -> Result<Self, OcrError> {
+        download_ocr_models_if_needed()?;
         let dir = ocr_models_dir()?;
         let registry = load_ocr_registry()?;
 
