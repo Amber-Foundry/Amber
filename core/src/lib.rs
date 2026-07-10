@@ -1357,12 +1357,20 @@ fn validate_import_start_input(
     Ok(path)
 }
 
-fn ingest_config_from_input(input: &ImportStartJobInput) -> ingest::IngestJobConfig {
-    let rasterization_dpi = if input.rasterization_dpi > 0 {
-        input.rasterization_dpi as u16
+const MIN_RASTERIZATION_DPI: u16 = 72;
+const MAX_RASTERIZATION_DPI: u16 = 1200;
+const DEFAULT_RASTERIZATION_DPI: u16 = 300;
+
+fn clamp_rasterization_dpi(value: i32) -> u16 {
+    if value <= 0 {
+        DEFAULT_RASTERIZATION_DPI
     } else {
-        300
-    };
+        (value as u32).clamp(MIN_RASTERIZATION_DPI as u32, MAX_RASTERIZATION_DPI as u32) as u16
+    }
+}
+
+fn ingest_config_from_input(input: &ImportStartJobInput) -> ingest::IngestJobConfig {
+    let rasterization_dpi = clamp_rasterization_dpi(input.rasterization_dpi);
     let (provider, endpoint, model) = if input.use_llm_extraction {
         (
             input.provider.clone(),
@@ -2834,11 +2842,7 @@ fn import_start_job(
             .and_then(|s| s.to_str())
             .unwrap_or("document.pdf")
             .to_string();
-        let rasterization_dpi = if input.rasterization_dpi > 0 {
-            input.rasterization_dpi
-        } else {
-            300
-        };
+        let rasterization_dpi = i32::from(clamp_rasterization_dpi(input.rasterization_dpi));
 
         let initial_status = match (|| -> Result<ImportJobStatus, String> {
             ingest::create_import_job(
