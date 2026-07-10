@@ -220,82 +220,9 @@ pub fn list_import_jobs(conn: &Connection, limit: i32) -> Result<Vec<ImportJobRo
 }
 
 #[cfg(test)]
-fn setup_test_db() -> Result<Connection, Box<dyn std::error::Error>> {
-    use std::fs;
-    use std::path::PathBuf;
-
-    fn migrations_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("db")
-            .join("migrations")
-    }
-
-    let conn = Connection::open_in_memory()?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        "#,
-    )?;
-
-    let dir = migrations_dir();
-    if !dir.exists() {
-        return Err(format!("migrations directory does not exist: {}", dir.display()).into());
-    }
-
-    let entries = fs::read_dir(&dir)?;
-    let mut migrations = Vec::new();
-
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| format!("failed to get file name for path: {}", path.display()))?;
-
-        if !file_name.ends_with(".sql") {
-            continue;
-        }
-
-        let (version_text, name_rest) = file_name.split_once('_').ok_or_else(|| {
-            format!("migration file must follow '<version>_<name>.sql': {file_name}")
-        })?;
-
-        let version = version_text
-            .parse::<i64>()
-            .map_err(|_| format!("migration version must be numeric: {file_name}"))?;
-
-        let name = name_rest.trim_end_matches(".sql").to_string();
-        migrations.push((version, name, path));
-    }
-
-    migrations.sort_by_key(|migration| migration.0);
-
-    for (version, name, path) in migrations {
-        let sql = fs::read_to_string(&path)?;
-        conn.execute_batch(&sql)
-            .map_err(|err| format!("migration {version}_{name} failed: {err}"))?;
-    }
-
-    conn.execute(
-        "INSERT INTO vaults (id, name, icon, description, privacy_tier, priority_profile, sort_order, meta)
-         VALUES ('vault_test', 'Test Vault', 'vault', 'Fixture Vault', 'open', 'standard', 0, '{}');",
-        [],
-    )?;
-
-    Ok(conn)
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embed::storage::setup_test_db;
 
     fn require_job(
         conn: &Connection,
