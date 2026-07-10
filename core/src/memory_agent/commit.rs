@@ -262,10 +262,12 @@ fn update_changeset_node(
              title = ?5,
              summary = ?6,
              detail = ?7,
+             source = ?8,
+             source_type = ?9,
              version = version + 1,
              updated_at = datetime('now'),
-             meta = ?8,
-             encrypted_payload = ?9
+             meta = ?10,
+             encrypted_payload = ?11
          WHERE id = ?1 AND deleted_at IS NULL;",
             params![
                 node_id,
@@ -279,6 +281,8 @@ fn update_changeset_node(
                 } else {
                     proposed.detail.as_deref()
                 },
+                source,
+                source_type,
                 meta_str,
                 encrypted_payload
             ],
@@ -2022,6 +2026,57 @@ mod tests {
         assert_eq!(detail, Some("New Detail".to_string()));
         assert!(encrypted_payload.is_none() || encrypted_payload.as_deref() == Some(""));
         assert_eq!(vault_id, "vault_open");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_commit_update_persists_source_fields() -> Result<(), Box<dyn Error>> {
+        let mut conn = setup_test_db()?;
+        let db_path = Path::new("test.db");
+
+        conn.execute(
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_open', 'Open', 'open');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail, source, source_type, priority)
+             VALUES ('node_source', 'vault_open', 'concept', 'Original Title', 'Original Summary', 'Original Detail', 'manual', 'manual', '{}');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changesets (id, status, item_count) VALUES ('cs_source', 'pending', 1);",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changeset_items (id, changeset_id, item_type, target_node_id, proposed_data, status)
+             VALUES ('item_source', 'cs_source', 'update', 'node_source',
+                     '{\"title\":\"Updated Title\",\"source\":\"chat_session\",\"sourceType\":\"chat\",\"vaultId\":\"vault_open\"}', 'pending');",
+            [],
+        )?;
+
+        let input = ChangesetCommitInput {
+            changeset_id: "cs_source".to_string(),
+            item_actions: vec![ItemReviewAction {
+                item_id: "item_source".to_string(),
+                action: "accept".to_string(),
+                edited_data: None,
+            }],
+        };
+
+        let result = commit_changeset_transaction(&mut conn, &input, db_path, None)?;
+        assert!(result);
+
+        let (title, source, source_type): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT title, source, source_type FROM nodes WHERE id = 'node_source';",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+
+        assert_eq!(title, "Updated Title");
+        assert_eq!(source.as_deref(), Some("chat_session"));
+        assert_eq!(source_type.as_deref(), Some("chat"));
 
         Ok(())
     }
