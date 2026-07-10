@@ -408,27 +408,20 @@ impl IngestJobEngine {
             .clone()
             .unwrap_or_else(|| format!("Imported Chunk {}", chunk.chunk_index));
         let detail = Some(chunk.text.clone());
-        let mut summary = String::new();
         const MIN_SUMMARY_LEN: usize = 20;
-        let segments: Vec<&str> = chunk
-            .text
-            .split(&['.', '?', '!'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect();
-        for (i, segment) in segments.iter().enumerate() {
-            if i > 0 {
-                summary.push_str(". ");
-            }
-            summary.push_str(segment);
-            if summary.chars().count() >= MIN_SUMMARY_LEN {
-                break;
-            }
+        const MAX_SUMMARY_LEN: usize = 120;
+        let mut summary = if let Some(end) = first_summary_boundary(&chunk.text, MIN_SUMMARY_LEN) {
+            chunk.text[..end].to_string()
+        } else if chunk.text.chars().count() >= MIN_SUMMARY_LEN {
+            chunk.text.clone()
+        } else {
+            chunk.text.chars().take(MAX_SUMMARY_LEN).collect()
+        };
+        if summary.ends_with('.') {
+            summary.pop();
         }
-        if summary.is_empty() {
-            summary = chunk.text.chars().take(120).collect();
-        } else if summary.chars().count() > 120 {
-            summary = summary.chars().take(120).collect::<String>() + "...";
+        if summary.chars().count() > MAX_SUMMARY_LEN {
+            summary = summary.chars().take(MAX_SUMMARY_LEN).collect::<String>() + "...";
         }
 
         let mut meta_obj = serde_json::json!({
@@ -572,6 +565,45 @@ impl IngestJobEngine {
             }
         }
     }
+}
+
+fn first_summary_boundary(text: &str, min_chars: usize) -> Option<usize> {
+    let mut seen = 0usize;
+    for (idx, ch) in text.char_indices() {
+        seen += 1;
+        if matches!(ch, '.' | '?' | '!') {
+            if ch == '.' && is_likely_abbreviation_period(text, idx) {
+                continue;
+            }
+            if seen >= min_chars {
+                return Some(idx + ch.len_utf8());
+            }
+        }
+    }
+    None
+}
+
+fn is_likely_abbreviation_period(text: &str, period_idx: usize) -> bool {
+    let before = text[..period_idx].trim_end();
+    let Some(last_token) = before.rsplit(' ').next() else {
+        return false;
+    };
+    let token = last_token.trim_end_matches('.');
+    matches!(
+        token,
+        "Mr" | "Mrs"
+            | "Ms"
+            | "Dr"
+            | "Prof"
+            | "Sr"
+            | "Jr"
+            | "St"
+            | "vs"
+            | "etc"
+            | "Inc"
+            | "Ltd"
+            | "No"
+    ) || (token.len() <= 2 && token.chars().all(|c| c.is_ascii_uppercase()))
 }
 
 fn prepare_job_runtime() -> Result<(tokio::runtime::Handle, tokio::runtime::Runtime), OcrError> {
@@ -911,6 +943,21 @@ mod tests {
         };
         let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
         assert_eq!(node.target_vault_key, None);
+    }
+
+    #[test]
+    fn test_fallback_summary_preserves_question_and_exclamation_marks() {
+        let chunk = ImportChunkSpec {
+            chunk_index: 0,
+            text: "Is this a question? Yes it is! And here is more trailing text.".to_string(),
+            token_count: 12,
+            heading_context: None,
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+        };
+        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+        assert_eq!(node.summary, "Is this a question? Yes it is!");
     }
 
     #[test]
