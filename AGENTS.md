@@ -78,3 +78,23 @@ For multi-step tasks, state a brief plan:
 ```
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+## Cursor Cloud specific instructions
+
+Dependency refresh (`npm ci`, `cargo fetch`) runs automatically on VM startup. System deps (WebKitGTK + Tauri libs), Node, and the Rust toolchain are already baked into the VM image. Notes below are for running/testing, not initial setup.
+
+### Running the desktop app (headless VM)
+- Amber is a Tauri desktop app; there is no separate backend server. SQLite is embedded in-process and `db/migrations/` are applied automatically at startup.
+- Start it with `npm run tauri dev` (it auto-starts the Vite dev server on port `1420`, then builds/launches the native window). The first run recompiles the Rust core (`core/`) and can take several minutes; subsequent runs are fast.
+- A display is available at `DISPLAY=:1`. Export it in the shell before launching (`export DISPLAY=:1`) since the window needs an X server. `libEGL`/`DRI3` warnings in the log are harmless software-rendering fallback, not errors.
+
+### First run / app data
+- On first launch the app shows a first-run onboarding wizard. Model/LLM setup steps can be skipped ("I'll set this up later" / "Skip onboarding") to reach the main workspace; local-LLM/embedding features stay optional (they need Ollama, a cloud API key, or downloaded ONNX models).
+- Persistent app data (SQLite DB, downloaded models) lives under `~/.amber/`. Delete `~/.amber/` to reset back to the onboarding/first-run state.
+
+### Toolchain caveats
+- The Rust core needs Rust ≥ 1.85 (a transitive dep uses edition2024); the image is on current stable.
+- `cc` resolves to gcc-14, so `libstdc++-14-dev` must be present for the Rust link step to find `-lstdc++` (already installed in the image).
+
+### Commands
+- Standard lint/test/build/run commands are in `README.md` and `package.json` scripts (`npm run lint`, `npm test`, `npm run test:ui`, `npm run build`, `npm run tauri dev`). Rust checks: `cargo test` / `cargo clippy` / `cargo fmt` in `core/`. `npm run preflight` runs the full CI-parity gate (includes cargo fmt/clippy/test).
