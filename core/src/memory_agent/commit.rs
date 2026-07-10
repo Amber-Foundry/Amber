@@ -214,6 +214,16 @@ fn update_changeset_node(
 
     let source = proposed.source.as_deref().unwrap_or("agent_extract");
     let source_type = proposed.source_type.as_deref().unwrap_or("agent_extract");
+    let meta_str = match &proposed.meta {
+        Some(meta) => meta.to_string(),
+        None => tx
+            .query_row(
+                "SELECT COALESCE(meta, '{}') FROM nodes WHERE id = ?1 LIMIT 1;",
+                [node_id],
+                |row| row.get(0),
+            )
+            .map_err(|err| format!("Failed fetching node meta: {err}"))?,
+    };
 
     let encrypted_payload = if is_redacted {
         let key = session_key.ok_or_else(|| "VAULT_LOCKED".to_string())?;
@@ -254,7 +264,8 @@ fn update_changeset_node(
              detail = ?7,
              version = version + 1,
              updated_at = datetime('now'),
-             encrypted_payload = ?8
+             meta = ?8,
+             encrypted_payload = ?9
          WHERE id = ?1 AND deleted_at IS NULL;",
             params![
                 node_id,
@@ -268,6 +279,7 @@ fn update_changeset_node(
                 } else {
                     proposed.detail.as_deref()
                 },
+                meta_str,
                 encrypted_payload
             ],
         )
