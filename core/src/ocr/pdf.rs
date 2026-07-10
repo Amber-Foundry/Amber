@@ -368,10 +368,7 @@ impl PdfRasterizer {
             }
         }
 
-        Ok(merge_text_objects_on_visual_lines(
-            raw_blocks,
-            page.width().value,
-        ))
+        Ok(merge_text_objects_on_visual_lines(raw_blocks))
     }
 }
 
@@ -505,10 +502,7 @@ fn sanitize_pdf_text(text: &str) -> String {
         .collect()
 }
 
-fn merge_text_objects_on_visual_lines(
-    mut blocks: Vec<RawLayoutBlock>,
-    page_width: f32,
-) -> Vec<RawLayoutBlock> {
+fn merge_text_objects_on_visual_lines(mut blocks: Vec<RawLayoutBlock>) -> Vec<RawLayoutBlock> {
     if blocks.len() <= 1 {
         return blocks;
     }
@@ -568,7 +562,7 @@ fn merge_text_objects_on_visual_lines(
                     .partial_cmp(&b.bbox.x)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-            merge_line_blocks(line.blocks, page_width)
+            merge_line_blocks(line.blocks)
         })
         .collect()
 }
@@ -583,7 +577,7 @@ fn merge_object_text_for_line(text: &str) -> Option<&str> {
     }
 }
 
-fn merge_line_blocks(blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<RawLayoutBlock> {
+fn merge_line_blocks(blocks: Vec<RawLayoutBlock>) -> Vec<RawLayoutBlock> {
     let mut merged_blocks = Vec::new();
     let mut current_run = Vec::new();
     let mut prev_right: Option<f32> = None;
@@ -596,14 +590,10 @@ fn merge_line_blocks(blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<RawLay
 
         if let (Some(prev), Some(prev_block)) = (prev_right, prev_block.as_ref()) {
             let gap = block.bbox.x - prev;
-            let crosses_midpoint = prev < page_width / 2.0
-                && block.bbox.x + (block.bbox.width / 2.0) > page_width / 2.0;
             let column_split_threshold = inter_block_space_threshold(prev_block, &block)
                 .mul_add(8.0, 0.0)
                 .max(24.0);
-            if (gap > column_split_threshold || (crosses_midpoint && gap > 4.0))
-                && !current_run.is_empty()
-            {
+            if gap > column_split_threshold && !current_run.is_empty() {
                 if let Some(merged) = merge_nearby_line_run(std::mem::take(&mut current_run)) {
                     merged_blocks.push(merged);
                 }
@@ -914,7 +904,7 @@ mod tests {
             RawLayoutBlock::new("chosen", Rect::new(70.0, 20.0, 36.0, 8.0)).with_font_size(8.0),
         ];
 
-        let merged = merge_text_objects_on_visual_lines(blocks, 300.0);
+        let merged = merge_text_objects_on_visual_lines(blocks);
 
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].text, "Members chosen");
@@ -929,7 +919,7 @@ mod tests {
                 .with_font_size(8.0),
         ];
 
-        let merged = merge_text_objects_on_visual_lines(blocks, 300.0);
+        let merged = merge_text_objects_on_visual_lines(blocks);
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].text, "Left column");
