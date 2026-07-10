@@ -212,8 +212,23 @@ fn update_changeset_node(
         );
     }
 
-    let source = proposed.source.as_deref().unwrap_or("agent_extract");
-    let source_type = proposed.source_type.as_deref().unwrap_or("agent_extract");
+    let (existing_source, existing_source_type): (Option<String>, Option<String>) = tx
+        .query_row(
+            "SELECT source, source_type FROM nodes WHERE id = ?1 LIMIT 1;",
+            [node_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|err| format!("Failed fetching node source fields: {err}"))?;
+    let source = proposed
+        .source
+        .as_deref()
+        .or(existing_source.as_deref())
+        .unwrap_or("agent_extract");
+    let source_type = proposed
+        .source_type
+        .as_deref()
+        .or(existing_source_type.as_deref())
+        .unwrap_or("agent_extract");
     let meta_str = match &proposed.meta {
         Some(meta) => meta.to_string(),
         None => tx
@@ -2077,6 +2092,51 @@ mod tests {
         assert_eq!(title, "Updated Title");
         assert_eq!(source.as_deref(), Some("chat_session"));
         assert_eq!(source_type.as_deref(), Some("chat"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_changeset_node_preserves_source_when_omitted() -> Result<(), Box<dyn Error>> {
+        let mut conn = setup_test_db()?;
+
+        conn.execute(
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_open', 'Open', 'open');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail, source, source_type, priority)
+             VALUES ('node_preserve_source', 'vault_open', 'concept', 'Original Title', 'Original Summary', 'Original Detail', 'manual', 'manual', '{}');",
+            [],
+        )?;
+
+        let tx = conn.transaction()?;
+        let proposed = crate::memory_agent::changeset::ProposedNodeData {
+            title: "Updated Title".to_string(),
+            summary: "Updated Summary".to_string(),
+            detail: Some("Updated Detail".to_string()),
+            node_type: Some("concept".to_string()),
+            target_vault_key: None,
+            vault_id: Some("vault_open".to_string()),
+            tags: None,
+            confidence: 1.0,
+            action: crate::memory_agent::parser::CandidateAction::Update,
+            substantial_change: None,
+            source: None,
+            source_type: None,
+            meta: None,
+        };
+        update_changeset_node(&tx, "node_preserve_source", "vault_open", &proposed, None)?;
+        tx.commit()?;
+
+        let (source, source_type): (Option<String>, Option<String>) = conn.query_row(
+            "SELECT source, source_type FROM nodes WHERE id = 'node_preserve_source';",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        assert_eq!(source.as_deref(), Some("manual"));
+        assert_eq!(source_type.as_deref(), Some("manual"));
 
         Ok(())
     }
