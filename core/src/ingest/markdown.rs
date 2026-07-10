@@ -164,7 +164,11 @@ fn append_body_line(
     prev_text: &str,
 ) {
     let next_starts_lowercase = next.chars().next().is_some_and(char::is_lowercase);
-    if current.ends_with('-') && next_starts_lowercase {
+    if current.ends_with('-')
+        && next_starts_lowercase
+        && (is_mid_word_split(prev_bbox, next_bbox, prev_text, next)
+            || is_line_break_hyphen(prev_bbox, next_bbox))
+    {
         current.pop();
         current.push_str(next);
     } else if is_mid_word_split(prev_bbox, next_bbox, prev_text, next) {
@@ -206,6 +210,22 @@ fn is_mid_word_split(
 
     // Allow tiny negative gaps from measurement noise; anything larger is overlap/wrap.
     gap <= space_threshold && gap >= -space_threshold * 0.25
+}
+
+fn is_line_break_hyphen(prev: Option<&Rect>, next: Option<&Rect>) -> bool {
+    let (Some(prev), Some(next)) = (prev, next) else {
+        return false;
+    };
+
+    let line_height = prev.height.max(next.height).max(1.0);
+    if (next.y - prev.y).abs() <= line_height * 0.5 {
+        return false;
+    }
+
+    let vertical_gap = next.y - (prev.y + prev.height);
+    horizontal_overlap_ratio(prev, next) > 0.15
+        && vertical_gap >= -line_height * 0.5
+        && vertical_gap <= line_height * 1.8
 }
 
 fn average_char_width(text: &str, width: f32) -> f32 {
@@ -509,5 +529,27 @@ mod tests {
         let ingest_blocks = assemble_markdown_blocks(&blocks, 0);
 
         assert_eq!(ingest_blocks[0].formatted_text, "United States");
+    }
+
+    #[test]
+    fn test_markdown_assembler_preserves_compound_hyphen() {
+        let blocks = vec![
+            TextBlock {
+                text: "multi-".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(10.0, 10.0, 36.0, 10.0)),
+                confidence: None,
+            },
+            TextBlock {
+                text: "level".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(58.0, 10.0, 40.0, 10.0)),
+                confidence: None,
+            },
+        ];
+
+        let ingest_blocks = assemble_markdown_blocks(&blocks, 0);
+
+        assert_eq!(ingest_blocks[0].formatted_text, "multi- level");
     }
 }
