@@ -303,6 +303,11 @@ pub fn decode_ctc_logits(
 
 impl OcrEngine for BundledOcrEngine {
     fn recognize(&self, image: &image::DynamicImage) -> Result<OcrOutput, OcrError> {
+        let (img_w, img_h) = image.dimensions();
+        if img_w == 0 || img_h == 0 {
+            return Ok(OcrOutput::new(Vec::new()));
+        }
+
         let (det_tensor, det_w, det_h, scale_x, scale_y) = Self::preprocess_detection(image);
 
         let shape = vec![1i64, 3, det_h as i64, det_w as i64];
