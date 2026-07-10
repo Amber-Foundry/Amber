@@ -66,7 +66,7 @@ pub fn download_and_verify(
 
     let tmp_path = dest_path.with_extension("tmp_download");
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(600))
         .build()
         .map_err(|err| DownloadError::Network(err.to_string()))?;
     let mut response = client
