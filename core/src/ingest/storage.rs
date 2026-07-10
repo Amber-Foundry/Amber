@@ -119,7 +119,8 @@ pub fn set_import_job_status(
         conn.execute(
             "UPDATE import_jobs
              SET status = ?1,
-                 error = NULL
+                 error = NULL,
+                 completed_at = NULL
              WHERE id = ?2;",
             params![status, id],
         )
@@ -526,6 +527,7 @@ mod tests {
         let row = require_job(&conn, "job-006")?;
         assert_eq!(row.status, "extracting");
         assert!(row.error.is_none());
+        assert!(row.completed_at.is_none());
         Ok(())
     }
 }
