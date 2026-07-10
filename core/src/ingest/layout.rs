@@ -180,8 +180,9 @@ fn cluster_single_band(band_blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec
         }
     }
 
-    // If we have both left and right blocks, check if there is an actual column structure
-    if has_left && has_right {
+    // If we have both left and right blocks, only treat as multi-column when a clear
+    // vertical gutter exists (no significant horizontal overlap between column envelopes).
+    if has_left && has_right && columns_have_clear_gutter(&left_column, &right_column, page_width) {
         // Sort top-to-bottom within each column
         left_column.sort_by(|a, b| {
             a.bbox
@@ -212,6 +213,21 @@ fn cluster_single_band(band_blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec
         });
         single_col
     }
+}
+
+/// Returns true when left and right column block envelopes are separated by a horizontal gutter.
+fn columns_have_clear_gutter(
+    left: &[RawLayoutBlock],
+    right: &[RawLayoutBlock],
+    page_width: f32,
+) -> bool {
+    let left_max_x = left
+        .iter()
+        .map(|b| b.bbox.x + b.bbox.width)
+        .fold(0.0f32, f32::max);
+    let right_min_x = right.iter().map(|b| b.bbox.x).fold(f32::MAX, f32::min);
+    let min_gutter = (page_width * 0.05).max(12.0);
+    left_max_x + min_gutter <= right_min_x
 }
 
 /// Computes the median font size or median bounding box height.
@@ -394,5 +410,25 @@ mod tests {
         );
         assert_eq!(result[3].text, "Section 8. The Congress shall have Power");
         assert_eq!(result[4].text, "To lay and collect Taxes, Duties, Imposts.");
+    }
+
+    #[test]
+    fn test_centered_heading_stays_single_column() {
+        let heading = RawLayoutBlock::new("Introduction", Rect::new(220.0, 50.0, 160.0, 20.0));
+        let para1 = RawLayoutBlock::new(
+            "This paragraph starts below the heading.",
+            Rect::new(80.0, 90.0, 440.0, 15.0),
+        );
+        let para2 = RawLayoutBlock::new(
+            "Indented continuation on the next line.",
+            Rect::new(100.0, 110.0, 420.0, 15.0),
+        );
+
+        let result = analyze_layout(vec![heading, para1, para2], 600.0, 800.0);
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].text, "Introduction");
+        assert_eq!(result[1].text, "This paragraph starts below the heading.");
+        assert_eq!(result[2].text, "Indented continuation on the next line.");
     }
 }
