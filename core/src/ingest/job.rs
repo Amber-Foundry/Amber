@@ -516,11 +516,13 @@ impl IngestJobEngine {
 
         let handle = tokio::runtime::Handle::try_current();
         let raw_res = match handle {
-            Ok(h) => h.block_on(crate::llm::client::LlmClient::complete(
-                &client,
-                &sys_prompt,
-                &messages,
-            )),
+            Ok(h) => tokio::task::block_in_place(|| {
+                h.block_on(crate::llm::client::LlmClient::complete(
+                    &client,
+                    &sys_prompt,
+                    &messages,
+                ))
+            }),
             Err(_) => match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
