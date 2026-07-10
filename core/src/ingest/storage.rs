@@ -44,9 +44,10 @@ impl Default for CreateImportJobParams {
 }
 
 const IMPORT_JOB_SELECT: &str = "SELECT
-    id, import_type, source_name, target_vault_id, status, changeset_id, node_count,
-    error, created_at, completed_at, total_pages, digital_pages, ocr_pages, hybrid_pages,
-    avg_ocr_confidence, rasterization_dpi, tables_detected_unpreserved, extraction_path
+    id, import_type, source_name, target_vault_id, status, changeset_id, COALESCE(node_count, 0),
+    error, created_at, completed_at, COALESCE(total_pages, 0), COALESCE(digital_pages, 0),
+    COALESCE(ocr_pages, 0), COALESCE(hybrid_pages, 0), COALESCE(avg_ocr_confidence, 0.0),
+    COALESCE(rasterization_dpi, 300), COALESCE(tables_detected_unpreserved, 0), extraction_path
     FROM import_jobs";
 
 fn map_import_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ImportJobRow> {
