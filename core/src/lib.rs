@@ -2889,18 +2889,17 @@ fn import_start_job(
                 };
                 let mut last_emit = Instant::now() - Duration::from_millis(250);
                 while let Ok(progress) = progress_rx.recv() {
-                    let is_final = progress.current_page == progress.total_pages
-                        || progress.status == "staged";
-                    if !is_final && last_emit.elapsed() < Duration::from_millis(250) {
-                        continue;
-                    }
                     if ingest::update_import_job_from_progress(&conn, &progress_job_id, &progress)
                         .is_err()
                     {
                         continue;
                     }
-                    emit_import_job_status(&progress_app, &conn, &progress_job_id);
-                    last_emit = Instant::now();
+                    let is_final = progress.current_page == progress.total_pages
+                        || progress.status == "staged";
+                    if is_final || last_emit.elapsed() >= Duration::from_millis(250) {
+                        emit_import_job_status(&progress_app, &conn, &progress_job_id);
+                        last_emit = Instant::now();
+                    }
                 }
             });
 
