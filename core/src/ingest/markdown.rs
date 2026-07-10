@@ -140,6 +140,10 @@ fn should_merge_body_line(
     if let Some(last_prev) = last_prev {
         let line_height = last_prev.height.max(next.height).max(1.0);
         if (next.y - last_prev.y).abs() <= line_height * 0.5 {
+            let gap = next.x - (last_prev.x + last_prev.width);
+            if gap > line_height * 3.0 {
+                return false;
+            }
             return next.x >= last_prev.x - line_height * 0.25;
         }
     }
@@ -458,6 +462,30 @@ mod tests {
         assert_eq!(ingest_blocks.len(), 2);
         assert_eq!(ingest_blocks[0].formatted_text, "First paragraph block.");
         assert_eq!(ingest_blocks[1].formatted_text, "Unrelated second block.");
+    }
+
+    #[test]
+    fn test_markdown_assembler_keeps_same_line_columns_separate() {
+        let blocks = vec![
+            TextBlock {
+                text: "Left column".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(10.0, 20.0, 60.0, 8.0)),
+                confidence: None,
+            },
+            TextBlock {
+                text: "Right column".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(220.0, 20.0, 70.0, 8.0)),
+                confidence: None,
+            },
+        ];
+
+        let ingest_blocks = assemble_markdown_blocks(&blocks, 0);
+
+        assert_eq!(ingest_blocks.len(), 2);
+        assert_eq!(ingest_blocks[0].formatted_text, "Left column");
+        assert_eq!(ingest_blocks[1].formatted_text, "Right column");
     }
 
     #[test]
