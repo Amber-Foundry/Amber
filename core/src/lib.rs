@@ -2904,22 +2904,39 @@ fn import_start_job(
             });
 
             let progress_for_job = progress_tx.clone();
-            let worker_result = (|| -> Result<(), String> {
+            enum ImportPdfWorkerOutcome {
+                Staged(ingest::IngestJobResult),
+                UserCancelled,
+                Failed(String),
+            }
+
+            let pdf_outcome = (|| -> Result<ImportPdfWorkerOutcome, String> {
                 let conn = open_connection(&db_path)?;
                 ingest::set_import_job_status(&conn, &worker_job_id, "extracting", None)?;
                 emit_import_job_status(&app_handle_worker, &conn, &worker_job_id);
 
-                let result = ingest::IngestJobEngine::process_pdf_job(
+                match ingest::IngestJobEngine::process_pdf_job(
                     &worker_job_id,
                     &worker_file_path,
                     config,
                     Some(progress_for_job),
                     Some(worker_cancel.as_ref()),
-                );
+                ) {
+                    Ok(job_result) => Ok(ImportPdfWorkerOutcome::Staged(job_result)),
+                    Err(ocr::engine::OcrError::Cancelled) => {
+                        Ok(ImportPdfWorkerOutcome::UserCancelled)
+                    }
+                    Err(err) => Ok(ImportPdfWorkerOutcome::Failed(err.to_string())),
+                }
+            })();
 
+            drop(progress_tx);
+            let _ = progress_handle.join();
+
+            let finalize_result = (|| -> Result<(), String> {
                 let conn = open_connection(&db_path)?;
-                match result {
-                    Ok(job_result) => {
+                match pdf_outcome {
+                    Ok(ImportPdfWorkerOutcome::Staged(job_result)) => {
                         let extraction_path = ingest::derive_document_extraction_path(
                             job_result.digital_pages,
                             job_result.ocr_pages,
@@ -2933,7 +2950,7 @@ fn import_start_job(
                             extraction_path,
                         )?;
                     }
-                    Err(ocr::engine::OcrError::Cancelled) => {
+                    Ok(ImportPdfWorkerOutcome::UserCancelled) => {
                         ingest::set_import_job_status(
                             &conn,
                             &worker_job_id,
@@ -2941,30 +2958,20 @@ fn import_start_job(
                             Some("Cancelled by user"),
                         )?;
                     }
+                    Ok(ImportPdfWorkerOutcome::Failed(err)) => {
+                        ingest::set_import_job_status(&conn, &worker_job_id, "failed", Some(&err))?;
+                    }
                     Err(err) => {
-                        ingest::set_import_job_status(
-                            &conn,
-                            &worker_job_id,
-                            "failed",
-                            Some(&err.to_string()),
-                        )?;
+                        ingest::set_import_job_status(&conn, &worker_job_id, "failed", Some(&err))?;
                     }
                 }
                 emit_import_job_status(&app_handle_worker, &conn, &worker_job_id);
                 Ok(())
             })();
 
-            if let Err(err) = worker_result {
+            if let Err(err) = finalize_result {
                 eprintln!("[import] worker failed: {err}");
-                if let Ok(conn) = open_connection(&db_path) {
-                    let _ =
-                        ingest::set_import_job_status(&conn, &worker_job_id, "failed", Some(&err));
-                    emit_import_job_status(&app_handle_worker, &conn, &worker_job_id);
-                }
             }
-
-            drop(progress_tx);
-            let _ = progress_handle.join();
         });
 
         Ok(initial_status)
