@@ -579,21 +579,17 @@ impl IngestJobEngine {
     }
 }
 
-fn prepare_job_runtime(
-) -> Result<(tokio::runtime::Handle, Option<tokio::runtime::Runtime>), OcrError> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => Ok((handle, None)),
-        Err(_) => {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| {
-                    OcrError::InferenceFailed(format!("Failed to build Tokio runtime: {err}"))
-                })?;
-            let handle = runtime.handle().clone();
-            Ok((handle, Some(runtime)))
-        }
-    }
+fn prepare_job_runtime() -> Result<(tokio::runtime::Handle, tokio::runtime::Runtime), OcrError> {
+    // Ingest jobs run on blocking threads; always use a job-owned runtime so LLM
+    // block_on never borrows the Tauri async runtime handle.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| {
+            OcrError::InferenceFailed(format!("Failed to build Tokio runtime: {err}"))
+        })?;
+    let handle = runtime.handle().clone();
+    Ok((handle, runtime))
 }
 
 fn scale_blocks_to_page(
