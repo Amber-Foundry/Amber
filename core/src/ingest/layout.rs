@@ -334,7 +334,10 @@ fn is_list_item(text: &str) -> bool {
     if !bytes.is_empty() && (bytes[0].is_ascii_digit() || bytes[0] == b'(') {
         if let Some(pos) = trimmed.find(&['.', ')'][..]) {
             if pos <= 4 {
-                return true;
+                let after_delim = trimmed.get(pos + 1..);
+                if after_delim.is_none_or(|s| s.is_empty() || s.starts_with(' ')) {
+                    return true;
+                }
             }
         }
     }
@@ -359,6 +362,7 @@ mod tests {
         assert!(is_list_item("1. First numbered item"));
         assert!(is_list_item("2) Second numbered item"));
         assert!(!is_list_item("This is regular paragraph text."));
+        assert!(!is_list_item("The value is 1.5 meters wide."));
     }
 
     #[test]
