@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::Path;
 
 #[derive(Debug)]
@@ -64,7 +64,7 @@ pub fn download_and_verify(
     fs::create_dir_all(parent).map_err(|err| DownloadError::Io(err.to_string()))?;
 
     let tmp_path = dest_path.with_extension("tmp_download");
-    let response =
+    let mut response =
         reqwest::blocking::get(url).map_err(|err| DownloadError::Network(err.to_string()))?;
     if !response.status().is_success() {
         return Err(DownloadError::Network(format!(
@@ -74,14 +74,9 @@ pub fn download_and_verify(
         )));
     }
 
-    let bytes = response
-        .bytes()
-        .map_err(|err| DownloadError::Network(err.to_string()))?;
-
     let mut tmp_file = File::create(&tmp_path).map_err(|err| DownloadError::Io(err.to_string()))?;
-    tmp_file
-        .write_all(&bytes)
-        .map_err(|err| DownloadError::Io(err.to_string()))?;
+    io::copy(&mut response, &mut tmp_file)
+        .map_err(|err| DownloadError::Network(err.to_string()))?;
     drop(tmp_file);
 
     let actual_sha256 =
