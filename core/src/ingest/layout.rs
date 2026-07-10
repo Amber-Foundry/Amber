@@ -129,7 +129,8 @@ fn cluster_multi_column_layout(
     let mut current_band: Vec<RawLayoutBlock> = Vec::new();
 
     for block in sorted_blocks {
-        let is_full_width = block.bbox.width >= full_width_threshold;
+        let is_full_width = block.bbox.width >= full_width_threshold
+            || block_crosses_page_center(&block.bbox, page_width);
 
         if is_full_width {
             // Flush current band column clusters before pushing full-width block
@@ -213,6 +214,17 @@ fn cluster_single_band(band_blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec
         });
         single_col
     }
+}
+
+/// Centered headings often span the page midline but stay narrower than the full-width threshold.
+/// Treat them as band dividers so two-column content below is clustered separately.
+fn block_crosses_page_center(bbox: &Rect, page_width: f32) -> bool {
+    let mid_page = page_width / 2.0;
+    let left = bbox.x;
+    let right = bbox.x + bbox.width;
+    let center = left + (bbox.width / 2.0);
+    let center_margin = page_width * 0.08;
+    left < mid_page && right > mid_page && (center - mid_page).abs() <= center_margin
 }
 
 /// Returns true when left and right column block envelopes are separated by a horizontal gutter.
@@ -410,6 +422,34 @@ mod tests {
         );
         assert_eq!(result[3].text, "Section 8. The Congress shall have Power");
         assert_eq!(result[4].text, "To lay and collect Taxes, Duties, Imposts.");
+    }
+
+    #[test]
+    fn test_centered_heading_divides_two_column_band() {
+        let heading = RawLayoutBlock::new("Chapter I", Rect::new(220.0, 50.0, 160.0, 20.0));
+        let col1_line1 =
+            RawLayoutBlock::new("Left column line one", Rect::new(50.0, 100.0, 200.0, 15.0));
+        let col2_line1 = RawLayoutBlock::new(
+            "Right column line one",
+            Rect::new(350.0, 100.0, 200.0, 15.0),
+        );
+        let col1_line2 =
+            RawLayoutBlock::new("Left column line two", Rect::new(50.0, 120.0, 200.0, 15.0));
+        let col2_line2 = RawLayoutBlock::new(
+            "Right column line two",
+            Rect::new(350.0, 120.0, 200.0, 15.0),
+        );
+
+        let raw_blocks = vec![heading, col1_line1, col2_line1, col1_line2, col2_line2];
+
+        let result = analyze_layout(raw_blocks, 600.0, 800.0);
+
+        assert_eq!(result.len(), 5);
+        assert_eq!(result[0].text, "Chapter I");
+        assert_eq!(result[1].text, "Left column line one");
+        assert_eq!(result[2].text, "Left column line two");
+        assert_eq!(result[3].text, "Right column line one");
+        assert_eq!(result[4].text, "Right column line two");
     }
 
     #[test]
