@@ -82,8 +82,10 @@ pub fn download_and_verify(
     }
 
     let mut tmp_file = File::create(&tmp_path).map_err(|err| DownloadError::Io(err.to_string()))?;
-    io::copy(&mut response, &mut tmp_file)
-        .map_err(|err| DownloadError::Network(err.to_string()))?;
+    if let Err(err) = io::copy(&mut response, &mut tmp_file) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(DownloadError::Network(err.to_string()));
+    }
     drop(tmp_file);
 
     let actual_sha256 =
