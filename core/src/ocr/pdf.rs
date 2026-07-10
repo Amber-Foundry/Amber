@@ -185,7 +185,13 @@ impl PdfRasterizer {
             .map_err(|e| OcrError::InferenceFailed(format!("Failed loading PDF document: {e}")))?;
 
         let pages = document.pages();
-        let page = pages.get(page_index as u16).map_err(|_| {
+        let page_idx = u16::try_from(page_index).map_err(|_| {
+            OcrError::InferenceFailed(format!(
+                "Page index {page_index} exceeds maximum supported value ({})",
+                u16::MAX
+            ))
+        })?;
+        let page = pages.get(page_idx).map_err(|_| {
             OcrError::InferenceFailed(format!(
                 "Page index {page_index} out of bounds (total pages: {})",
                 pages.len()
@@ -216,7 +222,13 @@ impl PdfRasterizer {
             .map_err(|e| OcrError::InferenceFailed(format!("Failed loading PDF document: {e}")))?;
 
         let pages = document.pages();
-        let page = pages.get(page_index as u16).map_err(|_| {
+        let page_idx = u16::try_from(page_index).map_err(|_| {
+            OcrError::InferenceFailed(format!(
+                "Page index {page_index} exceeds maximum supported value ({})",
+                u16::MAX
+            ))
+        })?;
+        let page = pages.get(page_idx).map_err(|_| {
             OcrError::InferenceFailed(format!(
                 "Page index {page_index} out of bounds (total pages: {})",
                 pages.len()
@@ -243,7 +255,13 @@ impl PdfRasterizer {
             .map_err(|e| OcrError::InferenceFailed(format!("Failed loading PDF document: {e}")))?;
 
         let pages = document.pages();
-        let page = pages.get(page_index as u16).map_err(|_| {
+        let page_idx = u16::try_from(page_index).map_err(|_| {
+            OcrError::InferenceFailed(format!(
+                "Page index {page_index} exceeds maximum supported value ({})",
+                u16::MAX
+            ))
+        })?;
+        let page = pages.get(page_idx).map_err(|_| {
             OcrError::InferenceFailed(format!(
                 "Page index {page_index} out of bounds (total pages: {})",
                 pages.len()
