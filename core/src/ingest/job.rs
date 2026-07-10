@@ -961,7 +961,8 @@ mod tests {
             ..Default::default()
         };
 
-        let (runtime_handle, owned_runtime) = prepare_job_runtime().expect("job runtime");
+        let (runtime_handle, owned_runtime) = prepare_job_runtime()
+            .unwrap_or_else(|err| panic!("expected job runtime in test: {err}"));
         let nodes = IngestJobEngine::extract_chunk_candidates(
             &chunk,
             "test.pdf",
