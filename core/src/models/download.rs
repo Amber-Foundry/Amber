@@ -3,6 +3,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub enum DownloadError {
@@ -64,8 +65,14 @@ pub fn download_and_verify(
     fs::create_dir_all(parent).map_err(|err| DownloadError::Io(err.to_string()))?;
 
     let tmp_path = dest_path.with_extension("tmp_download");
-    let mut response =
-        reqwest::blocking::get(url).map_err(|err| DownloadError::Network(err.to_string()))?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|err| DownloadError::Network(err.to_string()))?;
+    let mut response = client
+        .get(url)
+        .send()
+        .map_err(|err| DownloadError::Network(err.to_string()))?;
     if !response.status().is_success() {
         return Err(DownloadError::Network(format!(
             "HTTP {} when fetching {}",
