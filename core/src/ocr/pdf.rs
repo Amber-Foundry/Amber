@@ -3,8 +3,6 @@ use crate::ocr::ocr_models_dir;
 use crate::{ingest::layout::RawLayoutBlock, ocr::engine::Rect};
 use image::DynamicImage;
 use pdfium_render::prelude::*;
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
 /// Classification of a PDF page's content.
@@ -48,6 +46,9 @@ impl Default for PdfRasterizerConfig {
         Self { dpi: 300 }
     }
 }
+
+/// A PDF document loaded once for multi-page extraction.
+pub type LoadedPdf<'a> = PdfDocument<'a>;
 
 /// Helper for PDF object scanning, page classification, and image rendering.
 pub struct PdfRasterizer {
@@ -108,31 +109,39 @@ impl PdfRasterizer {
         })
     }
 
+    /// Loads a PDF document from a file path for reuse across page operations.
+    pub fn load_document_from_file(&self, file_path: &Path) -> Result<PdfDocument<'_>, OcrError> {
+        self.pdfium
+            .load_pdf_from_file(file_path, None)
+            .map_err(|e| {
+                OcrError::IoError(format!(
+                    "Failed to load PDF file at {}: {e}",
+                    file_path.display()
+                ))
+            })
+    }
+
+    /// Loads a PDF document from bytes for reuse across page operations.
+    pub fn load_document(&self, pdf_bytes: Vec<u8>) -> Result<PdfDocument<'_>, OcrError> {
+        self.pdfium
+            .load_pdf_from_byte_vec(pdf_bytes, None)
+            .map_err(|e| OcrError::InferenceFailed(format!("Failed to load PDF document: {e}")))
+    }
+
     /// Scans a PDF file on disk and returns metadata for all pages.
     pub fn scan_file(&self, file_path: &Path) -> Result<Vec<PdfPageInfo>, OcrError> {
-        let mut file = File::open(file_path).map_err(|e| {
-            OcrError::IoError(format!(
-                "Failed to open PDF file at {}: {e}",
-                file_path.display()
-            ))
-        })?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).map_err(|e| {
-            OcrError::IoError(format!(
-                "Failed to read PDF file at {}: {e}",
-                file_path.display()
-            ))
-        })?;
-        self.scan_document(&bytes)
+        let document = self.load_document_from_file(file_path)?;
+        Self::scan_loaded_document(&document)
     }
 
     /// Scans a PDF document from bytes and returns metadata and page classification for all pages.
     pub fn scan_document(&self, pdf_bytes: &[u8]) -> Result<Vec<PdfPageInfo>, OcrError> {
-        let document = self
-            .pdfium
-            .load_pdf_from_byte_slice(pdf_bytes, None)
-            .map_err(|e| OcrError::InferenceFailed(format!("Failed to load PDF document: {e}")))?;
+        let document = self.load_document(pdf_bytes.to_vec())?;
+        Self::scan_loaded_document(&document)
+    }
 
+    /// Scans an already-loaded PDF document and returns metadata for all pages.
+    pub fn scan_loaded_document(document: &PdfDocument<'_>) -> Result<Vec<PdfPageInfo>, OcrError> {
         let mut page_infos = Vec::new();
 
         for (idx, page) in document.pages().iter().enumerate() {
@@ -179,11 +188,17 @@ impl PdfRasterizer {
         page_index: usize,
         config: &PdfRasterizerConfig,
     ) -> Result<DynamicImage, OcrError> {
-        let document = self
-            .pdfium
-            .load_pdf_from_byte_slice(pdf_bytes, None)
-            .map_err(|e| OcrError::InferenceFailed(format!("Failed loading PDF document: {e}")))?;
+        let document = self.load_document(pdf_bytes.to_vec())?;
+        self.render_loaded_page(&document, page_index, config)
+    }
 
+    /// Renders a page from an already-loaded PDF document.
+    pub fn render_loaded_page(
+        &self,
+        document: &PdfDocument<'_>,
+        page_index: usize,
+        config: &PdfRasterizerConfig,
+    ) -> Result<DynamicImage, OcrError> {
         let pages = document.pages();
         let page_idx = u16::try_from(page_index).map_err(|_| {
             OcrError::InferenceFailed(format!(
@@ -205,9 +220,7 @@ impl PdfRasterizer {
             OcrError::InferenceFailed(format!("Failed rendering PDF page {page_index}: {e}"))
         })?;
 
-        let image = bitmap.as_image();
-
-        Ok(image)
+        Ok(bitmap.as_image())
     }
 
     /// Extracts digital text layer from a PDF page if available.
@@ -216,11 +229,15 @@ impl PdfRasterizer {
         pdf_bytes: &[u8],
         page_index: usize,
     ) -> Result<String, OcrError> {
-        let document = self
-            .pdfium
-            .load_pdf_from_byte_slice(pdf_bytes, None)
-            .map_err(|e| OcrError::InferenceFailed(format!("Failed loading PDF document: {e}")))?;
+        let document = self.load_document(pdf_bytes.to_vec())?;
+        Self::extract_digital_text_from_document(&document, page_index)
+    }
 
+    /// Extracts digital text from a page in an already-loaded PDF document.
+    pub fn extract_digital_text_from_document(
+        document: &PdfDocument<'_>,
+        page_index: usize,
+    ) -> Result<String, OcrError> {
         let pages = document.pages();
         let page_idx = u16::try_from(page_index).map_err(|_| {
             OcrError::InferenceFailed(format!(
@@ -249,11 +266,15 @@ impl PdfRasterizer {
         pdf_bytes: &[u8],
         page_index: usize,
     ) -> Result<Vec<RawLayoutBlock>, OcrError> {
-        let document = self
-            .pdfium
-            .load_pdf_from_byte_slice(pdf_bytes, None)
-            .map_err(|e| OcrError::InferenceFailed(format!("Failed loading PDF document: {e}")))?;
+        let document = self.load_document(pdf_bytes.to_vec())?;
+        Self::extract_digital_blocks_from_document(&document, page_index)
+    }
 
+    /// Extracts structured layout blocks from a page in an already-loaded PDF document.
+    pub fn extract_digital_blocks_from_document(
+        document: &PdfDocument<'_>,
+        page_index: usize,
+    ) -> Result<Vec<RawLayoutBlock>, OcrError> {
         let pages = document.pages();
         let page_idx = u16::try_from(page_index).map_err(|_| {
             OcrError::InferenceFailed(format!(

@@ -4,10 +4,8 @@ use crate::ingest::markdown::{assemble_markdown_blocks, join_ingest_blocks, Inge
 use crate::memory_agent::parser::{CandidateAction, CandidateNode};
 use crate::ocr::bundled::BundledOcrEngine;
 use crate::ocr::engine::{OcrEngine, OcrError, Rect};
-use crate::ocr::pdf::{PdfPageType, PdfRasterizer, PdfRasterizerConfig};
+use crate::ocr::pdf::{LoadedPdf, PdfPageType, PdfRasterizer, PdfRasterizerConfig};
 use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -137,14 +135,9 @@ impl IngestJobEngine {
             .unwrap_or("document.pdf")
             .to_string();
 
-        let mut file = File::open(file_path)
-            .map_err(|e| OcrError::IoError(format!("Failed opening PDF file: {e}")))?;
-        let mut pdf_bytes = Vec::new();
-        file.read_to_end(&mut pdf_bytes)
-            .map_err(|e| OcrError::IoError(format!("Failed reading PDF file: {e}")))?;
-
         let rasterizer = PdfRasterizer::new()?;
-        let pages_info = rasterizer.scan_document(&pdf_bytes)?;
+        let document = rasterizer.load_document_from_file(file_path)?;
+        let pages_info = PdfRasterizer::scan_loaded_document(&document)?;
         let total_pages = pages_info.len();
 
         let mut digital_pages = 0;
@@ -196,14 +189,15 @@ impl IngestJobEngine {
 
             let layout_blocks = match p.page_type {
                 PdfPageType::Digital => {
-                    let raw_blocks = rasterizer.extract_digital_blocks(&pdf_bytes, i)?;
+                    let raw_blocks =
+                        PdfRasterizer::extract_digital_blocks_from_document(&document, i)?;
                     analyze_layout(raw_blocks, p.width_pts, p.height_pts)
                 }
                 PdfPageType::Ocr => {
                     let (raw_blocks, image_width, image_height, confidence) =
                         Self::recognize_ocr_page(
                             &rasterizer,
-                            &pdf_bytes,
+                            &document,
                             i,
                             &rasterizer_config,
                             &mut cached_ocr_engine,
@@ -217,7 +211,7 @@ impl IngestJobEngine {
                     let (ocr_blocks, image_width, image_height, confidence) =
                         Self::recognize_ocr_page(
                             &rasterizer,
-                            &pdf_bytes,
+                            &document,
                             i,
                             &rasterizer_config,
                             &mut cached_ocr_engine,
@@ -225,7 +219,8 @@ impl IngestJobEngine {
                     total_ocr_confidence_sum += confidence;
                     ocr_pass_count += 1;
 
-                    let digital_blocks = rasterizer.extract_digital_blocks(&pdf_bytes, i)?;
+                    let digital_blocks =
+                        PdfRasterizer::extract_digital_blocks_from_document(&document, i)?;
                     let scaled_digital_blocks = scale_blocks_to_page(
                         digital_blocks,
                         image_width / p.width_pts.max(1.0),
@@ -377,7 +372,7 @@ impl IngestJobEngine {
 
     fn recognize_ocr_page(
         rasterizer: &PdfRasterizer,
-        pdf_bytes: &[u8],
+        document: &LoadedPdf<'_>,
         page_index: usize,
         rasterizer_config: &PdfRasterizerConfig,
         cached_ocr_engine: &mut Option<BundledOcrEngine>,
@@ -389,7 +384,7 @@ impl IngestJobEngine {
             OcrError::InferenceFailed("Failed initializing OCR engine session".to_string())
         })?;
 
-        let page_img = rasterizer.render_page(pdf_bytes, page_index, rasterizer_config)?;
+        let page_img = rasterizer.render_loaded_page(document, page_index, rasterizer_config)?;
         let (image_width, image_height) = (page_img.width() as f32, page_img.height() as f32);
         let ocr_output = ocr_engine.recognize(&page_img)?;
         let confidence = ocr_output.avg_confidence;
