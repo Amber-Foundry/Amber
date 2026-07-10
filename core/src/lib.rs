@@ -2871,7 +2871,7 @@ fn import_start_job(
         let worker_file_path = file_path;
         let worker_rasterization_dpi = rasterization_dpi;
 
-        tauri::async_runtime::spawn_blocking(move || {
+        std::thread::spawn(move || {
             let _import_slot_guard = ImportJobSlotGuard {
                 import_job: Arc::clone(&import_job_worker),
                 cancel: Arc::clone(&worker_cancel),
