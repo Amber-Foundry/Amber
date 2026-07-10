@@ -2883,10 +2883,10 @@ fn import_start_job(
             let progress_app = app_handle_worker.clone();
 
             let progress_handle = std::thread::spawn(move || {
+                let Ok(conn) = open_connection(&progress_db_path) else {
+                    return;
+                };
                 while let Ok(progress) = progress_rx.recv() {
-                    let Ok(conn) = open_connection(&progress_db_path) else {
-                        continue;
-                    };
                     if ingest::update_import_job_from_progress(&conn, &progress_job_id, &progress)
                         .is_err()
                     {
