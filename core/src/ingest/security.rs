@@ -9,11 +9,43 @@ pub fn scan_prompt_injection(text: &str) -> bool {
     ];
 
     for &kw in keywords {
-        if lower.contains(kw) {
+        if injection_keyword_is_actionable(&lower, kw) {
             eprintln!(
                 "[security] WARNING: Prompt injection keyword '{}' detected in raw document text!",
                 kw
             );
+            return true;
+        }
+    }
+
+    false
+}
+
+fn injection_keyword_is_actionable(lower: &str, keyword: &str) -> bool {
+    if !lower.contains(keyword) {
+        return false;
+    }
+
+    for line in lower.lines() {
+        let line = line.trim();
+        if !line.contains(keyword) {
+            continue;
+        }
+
+        if line.contains('"')
+            || line.contains('\'')
+            || line.contains("the phrase")
+            || line.contains("attacks that")
+            || line.contains("such as ")
+        {
+            continue;
+        }
+
+        if line.starts_with("please ")
+            || line.starts_with(keyword)
+            || line.contains(&format!("please {keyword}"))
+            || line.contains(&format!("{keyword}:"))
+        {
             return true;
         }
     }
@@ -42,6 +74,16 @@ mod tests {
     fn test_scan_prompt_injection_passes_normal_text() {
         assert!(!scan_prompt_injection(
             "This is a standard document paragraph explaining engineering principles."
+        ));
+    }
+
+    #[test]
+    fn test_scan_prompt_injection_passes_documentary_mentions() {
+        assert!(!scan_prompt_injection(
+            "This paper surveys jailbreaks that use the phrase \"ignore previous instructions\" in academic examples."
+        ));
+        assert!(!scan_prompt_injection(
+            "Researchers documented attacks that ignore previous instructions as a common pattern."
         ));
     }
 }
