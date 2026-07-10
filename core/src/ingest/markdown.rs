@@ -132,7 +132,7 @@ fn should_merge_body_line(
     next: Option<&Rect>,
 ) -> bool {
     let (Some(union_prev), Some(next)) = (union_prev, next) else {
-        return true;
+        return false;
     };
 
     // Prefer the last fragment for same-line detection so mid-word splits are merged
@@ -434,6 +434,30 @@ mod tests {
             ingest_blocks[0].formatted_text,
             "CONSTITUTION of the United States"
         );
+    }
+
+    #[test]
+    fn test_markdown_assembler_does_not_merge_when_next_bbox_missing() {
+        let blocks = vec![
+            TextBlock {
+                text: "First paragraph block.".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(10.0, 10.0, 120.0, 10.0)),
+                confidence: None,
+            },
+            TextBlock {
+                text: "Unrelated second block.".to_string(),
+                block_type: BlockType::Body,
+                bbox: None,
+                confidence: None,
+            },
+        ];
+
+        let ingest_blocks = assemble_markdown_blocks(&blocks, 0);
+
+        assert_eq!(ingest_blocks.len(), 2);
+        assert_eq!(ingest_blocks[0].formatted_text, "First paragraph block.");
+        assert_eq!(ingest_blocks[1].formatted_text, "Unrelated second block.");
     }
 
     #[test]
