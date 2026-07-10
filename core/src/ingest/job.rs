@@ -408,10 +408,20 @@ impl IngestJobEngine {
             .unwrap_or_else(|| format!("Imported Chunk {}", chunk.chunk_index));
         let detail = Some(chunk.text.clone());
         let mut summary = String::new();
-        if let Some(first_sentence) = chunk.text.split(&['.', '?', '!']).next() {
-            let trimmed = first_sentence.trim();
-            if !trimmed.is_empty() {
-                summary = trimmed.to_string();
+        const MIN_SUMMARY_LEN: usize = 20;
+        let segments: Vec<&str> = chunk
+            .text
+            .split(&['.', '?', '!'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        for (i, segment) in segments.iter().enumerate() {
+            if i > 0 {
+                summary.push_str(". ");
+            }
+            summary.push_str(segment);
+            if summary.chars().count() >= MIN_SUMMARY_LEN {
+                break;
             }
         }
         if summary.is_empty() {
@@ -905,6 +915,21 @@ mod tests {
         };
         let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
         assert_eq!(node.target_vault_key, None);
+    }
+
+    #[test]
+    fn test_fallback_summary_joins_past_abbreviations() {
+        let chunk = ImportChunkSpec {
+            chunk_index: 0,
+            text: "Mr. Smith met Dr. Jones at the clinic.".to_string(),
+            token_count: 10,
+            heading_context: None,
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+        };
+        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+        assert_eq!(node.summary, "Mr. Smith met Dr. Jones at the clinic");
     }
 
     #[test]
