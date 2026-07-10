@@ -2194,6 +2194,23 @@ pub fn test_helper_embedding_reembed_cancel(db_path: std::path::PathBuf) -> Resu
     }
 }
 
+pub fn test_helper_try_reserve_import_slot(
+    import_job: Arc<std::sync::Mutex<Option<ingest::ImportJobHandle>>>,
+    job_id: String,
+) -> Result<(), String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    with_import_job_lock(&import_job, |slot| {
+        if slot.is_some() {
+            return Err(
+                "An import job is already active. Please cancel it or wait for it to finish."
+                    .to_string(),
+            );
+        }
+        *slot = Some(ingest::ImportJobHandle { job_id, cancel });
+        Ok(())
+    })?
+}
+
 pub fn test_helper_import_cancel(db_path: std::path::PathBuf) -> Result<bool, String> {
     use tauri::Manager;
     let cancel = Arc::new(AtomicBool::new(false));
@@ -2785,18 +2802,22 @@ fn import_start_job(
         let import_job = Arc::clone(&state.import_job);
         let cancel = Arc::new(AtomicBool::new(false));
 
-        with_import_job_lock(&import_job, |slot| -> Result<(), String> {
+        let job_id = generate_id(&conn, "job")?;
+
+        with_import_job_lock(&import_job, |slot| {
             if slot.is_some() {
-                Err(
+                return Err(
                     "An import job is already active. Please cancel it or wait for it to finish."
                         .to_string(),
-                )
-            } else {
-                Ok(())
+                );
             }
+            *slot = Some(ingest::ImportJobHandle {
+                job_id: job_id.clone(),
+                cancel: Arc::clone(&cancel),
+            });
+            Ok(())
         })??;
 
-        let job_id = generate_id(&conn, "job")?;
         let source_name = file_path
             .file_name()
             .and_then(|s| s.to_str())
@@ -2808,25 +2829,27 @@ fn import_start_job(
             300
         };
 
-        ingest::create_import_job(
-            &conn,
-            &job_id,
-            &ingest::CreateImportJobParams {
-                import_type: "pdf".to_string(),
-                source_name,
-                target_vault_id: input.target_vault_id.clone(),
-                rasterization_dpi,
-            },
-        )?;
-
-        with_import_job_lock(&import_job, |slot| {
-            *slot = Some(ingest::ImportJobHandle {
-                job_id: job_id.clone(),
-                cancel: Arc::clone(&cancel),
-            });
-        })?;
-
-        let initial_status = build_import_job_status(&conn, &job_id)?;
+        let initial_status = match (|| -> Result<ImportJobStatus, String> {
+            ingest::create_import_job(
+                &conn,
+                &job_id,
+                &ingest::CreateImportJobParams {
+                    import_type: "pdf".to_string(),
+                    source_name,
+                    target_vault_id: input.target_vault_id.clone(),
+                    rasterization_dpi,
+                },
+            )?;
+            build_import_job_status(&conn, &job_id)
+        })() {
+            Ok(status) => status,
+            Err(err) => {
+                let _ = with_import_job_lock(&import_job, |slot| {
+                    *slot = None;
+                });
+                return Err(err);
+            }
+        };
 
         let db_path = state.db_path.clone();
         let config = ingest_config_from_input(&input);
@@ -4920,5 +4943,37 @@ mod tests {
         let cancelled = super::test_helper_import_cancel(std::env::temp_dir().join("dummy.db"))
             .unwrap_or_else(|err| panic!("import cancel helper failed: {err}"));
         assert!(cancelled);
+    }
+
+    #[test]
+    fn import_slot_reservation_allows_only_one_concurrent_holder() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let import_job = Arc::new(std::sync::Mutex::new(None));
+        let barrier = Arc::new(Barrier::new(2));
+        let successes = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for thread_idx in 0..2 {
+            let import_job = Arc::clone(&import_job);
+            let barrier = Arc::clone(&barrier);
+            let successes = Arc::clone(&successes);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let job_id = format!("job-concurrent-{thread_idx}");
+                if super::test_helper_try_reserve_import_slot(import_job, job_id).is_ok() {
+                    successes.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle
+                .join()
+                .unwrap_or_else(|_| panic!("import slot reservation thread panicked"));
+        }
+
+        assert_eq!(successes.load(Ordering::Relaxed), 1);
     }
 }
