@@ -61,7 +61,7 @@ impl PdfRasterizer {
         let pdfium = match Pdfium::bind_to_system_library() {
             Ok(bindings) => Pdfium::new(bindings),
             Err(_) => {
-                let ocr_dir = ocr_models_dir().map_err(|e| OcrError::IoError(e.to_string()))?;
+                let ocr_dir = ocr_models_dir()?;
                 let amber_dir = ocr_dir
                     .parent()
                     .and_then(|p| p.parent())
