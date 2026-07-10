@@ -585,7 +585,7 @@ fn first_summary_boundary(text: &str, min_chars: usize) -> Option<usize> {
 
 fn is_likely_abbreviation_period(text: &str, period_idx: usize) -> bool {
     let before = text[..period_idx].trim_end();
-    let Some(last_token) = before.rsplit(' ').next() else {
+    let Some(last_token) = before.split_whitespace().next_back() else {
         return false;
     };
     let token = last_token.trim_end_matches('.');
@@ -973,6 +973,25 @@ mod tests {
         };
         let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
         assert_eq!(node.summary, "Mr. Smith met Dr. Jones at the clinic");
+    }
+
+    #[test]
+    fn test_fallback_summary_handles_abbreviation_after_tab() {
+        let chunk = ImportChunkSpec {
+            chunk_index: 0,
+            text: "Meet\tMr. Smith went to the store and bought many things for the party."
+                .to_string(),
+            token_count: 12,
+            heading_context: None,
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+        };
+        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+        assert_eq!(
+            node.summary,
+            "Meet\tMr. Smith went to the store and bought many things for the party"
+        );
     }
 
     #[test]
