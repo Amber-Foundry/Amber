@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 
@@ -128,6 +128,7 @@ impl IngestJobEngine {
         file_path: &Path,
         config: IngestJobConfig,
         progress_tx: Option<mpsc::Sender<ImportJobProgress>>,
+        cancel: Option<&AtomicBool>,
     ) -> Result<IngestJobResult, OcrError> {
         let job_id = job_id.into();
         let source_name = file_path
@@ -169,6 +170,10 @@ impl IngestJobEngine {
         let mut tables_detected_unpreserved = 0;
 
         for (i, p) in pages_info.iter().enumerate() {
+            if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                return Err(OcrError::Cancelled);
+            }
+
             let current_page = i + 1;
 
             if let Some(ref tx) = progress_tx {
@@ -271,6 +276,9 @@ impl IngestJobEngine {
 
         let mut candidates = Vec::new();
         for chunk in &chunks {
+            if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                return Err(OcrError::Cancelled);
+            }
             candidates.extend(IngestJobEngine::extract_chunk_candidates(
                 chunk,
                 &source_name,

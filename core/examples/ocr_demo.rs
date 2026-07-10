@@ -58,7 +58,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
-        let result = IngestJobEngine::process_pdf_job("job-cli-demo", file_path, config, Some(tx))?;
+        let result =
+            IngestJobEngine::process_pdf_job("job-cli-demo", file_path, config, Some(tx), None)?;
 
         let _ = progress_handle.join();
 

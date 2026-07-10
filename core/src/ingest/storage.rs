@@ -1,4 +1,5 @@
 use crate::ingest::job::{ImportJobProgress, IngestJobResult};
+use crate::ipc_types::ImportJobStatus;
 use rusqlite::{params, Connection, OptionalExtension};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -219,6 +220,27 @@ pub fn list_import_jobs(conn: &Connection, limit: i32) -> Result<Vec<ImportJobRo
     Ok(results)
 }
 
+pub fn import_job_row_to_status(row: ImportJobRow) -> ImportJobStatus {
+    ImportJobStatus {
+        id: row.id,
+        status: row.status,
+        source_name: row.source_name.unwrap_or_default(),
+        total_pages: row.total_pages,
+        digital_pages: row.digital_pages,
+        ocr_pages: row.ocr_pages,
+        hybrid_pages: row.hybrid_pages,
+        avg_ocr_confidence: row.avg_ocr_confidence,
+        tables_detected_unpreserved: if row.tables_detected_unpreserved > 0 {
+            1
+        } else {
+            0
+        },
+        extraction_path: row.extraction_path,
+        rasterization_dpi: row.rasterization_dpi,
+        error: row.error,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +259,64 @@ mod tests {
             source_name: "sample.pdf".to_string(),
             target_vault_id: Some("vault_test".to_string()),
             rasterization_dpi: 300,
+        }
+    }
+
+    #[test]
+    fn test_import_job_row_to_status_tables_flag() {
+        let row = ImportJobRow {
+            id: "job-flag".to_string(),
+            import_type: "pdf".to_string(),
+            source_name: Some("doc.pdf".to_string()),
+            target_vault_id: None,
+            status: "staged".to_string(),
+            changeset_id: None,
+            node_count: 0,
+            error: None,
+            created_at: "2026-01-01".to_string(),
+            completed_at: None,
+            total_pages: 1,
+            digital_pages: 1,
+            ocr_pages: 0,
+            hybrid_pages: 0,
+            avg_ocr_confidence: 1.0,
+            rasterization_dpi: 300,
+            tables_detected_unpreserved: 2,
+            extraction_path: Some("digital".to_string()),
+        };
+        let status = import_job_row_to_status(row);
+        assert_eq!(status.tables_detected_unpreserved, 1);
+
+        let row_zero = ImportJobRow {
+            tables_detected_unpreserved: 0,
+            ..status_into_row(status)
+        };
+        assert_eq!(
+            import_job_row_to_status(row_zero).tables_detected_unpreserved,
+            0
+        );
+    }
+
+    fn status_into_row(status: ImportJobStatus) -> ImportJobRow {
+        ImportJobRow {
+            id: status.id,
+            import_type: "pdf".to_string(),
+            source_name: Some(status.source_name),
+            target_vault_id: None,
+            status: status.status,
+            changeset_id: None,
+            node_count: 0,
+            error: status.error,
+            created_at: "2026-01-01".to_string(),
+            completed_at: None,
+            total_pages: status.total_pages,
+            digital_pages: status.digital_pages,
+            ocr_pages: status.ocr_pages,
+            hybrid_pages: status.hybrid_pages,
+            avg_ocr_confidence: status.avg_ocr_confidence,
+            rasterization_dpi: status.rasterization_dpi,
+            tables_detected_unpreserved: status.tables_detected_unpreserved,
+            extraction_path: status.extraction_path,
         }
     }
 

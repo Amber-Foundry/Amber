@@ -28,7 +28,7 @@ use ipc_types::{
     NodeUpdateInput, OnboardingNodeCommitInput, OnboardingProposedNode, Tag, TagCreateInput, Vault,
     VaultCreateInput, VaultUpdateInput,
 };
-pub use ipc_types::{EmbeddingReembedInput, EmbeddingStatus};
+pub use ipc_types::{EmbeddingReembedInput, EmbeddingStatus, ImportJobStatus, ImportStartJobInput};
 
 // MARK: Internal Types and Constants
 
@@ -45,6 +45,14 @@ static MEMORY_AGENT_LIMITER: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 
 static EMBEDDING_LIMITER: std::sync::OnceLock<
+    governor::RateLimiter<
+        governor::state::direct::NotKeyed,
+        governor::state::InMemoryState,
+        governor::clock::DefaultClock,
+    >,
+> = std::sync::OnceLock::new();
+
+static IMPORT_LIMITER: std::sync::OnceLock<
     governor::RateLimiter<
         governor::state::direct::NotKeyed,
         governor::state::InMemoryState,
@@ -954,7 +962,6 @@ pub(crate) struct DbState {
     pub(crate) db_path: PathBuf,
     pub(crate) redacted_session_key: Mutex<Option<redacted::SessionKey>>,
     pub(crate) embed_job: Arc<Mutex<Option<embed::EmbedJobHandle>>>,
-    #[allow(dead_code)]
     pub(crate) import_job: Arc<Mutex<Option<ingest::ImportJobHandle>>>,
 }
 
@@ -1008,6 +1015,25 @@ pub fn check_rate_limit(key: &str) -> Result<(), String> {
             );
         }
     }
+    if key == "import" {
+        let limiter = IMPORT_LIMITER.get_or_init(|| {
+            let quota = match governor::Quota::with_period(std::time::Duration::from_secs(5)) {
+                Some(q) => q,
+                None => {
+                    let fallback_nonzero = std::num::NonZeroU32::MIN;
+                    governor::Quota::per_second(fallback_nonzero)
+                }
+            };
+            governor::RateLimiter::direct(quota)
+        });
+
+        if limiter.check().is_err() {
+            return Err(
+                "Rate limit exceeded for import operations. Please wait before starting another import job."
+                    .to_string(),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1021,6 +1047,19 @@ where
     let mut guard = embed_job
         .lock()
         .map_err(|_| "Embedding job state lock is poisoned; restart the app.".to_string())?;
+    Ok(f(&mut guard))
+}
+
+fn with_import_job_lock<T, F>(
+    import_job: &Arc<Mutex<Option<ingest::ImportJobHandle>>>,
+    f: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&mut Option<ingest::ImportJobHandle>) -> T,
+{
+    let mut guard = import_job
+        .lock()
+        .map_err(|_| "Import job state lock is poisoned; restart the app.".to_string())?;
     Ok(f(&mut guard))
 }
 
@@ -1230,6 +1269,109 @@ fn clear_matching_embed_job(
         Err(_) => {
             eprintln!("[re-embed] embed_job lock poisoned during worker cleanup");
         }
+    }
+}
+
+fn clear_matching_import_job(
+    import_job: &Arc<Mutex<Option<ingest::ImportJobHandle>>>,
+    cancel: &Arc<AtomicBool>,
+) {
+    match import_job.lock() {
+        Ok(mut guard) => {
+            if let Some(active_handle) = guard.as_ref() {
+                if Arc::ptr_eq(&active_handle.cancel, cancel) {
+                    *guard = None;
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("[import] import_job lock poisoned during worker cleanup");
+        }
+    }
+}
+
+fn build_import_job_status(conn: &Connection, job_id: &str) -> Result<ImportJobStatus, String> {
+    let row = ingest::get_import_job(conn, job_id)?
+        .ok_or_else(|| format!("Import job not found: {job_id}"))?;
+    Ok(ingest::import_job_row_to_status(row))
+}
+
+fn emit_import_job_status(app_handle: &tauri::AppHandle, conn: &Connection, job_id: &str) {
+    if let Ok(status) = build_import_job_status(conn, job_id) {
+        let _ = app_handle.emit("import-job-status-changed", status);
+    }
+}
+
+fn validate_import_start_input(
+    conn: &Connection,
+    input: &ImportStartJobInput,
+) -> Result<PathBuf, String> {
+    let path = PathBuf::from(input.file_path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("Import file path is required.".to_string());
+    }
+    if !path.is_file() {
+        return Err(format!("Import file does not exist: {}", path.display()));
+    }
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if ext != "pdf" {
+        return Err("Only PDF files are supported for import.".to_string());
+    }
+    if input.use_llm_extraction {
+        let provider = input.provider.as_deref().unwrap_or("").trim();
+        let model = input.model.as_deref().unwrap_or("").trim();
+        if provider.is_empty() || model.is_empty() {
+            return Err(
+                "AI extraction requires both provider and model to be configured.".to_string(),
+            );
+        }
+    }
+    if let Some(vault_id) = input.target_vault_id.as_deref() {
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM vaults WHERE id = ?1 AND deleted_at IS NULL LIMIT 1;",
+                [vault_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| format!("Failed validating target vault: {err}"))?;
+        if exists.is_none() {
+            return Err(format!("Target vault not found: {vault_id}"));
+        }
+    }
+    Ok(path)
+}
+
+fn ingest_config_from_input(input: &ImportStartJobInput) -> ingest::IngestJobConfig {
+    let rasterization_dpi = if input.rasterization_dpi > 0 {
+        input.rasterization_dpi as u16
+    } else {
+        300
+    };
+    let (provider, endpoint, model) = if input.use_llm_extraction {
+        (
+            input.provider.clone(),
+            input.endpoint.clone(),
+            input.model.clone(),
+        )
+    } else {
+        (None, None, None)
+    };
+    let allowed_vault_keys = input
+        .target_vault_id
+        .as_ref()
+        .map(|vault_id| vec![vault_id.clone()]);
+    ingest::IngestJobConfig {
+        rasterization_dpi,
+        provider,
+        endpoint,
+        model,
+        allowed_vault_keys,
+        ..Default::default()
     }
 }
 
@@ -1607,6 +1749,10 @@ pub fn run() {
             embedding_get_status,
             embedding_reembed_start,
             embedding_reembed_cancel,
+            import_start_job,
+            import_get_status,
+            import_list_jobs,
+            import_cancel_job,
             chat_get_history,
             chat_append_message,
             chat_clear_history,
@@ -2043,6 +2189,26 @@ pub fn test_helper_embedding_reembed_cancel(db_path: std::path::PathBuf) -> Resu
     });
     let state = app.state::<AppState>();
     match embedding_reembed_cancel(state) {
+        IpcResponse::Ok { ok: () } => Ok(cancel.load(Ordering::Relaxed)),
+        IpcResponse::Err { err } => Err(err),
+    }
+}
+
+pub fn test_helper_import_cancel(db_path: std::path::PathBuf) -> Result<bool, String> {
+    use tauri::Manager;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let app = tauri::test::mock_app();
+    app.manage(AppState {
+        db_path,
+        redacted_session_key: std::sync::Mutex::new(None),
+        embed_job: Arc::new(std::sync::Mutex::new(None)),
+        import_job: Arc::new(std::sync::Mutex::new(Some(ingest::ImportJobHandle {
+            job_id: "job-test-cancel".to_string(),
+            cancel: Arc::clone(&cancel),
+        }))),
+    });
+    let state = app.state::<AppState>();
+    match import_cancel_job(state) {
         IpcResponse::Ok { ok: () } => Ok(cancel.load(Ordering::Relaxed)),
         IpcResponse::Err { err } => Err(err),
     }
@@ -2598,6 +2764,197 @@ fn embedding_reembed_start(
 #[tauri::command]
 fn embedding_reembed_cancel(state: tauri::State<'_, AppState>) -> IpcResponse<()> {
     into_ipc(with_embed_job_lock(&state.embed_job, |slot| {
+        if let Some(handle) = slot.as_ref() {
+            handle.cancel.store(true, Ordering::Relaxed);
+        }
+    }))
+}
+
+#[tauri::command]
+fn import_start_job(
+    state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    input: ImportStartJobInput,
+) -> IpcResponse<ImportJobStatus> {
+    into_ipc((|| {
+        check_rate_limit("import")?;
+
+        let conn = open_connection(&state.db_path)?;
+        let file_path = validate_import_start_input(&conn, &input)?;
+
+        let import_job = Arc::clone(&state.import_job);
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        with_import_job_lock(&import_job, |slot| -> Result<(), String> {
+            if slot.is_some() {
+                Err(
+                    "An import job is already active. Please cancel it or wait for it to finish."
+                        .to_string(),
+                )
+            } else {
+                Ok(())
+            }
+        })??;
+
+        let job_id = generate_id(&conn, "job")?;
+        let source_name = file_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("document.pdf")
+            .to_string();
+        let rasterization_dpi = if input.rasterization_dpi > 0 {
+            input.rasterization_dpi
+        } else {
+            300
+        };
+
+        ingest::create_import_job(
+            &conn,
+            &job_id,
+            &ingest::CreateImportJobParams {
+                import_type: "pdf".to_string(),
+                source_name,
+                target_vault_id: input.target_vault_id.clone(),
+                rasterization_dpi,
+            },
+        )?;
+
+        with_import_job_lock(&import_job, |slot| {
+            *slot = Some(ingest::ImportJobHandle {
+                job_id: job_id.clone(),
+                cancel: Arc::clone(&cancel),
+            });
+        })?;
+
+        let initial_status = build_import_job_status(&conn, &job_id)?;
+
+        let db_path = state.db_path.clone();
+        let config = ingest_config_from_input(&input);
+        let app_handle_worker = app_handle.clone();
+        let import_job_worker = Arc::clone(&import_job);
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_job_id = job_id.clone();
+        let worker_file_path = file_path;
+        let worker_rasterization_dpi = rasterization_dpi;
+
+        tauri::async_runtime::spawn_blocking(move || {
+            let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+            let progress_db_path = db_path.clone();
+            let progress_job_id = worker_job_id.clone();
+            let progress_app = app_handle_worker.clone();
+
+            let progress_handle = std::thread::spawn(move || {
+                while let Ok(progress) = progress_rx.recv() {
+                    let Ok(conn) = open_connection(&progress_db_path) else {
+                        continue;
+                    };
+                    if ingest::update_import_job_from_progress(&conn, &progress_job_id, &progress)
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    emit_import_job_status(&progress_app, &conn, &progress_job_id);
+                }
+            });
+
+            let worker_result = (|| -> Result<(), String> {
+                let conn = open_connection(&db_path)?;
+                ingest::set_import_job_status(&conn, &worker_job_id, "extracting", None)?;
+                emit_import_job_status(&app_handle_worker, &conn, &worker_job_id);
+
+                let result = ingest::IngestJobEngine::process_pdf_job(
+                    &worker_job_id,
+                    &worker_file_path,
+                    config,
+                    Some(progress_tx),
+                    Some(worker_cancel.as_ref()),
+                );
+
+                let conn = open_connection(&db_path)?;
+                match result {
+                    Ok(job_result) => {
+                        let extraction_path = ingest::derive_document_extraction_path(
+                            job_result.digital_pages,
+                            job_result.ocr_pages,
+                            job_result.hybrid_pages,
+                        );
+                        ingest::update_import_job_staged_metadata(
+                            &conn,
+                            &worker_job_id,
+                            &job_result,
+                            worker_rasterization_dpi,
+                            extraction_path,
+                        )?;
+                    }
+                    Err(ocr::engine::OcrError::Cancelled) => {
+                        ingest::set_import_job_status(
+                            &conn,
+                            &worker_job_id,
+                            "failed",
+                            Some("Cancelled by user"),
+                        )?;
+                    }
+                    Err(err) => {
+                        ingest::set_import_job_status(
+                            &conn,
+                            &worker_job_id,
+                            "failed",
+                            Some(&err.to_string()),
+                        )?;
+                    }
+                }
+                emit_import_job_status(&app_handle_worker, &conn, &worker_job_id);
+                Ok(())
+            })();
+
+            if let Err(err) = worker_result {
+                eprintln!("[import] worker failed: {err}");
+                if let Ok(conn) = open_connection(&db_path) {
+                    let _ =
+                        ingest::set_import_job_status(&conn, &worker_job_id, "failed", Some(&err));
+                    emit_import_job_status(&app_handle_worker, &conn, &worker_job_id);
+                }
+            }
+
+            let _ = progress_handle.join();
+            clear_matching_import_job(&import_job_worker, &worker_cancel);
+        });
+
+        Ok(initial_status)
+    })())
+}
+
+#[tauri::command]
+fn import_get_status(
+    state: tauri::State<'_, AppState>,
+    job_id: String,
+) -> IpcResponse<Option<ImportJobStatus>> {
+    into_ipc((|| {
+        let conn = open_connection(&state.db_path)?;
+        let row = ingest::get_import_job(&conn, &job_id)?;
+        Ok(row.map(ingest::import_job_row_to_status))
+    })())
+}
+
+#[tauri::command]
+fn import_list_jobs(
+    state: tauri::State<'_, AppState>,
+    limit: Option<i32>,
+) -> IpcResponse<Vec<ImportJobStatus>> {
+    into_ipc((|| {
+        let conn = open_connection(&state.db_path)?;
+        let limit = limit.unwrap_or(20).max(1);
+        let rows = ingest::list_import_jobs(&conn, limit)?;
+        Ok(rows
+            .into_iter()
+            .map(ingest::import_job_row_to_status)
+            .collect())
+    })())
+}
+
+#[tauri::command]
+fn import_cancel_job(state: tauri::State<'_, AppState>) -> IpcResponse<()> {
+    into_ipc(with_import_job_lock(&state.import_job, |slot| {
         if let Some(handle) = slot.as_ref() {
             handle.cancel.store(true, Ordering::Relaxed);
         }
@@ -4533,5 +4890,35 @@ mod tests {
 
         let second = super::check_rate_limit("embedding");
         assert!(second.is_err());
+    }
+
+    #[test]
+    fn validate_import_start_input_rejects_non_pdf() {
+        let txt_path = std::env::temp_dir().join("amber_import_validate_test.txt");
+        std::fs::write(&txt_path, b"hello")
+            .unwrap_or_else(|err| panic!("failed to write temp import validation file: {err}"));
+
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite connection: {err}"));
+        let input = super::ImportStartJobInput {
+            file_path: txt_path.to_string_lossy().to_string(),
+            target_vault_id: None,
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        };
+
+        let result = super::validate_import_start_input(&conn, &input);
+        assert!(result.is_err());
+        let _ = std::fs::remove_file(txt_path);
+    }
+
+    #[test]
+    fn import_cancel_sets_flag() {
+        let cancelled = super::test_helper_import_cancel(std::env::temp_dir().join("dummy.db"))
+            .unwrap_or_else(|err| panic!("import cancel helper failed: {err}"));
+        assert!(cancelled);
     }
 }
