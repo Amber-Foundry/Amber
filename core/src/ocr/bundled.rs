@@ -241,6 +241,10 @@ pub fn decode_ctc_logits(
         return (String::new(), 1.0);
     }
 
+    if logits.len() < seq_len * num_classes {
+        return (String::new(), 1.0);
+    }
+
     let mut recognized_text = String::new();
     let mut prev_index = usize::MAX;
     let mut conf_sum = 0.0f32;
