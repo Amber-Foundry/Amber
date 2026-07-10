@@ -64,7 +64,11 @@ pub fn download_and_verify(
     })?;
     fs::create_dir_all(parent).map_err(|err| DownloadError::Io(err.to_string()))?;
 
-    let tmp_path = dest_path.with_extension("tmp_download");
+    let tmp_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let tmp_path = dest_path.with_extension(format!("tmp.{tmp_suffix}"));
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600))
         .build()
