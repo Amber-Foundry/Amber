@@ -274,6 +274,8 @@ impl IngestJobEngine {
             });
         }
 
+        let (runtime_handle, _owned_runtime) = prepare_job_runtime()?;
+
         let mut candidates = Vec::new();
         for chunk in &chunks {
             if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
@@ -283,6 +285,8 @@ impl IngestJobEngine {
                 chunk,
                 &source_name,
                 &config,
+                &runtime_handle,
+                _owned_runtime.is_some(),
             ));
         }
 
@@ -345,12 +349,16 @@ impl IngestJobEngine {
             config.overlap_chunk_tokens,
         );
 
+        let (runtime_handle, _owned_runtime) = prepare_job_runtime()?;
+
         let mut candidates = Vec::new();
         for chunk in &chunks {
             candidates.extend(IngestJobEngine::extract_chunk_candidates(
                 chunk,
                 &source_name,
                 &config,
+                &runtime_handle,
+                _owned_runtime.is_some(),
             ));
         }
 
@@ -459,6 +467,8 @@ impl IngestJobEngine {
         chunk: &ImportChunkSpec,
         source_name: &str,
         config: &IngestJobConfig,
+        runtime: &tokio::runtime::Handle,
+        runtime_owned: bool,
     ) -> Vec<CandidateNode> {
         let resolved_vault = config
             .allowed_vault_keys
@@ -524,26 +534,11 @@ impl IngestJobEngine {
         let allowed_keys = config.allowed_vault_keys.clone().unwrap_or_default();
         let sys_prompt = crate::ingest::prompt::get_system_prompt(&allowed_keys);
 
-        let handle = tokio::runtime::Handle::try_current();
-        let raw_res = match handle {
-            Ok(h) => tokio::task::block_in_place(|| {
-                h.block_on(crate::llm::client::LlmClient::complete(
-                    &client,
-                    &sys_prompt,
-                    &messages,
-                ))
-            }),
-            Err(_) => match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt.block_on(crate::llm::client::LlmClient::complete(
-                    &client,
-                    &sys_prompt,
-                    &messages,
-                )),
-                Err(err) => Err(format!("Failed to build temporary runtime: {err}")),
-            },
+        let complete_fut = crate::llm::client::LlmClient::complete(&client, &sys_prompt, &messages);
+        let raw_res = if runtime_owned {
+            runtime.block_on(complete_fut)
+        } else {
+            tokio::task::block_in_place(|| runtime.block_on(complete_fut))
         };
 
         let raw = match raw_res {
@@ -587,6 +582,23 @@ impl IngestJobEngine {
                     resolved_vault,
                 )]
             }
+        }
+    }
+}
+
+fn prepare_job_runtime(
+) -> Result<(tokio::runtime::Handle, Option<tokio::runtime::Runtime>), OcrError> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => Ok((handle, None)),
+        Err(_) => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| {
+                    OcrError::InferenceFailed(format!("Failed to build Tokio runtime: {err}"))
+                })?;
+            let handle = runtime.handle().clone();
+            Ok((handle, Some(runtime)))
         }
     }
 }
@@ -949,7 +961,14 @@ mod tests {
             ..Default::default()
         };
 
-        let nodes = IngestJobEngine::extract_chunk_candidates(&chunk, "test.pdf", &config);
+        let (runtime_handle, owned_runtime) = prepare_job_runtime().expect("job runtime");
+        let nodes = IngestJobEngine::extract_chunk_candidates(
+            &chunk,
+            "test.pdf",
+            &config,
+            &runtime_handle,
+            owned_runtime.is_some(),
+        );
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].target_vault_key, Some("learning".to_string()));
     }
