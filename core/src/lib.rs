@@ -1290,6 +1290,17 @@ fn clear_matching_import_job(
     }
 }
 
+struct ImportJobSlotGuard {
+    import_job: Arc<Mutex<Option<ingest::ImportJobHandle>>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for ImportJobSlotGuard {
+    fn drop(&mut self) {
+        clear_matching_import_job(&self.import_job, &self.cancel);
+    }
+}
+
 fn build_import_job_status(conn: &Connection, job_id: &str) -> Result<ImportJobStatus, String> {
     let row = ingest::get_import_job(conn, job_id)?
         .ok_or_else(|| format!("Import job not found: {job_id}"))?;
@@ -2861,6 +2872,11 @@ fn import_start_job(
         let worker_rasterization_dpi = rasterization_dpi;
 
         tauri::async_runtime::spawn_blocking(move || {
+            let _import_slot_guard = ImportJobSlotGuard {
+                import_job: Arc::clone(&import_job_worker),
+                cancel: Arc::clone(&worker_cancel),
+            };
+
             let (progress_tx, progress_rx) = std::sync::mpsc::channel();
             let progress_db_path = db_path.clone();
             let progress_job_id = worker_job_id.clone();
@@ -2940,7 +2956,6 @@ fn import_start_job(
             }
 
             let _ = progress_handle.join();
-            clear_matching_import_job(&import_job_worker, &worker_cancel);
         });
 
         Ok(initial_status)
