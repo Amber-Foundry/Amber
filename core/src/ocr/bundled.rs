@@ -268,9 +268,7 @@ pub fn decode_ctc_logits(
             }
         }
 
-        let prob = if (0.0..=1.0).contains(&max_val) {
-            max_val
-        } else {
+        let prob = {
             let mut exp_sum = 0.0f32;
             for &val in slice {
                 exp_sum += (val - max_val).exp();
