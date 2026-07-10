@@ -286,7 +286,6 @@ impl IngestJobEngine {
                 &source_name,
                 &config,
                 &runtime_handle,
-                _owned_runtime.is_some(),
             ));
         }
 
@@ -358,7 +357,6 @@ impl IngestJobEngine {
                 &source_name,
                 &config,
                 &runtime_handle,
-                _owned_runtime.is_some(),
             ));
         }
 
@@ -468,7 +466,6 @@ impl IngestJobEngine {
         source_name: &str,
         config: &IngestJobConfig,
         runtime: &tokio::runtime::Handle,
-        runtime_owned: bool,
     ) -> Vec<CandidateNode> {
         let resolved_vault = config
             .allowed_vault_keys
@@ -535,11 +532,7 @@ impl IngestJobEngine {
         let sys_prompt = crate::ingest::prompt::get_system_prompt(&allowed_keys);
 
         let complete_fut = crate::llm::client::LlmClient::complete(&client, &sys_prompt, &messages);
-        let raw_res = if runtime_owned {
-            runtime.block_on(complete_fut)
-        } else {
-            tokio::task::block_in_place(|| runtime.block_on(complete_fut))
-        };
+        let raw_res = runtime.block_on(complete_fut);
 
         let raw = match raw_res {
             Ok(r) => r,
@@ -961,15 +954,10 @@ mod tests {
             ..Default::default()
         };
 
-        let (runtime_handle, owned_runtime) = prepare_job_runtime()
+        let (runtime_handle, _owned_runtime) = prepare_job_runtime()
             .unwrap_or_else(|err| panic!("expected job runtime in test: {err}"));
-        let nodes = IngestJobEngine::extract_chunk_candidates(
-            &chunk,
-            "test.pdf",
-            &config,
-            &runtime_handle,
-            owned_runtime.is_some(),
-        );
+        let nodes =
+            IngestJobEngine::extract_chunk_candidates(&chunk, "test.pdf", &config, &runtime_handle);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].target_vault_key, Some("learning".to_string()));
     }
