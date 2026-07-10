@@ -2903,6 +2903,7 @@ fn import_start_job(
                 }
             });
 
+            let progress_for_job = progress_tx.clone();
             let worker_result = (|| -> Result<(), String> {
                 let conn = open_connection(&db_path)?;
                 ingest::set_import_job_status(&conn, &worker_job_id, "extracting", None)?;
@@ -2912,7 +2913,7 @@ fn import_start_job(
                     &worker_job_id,
                     &worker_file_path,
                     config,
-                    Some(progress_tx),
+                    Some(progress_for_job),
                     Some(worker_cancel.as_ref()),
                 );
 
@@ -2962,6 +2963,7 @@ fn import_start_job(
                 }
             }
 
+            drop(progress_tx);
             let _ = progress_handle.join();
         });
 
