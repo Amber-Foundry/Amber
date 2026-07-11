@@ -324,7 +324,27 @@ impl PdfRasterizer {
                                     })
                                 })
                                 .collect();
-                            choose_text_object_reconstruction(&object_text, &char_boxes, font_size)
+                            let text = choose_text_object_reconstruction(
+                                &object_text,
+                                &char_boxes,
+                                font_size,
+                            );
+                            let pdf_left = bounds.left().value;
+                            let pdf_bottom = bounds.bottom().value;
+                            let width = bounds.width().value;
+                            let height = bounds.height().value;
+                            let screen_y = (height_pts - (pdf_bottom + height)).max(0.0);
+                            let split_blocks = split_text_object_at_column_gutter(
+                                &char_boxes,
+                                font_size,
+                                page.width().value,
+                                Rect::new(pdf_left, screen_y, width, height),
+                            );
+                            if !split_blocks.is_empty() {
+                                raw_blocks.extend(split_blocks);
+                                continue;
+                            }
+                            text
                         }
                         Err(_) => object_text,
                     }
@@ -368,7 +388,10 @@ impl PdfRasterizer {
             }
         }
 
-        Ok(merge_text_objects_on_visual_lines(raw_blocks))
+        Ok(merge_text_objects_on_visual_lines(
+            raw_blocks,
+            page.width().value,
+        ))
     }
 }
 
@@ -423,8 +446,6 @@ fn reconstruct_text_from_char_boxes(char_boxes: &[PdfCharBox], font_size: f32) -
     result
 }
 
-/// Pick gap-reconstructed text, falling back to pdfium object text only when reconstruction
-/// cannot recover word boundaries (very tight character boxes).
 fn choose_text_object_reconstruction(
     object_text: &str,
     char_boxes: &[PdfCharBox],
@@ -480,6 +501,73 @@ fn normalize_short_text_object(text: &str) -> String {
     }
 }
 
+/// Splits one pdfium text object into separate column blocks when glyph boxes bridge a gutter.
+fn split_text_object_at_column_gutter(
+    char_boxes: &[PdfCharBox],
+    font_size: f32,
+    page_width: f32,
+    bbox: Rect,
+) -> Vec<RawLayoutBlock> {
+    if char_boxes.len() < 8 || bbox.width < page_width * 0.45 {
+        return Vec::new();
+    }
+
+    let avg_char_width = char_boxes
+        .iter()
+        .map(|b| (b.right - b.left).max(0.1))
+        .sum::<f32>()
+        / char_boxes.len() as f32;
+    let min_gutter = (font_size * 2.0)
+        .max(page_width * 0.03)
+        .max(avg_char_width * 4.0);
+
+    let mut best_gap: Option<(usize, f32)> = None;
+    for idx in 0..char_boxes.len().saturating_sub(1) {
+        let gap = char_boxes[idx + 1].left - char_boxes[idx].right;
+        if gap >= min_gutter {
+            let gap_width = gap;
+            match best_gap {
+                Some((_, best_width)) if gap_width <= best_width => {}
+                _ => best_gap = Some((idx, gap_width)),
+            }
+        }
+    }
+    let Some((split_idx, _)) = best_gap else {
+        return Vec::new();
+    };
+
+    let left_boxes = &char_boxes[..=split_idx];
+    let right_boxes = &char_boxes[split_idx + 1..];
+    if left_boxes.len() < 3 || right_boxes.len() < 3 {
+        return Vec::new();
+    }
+
+    let left_text = sanitize_pdf_text(&reconstruct_text_from_char_boxes(left_boxes, font_size));
+    let right_text = sanitize_pdf_text(&reconstruct_text_from_char_boxes(right_boxes, font_size));
+    if left_text.trim().is_empty() || right_text.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let left_bbox = bbox_from_char_boxes(left_boxes, bbox.y, bbox.height);
+    let right_bbox = bbox_from_char_boxes(right_boxes, bbox.y, bbox.height);
+    vec![
+        RawLayoutBlock::new(left_text, left_bbox).with_font_size(font_size),
+        RawLayoutBlock::new(right_text, right_bbox).with_font_size(font_size),
+    ]
+}
+
+fn bbox_from_char_boxes(char_boxes: &[PdfCharBox], top: f32, height: f32) -> Rect {
+    let min_x = char_boxes
+        .iter()
+        .map(|b| b.left)
+        .fold(f32::INFINITY, f32::min);
+    let max_x = char_boxes
+        .iter()
+        .map(|b| b.right)
+        .fold(f32::NEG_INFINITY, f32::max);
+    Rect::new(min_x, top, (max_x - min_x).max(0.1), height.max(0.1))
+}
+
 fn inter_block_space_threshold(prev: &RawLayoutBlock, next: &RawLayoutBlock) -> f32 {
     let prev_letters = prev.text.chars().filter(|c| !c.is_whitespace()).count();
     let next_letters = next.text.chars().filter(|c| !c.is_whitespace()).count();
@@ -502,7 +590,10 @@ fn sanitize_pdf_text(text: &str) -> String {
         .collect()
 }
 
-fn merge_text_objects_on_visual_lines(mut blocks: Vec<RawLayoutBlock>) -> Vec<RawLayoutBlock> {
+fn merge_text_objects_on_visual_lines(
+    mut blocks: Vec<RawLayoutBlock>,
+    page_width: f32,
+) -> Vec<RawLayoutBlock> {
     if blocks.len() <= 1 {
         return blocks;
     }
@@ -562,7 +653,7 @@ fn merge_text_objects_on_visual_lines(mut blocks: Vec<RawLayoutBlock>) -> Vec<Ra
                     .partial_cmp(&b.bbox.x)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-            merge_line_blocks(line.blocks)
+            merge_line_blocks(line.blocks, page_width)
         })
         .collect()
 }
@@ -577,7 +668,7 @@ fn merge_object_text_for_line(text: &str) -> Option<&str> {
     }
 }
 
-fn merge_line_blocks(blocks: Vec<RawLayoutBlock>) -> Vec<RawLayoutBlock> {
+fn merge_line_blocks(blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<RawLayoutBlock> {
     let mut merged_blocks = Vec::new();
     let mut current_run = Vec::new();
     let mut prev_right: Option<f32> = None;
@@ -590,7 +681,7 @@ fn merge_line_blocks(blocks: Vec<RawLayoutBlock>) -> Vec<RawLayoutBlock> {
 
         if let (Some(prev), Some(prev_block)) = (prev_right, prev_block.as_ref()) {
             let gap = block.bbox.x - prev;
-            let column_split_threshold = line_run_split_threshold(prev_block, &block);
+            let column_split_threshold = line_run_split_threshold(prev_block, &block, page_width);
             if gap > column_split_threshold && !current_run.is_empty() {
                 if let Some(merged) = merge_nearby_line_run(std::mem::take(&mut current_run)) {
                     merged_blocks.push(merged);
@@ -613,7 +704,11 @@ fn merge_line_blocks(blocks: Vec<RawLayoutBlock>) -> Vec<RawLayoutBlock> {
 /// Preserves normal word-fragment runs while splitting adjacent line-length objects into
 /// columns. PDF producers commonly use one object per visual column line, where a gutter
 /// can be only one to two font-heights wide.
-fn line_run_split_threshold(prev: &RawLayoutBlock, next: &RawLayoutBlock) -> f32 {
+fn line_run_split_threshold(prev: &RawLayoutBlock, next: &RawLayoutBlock, page_width: f32) -> f32 {
+    let gap = next.bbox.x - (prev.bbox.x + prev.bbox.width);
+    if page_width > 0.0 && gap >= page_width * 0.06 {
+        return 0.0;
+    }
     let font_size = next.font_size.or(prev.font_size).unwrap_or_else(|| {
         average_char_width(&next.text, next.bbox.width)
             .max(average_char_width(&prev.text, prev.bbox.width))
@@ -923,7 +1018,7 @@ mod tests {
             RawLayoutBlock::new("chosen", Rect::new(70.0, 20.0, 36.0, 8.0)).with_font_size(8.0),
         ];
 
-        let merged = merge_text_objects_on_visual_lines(blocks);
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
 
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].text, "Members chosen");
@@ -938,7 +1033,7 @@ mod tests {
                 .with_font_size(8.0),
         ];
 
-        let merged = merge_text_objects_on_visual_lines(blocks);
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].text, "Left column");
@@ -960,7 +1055,7 @@ mod tests {
             .with_font_size(9.0),
         ];
 
-        let merged = merge_text_objects_on_visual_lines(blocks);
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
 
         assert_eq!(merged.len(), 2);
         assert_eq!(
@@ -984,7 +1079,7 @@ mod tests {
             RawLayoutBlock::new("tail", Rect::new(312.0, 20.5, 24.0, 9.0)).with_font_size(9.0),
         ];
 
-        let merged = merge_text_objects_on_visual_lines(blocks);
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[1].text, "tail");

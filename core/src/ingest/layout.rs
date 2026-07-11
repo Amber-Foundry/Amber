@@ -112,7 +112,7 @@ pub(crate) fn analyze_layout_with_snapshot(
 
     // Build vertical bands before looking for gutters. This prevents a short line at the
     // bottom of a full-width region from being spliced into the two-column region below.
-    let bands = group_into_vertical_bands(valid_blocks, median_line_height);
+    let bands = group_into_vertical_bands(valid_blocks, median_line_height, page_width);
     let mut snapshot = LayoutDebugSnapshot {
         band_count: bands.len(),
         column_splits: 0,
@@ -128,6 +128,8 @@ pub(crate) fn analyze_layout_with_snapshot(
             order_band_blocks(band, page_width, median_line_height)
         })
         .collect::<Vec<_>>();
+    let clustered_raw_blocks =
+        defer_page_metadata_rows(clustered_raw_blocks, page_width, median_line_height);
 
     // Step 2: Classify block types
     let blocks = clustered_raw_blocks
@@ -136,6 +138,8 @@ pub(crate) fn analyze_layout_with_snapshot(
             let fragment = is_structured_fragment(&raw.text);
             let block_type = if fragment {
                 snapshot.fragment_count += 1;
+                BlockType::Body
+            } else if is_metadata_row_block(&raw, page_width, median_line_height) {
                 BlockType::Body
             } else {
                 classify_block_type(&raw, median_metric)
@@ -170,6 +174,7 @@ fn compute_median_line_height(blocks: &[RawLayoutBlock]) -> f32 {
 fn group_into_vertical_bands(
     mut blocks: Vec<RawLayoutBlock>,
     line_height: f32,
+    page_width: f32,
 ) -> Vec<Vec<RawLayoutBlock>> {
     blocks.sort_by(|a, b| {
         a.bbox
@@ -201,6 +206,52 @@ fn group_into_vertical_bands(
         bands.push(current_band);
     }
     bands
+        .into_iter()
+        .flat_map(|band| subdivide_band_at_two_column_onset(band, line_height, page_width))
+        .collect()
+}
+
+/// Keeps title/author headers out of the first two-column body band on IEEE-style pages.
+fn subdivide_band_at_two_column_onset(
+    band: Vec<RawLayoutBlock>,
+    line_height: f32,
+    page_width: f32,
+) -> Vec<Vec<RawLayoutBlock>> {
+    let column_blocks = column_line_blocks(&band, page_width, line_height);
+    let Some(split) = find_column_split(&column_blocks, page_width, line_height) else {
+        return vec![band];
+    };
+
+    let rows = group_visual_rows(&band, line_height);
+    let first_two_col_idx = rows.iter().position(|row| {
+        let narrow: Vec<_> = row
+            .iter()
+            .filter(|block| !is_full_width_block(block, page_width))
+            .cloned()
+            .collect();
+        narrow.len() >= 2 && row_has_blocks_on_both_sides(&narrow, split)
+    });
+    let Some(first_two_col_idx) = first_two_col_idx else {
+        return vec![band];
+    };
+    if first_two_col_idx == 0 {
+        return vec![band];
+    }
+
+    let mut prefix = Vec::new();
+    let mut body = Vec::new();
+    for (idx, row) in rows.into_iter().enumerate() {
+        if idx < first_two_col_idx {
+            prefix.extend(row);
+        } else {
+            body.extend(row);
+        }
+    }
+    if prefix.is_empty() || body.is_empty() {
+        vec![band]
+    } else {
+        vec![prefix, body]
+    }
 }
 
 fn project_x_intervals(blocks: &[RawLayoutBlock]) -> Vec<(f32, f32)> {
@@ -216,15 +267,60 @@ fn is_full_width_block(block: &RawLayoutBlock, page_width: f32) -> bool {
     block.bbox.width > page_width * 0.65
 }
 
-fn column_line_blocks(band: &[RawLayoutBlock], page_width: f32) -> Vec<RawLayoutBlock> {
+/// Centered footer/metadata lines (e.g. arXiv stamps) that should not participate in gutters.
+fn is_metadata_row_block(block: &RawLayoutBlock, page_width: f32, line_height: f32) -> bool {
+    if page_width <= 0.0 {
+        return false;
+    }
+    let center = block.bbox.x + (block.bbox.width / 2.0);
+    let page_center = page_width / 2.0;
+    let centered = (center - page_center).abs() <= page_width * 0.08;
+    let span = block.bbox.width >= page_width * 0.22 && block.bbox.width <= page_width * 0.52;
+    centered && span && block.bbox.height <= line_height.max(1.0) * 1.1
+}
+
+/// Moves footer/metadata rows to the end of the page so they do not interrupt columns.
+fn defer_page_metadata_rows(
+    blocks: Vec<RawLayoutBlock>,
+    page_width: f32,
+    line_height: f32,
+) -> Vec<RawLayoutBlock> {
+    if blocks.len() <= 1 {
+        return blocks;
+    }
+    let mut deferred = Vec::new();
+    let mut kept = Vec::new();
+    for block in blocks {
+        if is_metadata_row_block(&block, page_width, line_height) {
+            deferred.push(block);
+        } else {
+            kept.push(block);
+        }
+    }
+    if deferred.is_empty() {
+        kept
+    } else {
+        kept.extend(deferred);
+        kept
+    }
+}
+
+fn column_line_blocks(
+    band: &[RawLayoutBlock],
+    page_width: f32,
+    line_height: f32,
+) -> Vec<RawLayoutBlock> {
     band.iter()
-        .filter(|block| !is_full_width_block(block, page_width))
+        .filter(|block| {
+            !is_full_width_block(block, page_width)
+                && !is_metadata_row_block(block, page_width, line_height)
+        })
         .cloned()
         .collect()
 }
 
 fn band_has_column_split(band: &[RawLayoutBlock], page_width: f32, line_height: f32) -> bool {
-    let column_blocks = column_line_blocks(band, page_width);
+    let column_blocks = column_line_blocks(band, page_width, line_height);
     find_column_split(&column_blocks, page_width, line_height).is_some()
 }
 
@@ -281,8 +377,8 @@ fn find_largest_gap_in_left_edges(blocks: &[RawLayoutBlock], page_width: f32) ->
     let mut edges: Vec<f32> = blocks.iter().map(|block| block.bbox.x).collect();
     edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median_char_width = median_character_width(blocks);
-    let min_gutter = (median_char_width * 1.5)
-        .max(page_width * 0.01)
+    let min_gutter = (median_char_width * 2.0)
+        .max(page_width * 0.03)
         .min(median_block_width(blocks) * 0.5);
     edges
         .windows(2)
@@ -303,17 +399,50 @@ fn find_column_split(
         return None;
     }
     let row_intervals = project_row_left_edge_intervals(column_blocks, line_height);
-    if let Some(split) = find_largest_horizontal_gap(&row_intervals, column_blocks, page_width) {
-        return Some(split);
+    let candidate = find_largest_horizontal_gap(&row_intervals, column_blocks, page_width)
+        .or_else(|| find_largest_gap_in_left_edges(column_blocks, page_width))
+        .or_else(|| {
+            find_largest_horizontal_gap(
+                &project_x_intervals(column_blocks),
+                column_blocks,
+                page_width,
+            )
+        });
+    candidate.filter(|split| column_split_has_row_evidence(column_blocks, line_height, *split))
+}
+
+/// Require multiple visual rows with blocks on both sides of the gutter so hanging indents
+/// and single-column paragraphs do not false-trigger column clustering.
+fn column_split_has_row_evidence(blocks: &[RawLayoutBlock], line_height: f32, split: f32) -> bool {
+    let rows = group_visual_rows(blocks, line_height);
+    if rows.len() < 2 {
+        return false;
     }
-    if let Some(split) = find_largest_gap_in_left_edges(column_blocks, page_width) {
-        return Some(split);
+    let two_column_rows = rows
+        .iter()
+        .filter(|row| row_has_blocks_on_both_sides(row, split))
+        .count();
+    if two_column_rows >= 2 && (two_column_rows as f32 / rows.len() as f32) >= 0.25 {
+        return true;
     }
-    find_largest_horizontal_gap(
-        &project_x_intervals(column_blocks),
-        column_blocks,
-        page_width,
-    )
+    let left_blocks = blocks
+        .iter()
+        .filter(|block| block.bbox.x + (block.bbox.width / 2.0) < split)
+        .count();
+    let right_blocks = blocks.iter().filter(|block| block.bbox.x >= split).count();
+    left_blocks >= 2 && right_blocks >= 2 && two_column_rows >= 1
+}
+
+fn row_has_blocks_on_both_sides(row: &[RawLayoutBlock], split: f32) -> bool {
+    let has_left = row
+        .iter()
+        .any(|block| block.bbox.x + (block.bbox.width / 2.0) < split);
+    let has_right = row.iter().any(|block| block.bbox.x >= split);
+    if has_left && has_right {
+        return true;
+    }
+    row.iter()
+        .any(|block| block.bbox.x < split && block.bbox.x + block.bbox.width > split)
 }
 
 /// Returns the midpoint of the largest significant gap between merged x-projections.
@@ -344,8 +473,8 @@ fn find_largest_horizontal_gap(
     // A two-column PDF can have line objects hundreds of points wide while the gutter is
     // only a few character widths. Cap the width-derived floor with text metrics so those
     // legitimate narrow gutters are retained without mistaking normal word gaps for columns.
-    let min_gutter = (median_char_width * 1.5)
-        .max(page_width * 0.01)
+    let min_gutter = (median_char_width * 2.0)
+        .max(page_width * 0.03)
         .min(median_width * 0.5);
     merged
         .windows(2)
@@ -403,14 +532,20 @@ fn order_band_blocks(
         return band_blocks;
     }
 
-    let column_blocks = column_line_blocks(&band_blocks, page_width);
+    let column_blocks = column_line_blocks(&band_blocks, page_width, line_height);
     let split = find_column_split(&column_blocks, page_width, line_height);
 
     if let Some(split) = split {
-        let (mut full_width, narrow): (Vec<_>, Vec<_>) = band_blocks
+        let (mut full_width, narrow): (Vec<_>, Vec<_>) =
+            band_blocks.into_iter().partition(|block| {
+                is_full_width_block(block, page_width)
+                    && !is_metadata_row_block(block, page_width, line_height)
+            });
+        let (mut metadata, narrow): (Vec<_>, Vec<_>) = narrow
             .into_iter()
-            .partition(|block| is_full_width_block(block, page_width));
+            .partition(|block| is_metadata_row_block(block, page_width, line_height));
         sort_reading_order(&mut full_width);
+        sort_reading_order(&mut metadata);
 
         let mut left_column = Vec::new();
         let mut right_column = Vec::new();
@@ -427,6 +562,7 @@ fn order_band_blocks(
         sort_reading_order(&mut right_column);
         full_width.extend(left_column);
         full_width.extend(right_column);
+        full_width.extend(metadata);
         full_width
     } else {
         let mut single_column = band_blocks;
@@ -905,6 +1041,46 @@ mod tests {
             .map(|block| block.text)
             .collect::<Vec<_>>();
         assert_eq!(text, vec!["TITLE", "LEFT", "RIGHT", "FOOTER"]);
+    }
+
+    #[test]
+    fn metadata_row_isolated_from_two_column_abstract() {
+        let blocks = vec![
+            RawLayoutBlock::new(
+                "Abstract-This is the full-width abstract opener spanning the page",
+                Rect::new(50.0, 50.0, 500.0, 15.0),
+            ),
+            RawLayoutBlock::new("LEFT_ABSTRACT_ONE", Rect::new(50.0, 80.0, 200.0, 15.0)),
+            RawLayoutBlock::new(
+                "arXiv:1909.04694v4 [eess.SY] 18 Mar 2020",
+                Rect::new(170.0, 100.0, 260.0, 12.0),
+            ),
+            RawLayoutBlock::new("LEFT_ABSTRACT_TWO", Rect::new(50.0, 120.0, 200.0, 15.0)),
+            RawLayoutBlock::new("RIGHT_MOTIVATION_ONE", Rect::new(350.0, 80.0, 200.0, 15.0)),
+            RawLayoutBlock::new("RIGHT_MOTIVATION_TWO", Rect::new(350.0, 120.0, 200.0, 15.0)),
+        ];
+
+        let (result, _) = analyze_layout_with_snapshot(blocks, 600.0);
+        let text = result
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>();
+
+        let arxiv = text
+            .iter()
+            .position(|value| value.contains("arXiv:1909.04694"));
+        let left_two = text.iter().position(|value| *value == "LEFT_ABSTRACT_TWO");
+        let right_one = text
+            .iter()
+            .position(|value| *value == "RIGHT_MOTIVATION_ONE");
+        assert!(arxiv.is_some(), "arxiv metadata");
+        assert!(left_two.is_some(), "left abstract two");
+        assert!(right_one.is_some(), "right motivation one");
+        let arxiv = arxiv.unwrap_or(0);
+        let left_two = left_two.unwrap_or(0);
+        let right_one = right_one.unwrap_or(0);
+        assert!(left_two < arxiv);
+        assert!(right_one < arxiv);
     }
 
     #[test]
