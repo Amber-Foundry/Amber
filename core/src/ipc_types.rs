@@ -344,6 +344,8 @@ pub struct ImportJobStatus {
     pub id: String,
     pub status: String,
     pub source_name: String,
+    pub changeset_id: Option<String>,
+    pub node_count: i32,
     pub total_pages: i32,
     pub digital_pages: i32,
     pub ocr_pages: i32,

@@ -1380,10 +1380,11 @@ fn ingest_config_from_input(input: &ImportStartJobInput) -> ingest::IngestJobCon
     } else {
         (None, None, None)
     };
-    let allowed_vault_keys = input
-        .target_vault_id
-        .as_ref()
-        .map(|vault_id| vec![vault_id.clone()]);
+    let allowed_vault_keys = input.target_vault_id.as_deref().map(|vault_id| {
+        crate::onboarding::category_key_for_vault_id(vault_id)
+            .map(|key| vec![key.to_string()])
+            .unwrap_or_default()
+    });
     ingest::IngestJobConfig {
         rasterization_dpi,
         provider,
@@ -2868,6 +2869,8 @@ fn import_start_job(
 
         let db_path = state.db_path.clone();
         let config = ingest_config_from_input(&input);
+        let worker_target_vault_id = input.target_vault_id.clone();
+        let worker_model = config.model.clone();
         let app_handle_worker = app_handle.clone();
         let import_job_worker = Arc::clone(&import_job);
         let worker_cancel = Arc::clone(&cancel);
@@ -2961,9 +2964,25 @@ fn import_start_job(
             let _ = progress_handle.join();
 
             let finalize_result = (|| -> Result<(), String> {
-                let conn = open_connection(&db_path)?;
+                let mut conn = open_connection(&db_path)?;
                 match pdf_outcome {
                     Ok(ImportPdfWorkerOutcome::Staged(job_result)) => {
+                        let embed_engine = build_embed_engine_from_settings(&conn).ok();
+                        if let Some((changeset_id, node_count)) = ingest::finalize_import_changeset(
+                            &mut conn,
+                            &worker_job_id,
+                            worker_target_vault_id.as_deref(),
+                            &job_result.candidates,
+                            worker_model.as_deref(),
+                            embed_engine.as_deref(),
+                        )? {
+                            ingest::link_import_job_changeset(
+                                &conn,
+                                &worker_job_id,
+                                &changeset_id,
+                                node_count,
+                            )?;
+                        }
                         let extraction_path = ingest::derive_document_extraction_path(
                             job_result.digital_pages,
                             job_result.ocr_pages,
@@ -5033,5 +5052,40 @@ mod tests {
         }
 
         assert_eq!(successes.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn ingest_config_maps_onboarding_vault_id_to_category_key() {
+        use super::{ingest_config_from_input, ImportStartJobInput};
+
+        let config = ingest_config_from_input(&ImportStartJobInput {
+            file_path: "/tmp/sample.pdf".to_string(),
+            target_vault_id: Some("vault_learning".to_string()),
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        });
+        assert_eq!(
+            config.allowed_vault_keys.as_deref(),
+            Some(vec!["learning".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn ingest_config_custom_vault_uses_empty_allowed_keys() {
+        use super::{ingest_config_from_input, ImportStartJobInput};
+
+        let config = ingest_config_from_input(&ImportStartJobInput {
+            file_path: "/tmp/sample.pdf".to_string(),
+            target_vault_id: Some("vault_custom_user".to_string()),
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        });
+        assert_eq!(config.allowed_vault_keys, Some(vec![]));
     }
 }

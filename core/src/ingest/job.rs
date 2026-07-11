@@ -455,12 +455,11 @@ impl IngestJobEngine {
         config: &IngestJobConfig,
         runtime: &tokio::runtime::Handle,
     ) -> Vec<CandidateNode> {
-        let resolved_vault = config
-            .allowed_vault_keys
-            .as_ref()
-            .and_then(|keys| keys.first())
-            .cloned()
-            .or_else(|| Some("learning".to_string()));
+        let resolved_vault = match &config.allowed_vault_keys {
+            None => Some("learning".to_string()),
+            Some(keys) if keys.is_empty() => None,
+            Some(keys) => keys.first().cloned(),
+        };
 
         if crate::ingest::security::scan_prompt_injection(&chunk.text) {
             return vec![Self::run_fallback_extraction(
@@ -1011,6 +1010,31 @@ mod tests {
             node.summary,
             ". This sentence starts with a period and is long enough to summarize"
         );
+    }
+
+    #[test]
+    fn test_extract_chunk_candidates_custom_vault_leaves_target_unset() {
+        let chunk = ImportChunkSpec {
+            chunk_index: 0,
+            text: "Custom vault target should not default to learning.".to_string(),
+            token_count: 9,
+            heading_context: None,
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+        };
+        let config = IngestJobConfig {
+            provider: None,
+            allowed_vault_keys: Some(vec![]),
+            ..Default::default()
+        };
+
+        let (runtime_handle, _owned_runtime) = prepare_job_runtime()
+            .unwrap_or_else(|err| panic!("expected job runtime in test: {err}"));
+        let nodes =
+            IngestJobEngine::extract_chunk_candidates(&chunk, "test.pdf", &config, &runtime_handle);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].target_vault_key, None);
     }
 
     #[test]

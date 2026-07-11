@@ -194,6 +194,23 @@ pub fn update_import_job_staged_metadata(
     Ok(())
 }
 
+pub fn link_import_job_changeset(
+    conn: &Connection,
+    id: &str,
+    changeset_id: &str,
+    node_count: i32,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE import_jobs
+         SET changeset_id = ?1,
+             node_count = ?2
+         WHERE id = ?3;",
+        params![changeset_id, node_count, id],
+    )
+    .map_err(|err| format!("Failed to link import job changeset: {err}"))?;
+    Ok(())
+}
+
 pub fn get_import_job(conn: &Connection, id: &str) -> Result<Option<ImportJobRow>, String> {
     let mut stmt = conn
         .prepare(&format!("{IMPORT_JOB_SELECT} WHERE id = ?1 LIMIT 1;"))
@@ -227,6 +244,8 @@ pub fn import_job_row_to_status(row: ImportJobRow) -> ImportJobStatus {
         id: row.id,
         status: row.status,
         source_name: row.source_name.unwrap_or_default(),
+        changeset_id: row.changeset_id,
+        node_count: row.node_count,
         total_pages: row.total_pages,
         digital_pages: row.digital_pages,
         ocr_pages: row.ocr_pages,
@@ -306,8 +325,8 @@ mod tests {
             source_name: Some(status.source_name),
             target_vault_id: None,
             status: status.status,
-            changeset_id: None,
-            node_count: 0,
+            changeset_id: status.changeset_id,
+            node_count: status.node_count,
             error: status.error,
             created_at: "2026-01-01".to_string(),
             completed_at: None,
