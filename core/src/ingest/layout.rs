@@ -122,8 +122,7 @@ pub(crate) fn analyze_layout_with_snapshot(
     let clustered_raw_blocks = bands
         .into_iter()
         .flat_map(|band| {
-            if find_largest_horizontal_gap(&project_x_intervals(&band), &band, page_width).is_some()
-            {
+            if band_has_column_split(&band, page_width) {
                 snapshot.column_splits += 1;
             }
             order_band_blocks(band, page_width)
@@ -211,6 +210,32 @@ fn project_x_intervals(blocks: &[RawLayoutBlock]) -> Vec<(f32, f32)> {
         .collect()
 }
 
+/// Blocks spanning most of the page width pollute x-projection gutter detection when
+/// mixed with two-column lines in the same vertical band (e.g. IEEE abstract + body).
+fn is_full_width_block(block: &RawLayoutBlock, page_width: f32) -> bool {
+    block.bbox.width > page_width * 0.65
+}
+
+fn column_line_blocks(band: &[RawLayoutBlock], page_width: f32) -> Vec<RawLayoutBlock> {
+    band.iter()
+        .filter(|block| !is_full_width_block(block, page_width))
+        .cloned()
+        .collect()
+}
+
+fn band_has_column_split(band: &[RawLayoutBlock], page_width: f32) -> bool {
+    let column_blocks = column_line_blocks(band, page_width);
+    if column_blocks.len() < 2 {
+        return false;
+    }
+    find_largest_horizontal_gap(
+        &project_x_intervals(&column_blocks),
+        &column_blocks,
+        page_width,
+    )
+    .is_some()
+}
+
 /// Returns the midpoint of the largest significant gap between merged x-projections.
 fn find_largest_horizontal_gap(
     intervals: &[(f32, f32)],
@@ -293,13 +318,27 @@ fn order_band_blocks(band_blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<R
     if band_blocks.len() <= 1 {
         return band_blocks;
     }
-    let split =
-        find_largest_horizontal_gap(&project_x_intervals(&band_blocks), &band_blocks, page_width);
-    let mut left_column = Vec::new();
-    let mut right_column = Vec::new();
+
+    let column_blocks = column_line_blocks(&band_blocks, page_width);
+    let split = if column_blocks.len() >= 2 {
+        find_largest_horizontal_gap(
+            &project_x_intervals(&column_blocks),
+            &column_blocks,
+            page_width,
+        )
+    } else {
+        None
+    };
 
     if let Some(split) = split {
-        for block in band_blocks {
+        let (mut full_width, narrow): (Vec<_>, Vec<_>) = band_blocks
+            .into_iter()
+            .partition(|block| is_full_width_block(block, page_width));
+        sort_reading_order(&mut full_width);
+
+        let mut left_column = Vec::new();
+        let mut right_column = Vec::new();
+        for block in narrow {
             if block.bbox.x + block.bbox.width / 2.0 < split {
                 left_column.push(block);
             } else {
@@ -308,8 +347,9 @@ fn order_band_blocks(band_blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<R
         }
         sort_reading_order(&mut left_column);
         sort_reading_order(&mut right_column);
-        left_column.extend(right_column);
-        left_column
+        full_width.extend(left_column);
+        full_width.extend(right_column);
+        full_width
     } else {
         let mut single_column = band_blocks;
         sort_reading_order(&mut single_column);
@@ -622,6 +662,35 @@ mod tests {
         assert_eq!(result[0].text, "Introduction");
         assert_eq!(result[1].text, "This paragraph starts below the heading.");
         assert_eq!(result[2].text, "Indented continuation on the next line.");
+    }
+
+    #[test]
+    fn full_width_lines_do_not_mask_column_gutter_in_same_band() {
+        let blocks = vec![
+            RawLayoutBlock::new(
+                "Abstract-Full-width opener spanning the page",
+                Rect::new(50.0, 50.0, 500.0, 15.0),
+            ),
+            RawLayoutBlock::new("LEFT_ABSTRACT_ONE", Rect::new(50.0, 80.0, 200.0, 15.0)),
+            RawLayoutBlock::new("RIGHT_MOTIVATION_ONE", Rect::new(350.0, 80.0, 200.0, 15.0)),
+            RawLayoutBlock::new("LEFT_ABSTRACT_TWO", Rect::new(50.0, 100.0, 200.0, 15.0)),
+            RawLayoutBlock::new("RIGHT_MOTIVATION_TWO", Rect::new(350.0, 100.0, 200.0, 15.0)),
+        ];
+
+        let (result, snapshot) = analyze_layout_with_snapshot(blocks, 600.0);
+        let text = result
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(snapshot.column_splits >= 1);
+        assert_eq!(text[0], "Abstract-Full-width opener spanning the page");
+        assert!(
+            text.iter().position(|value| *value == "LEFT_ABSTRACT_TWO")
+                < text
+                    .iter()
+                    .position(|value| *value == "RIGHT_MOTIVATION_ONE")
+        );
     }
 
     #[test]

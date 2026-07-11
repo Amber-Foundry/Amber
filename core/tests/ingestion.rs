@@ -20,6 +20,11 @@ const LEFT_COL_TWO: &str = "Left column line two follows here";
 const RIGHT_COL_ONE: &str = "Right column line one for integration";
 const RIGHT_COL_TWO: &str = "Right column line two follows here";
 const FIXTURE_TITLE: &str = "INTEGRATION TEST TITLE";
+const ABSTRACT_TAIL_TITLE: &str = "IEEE STYLE TITLE FOR ABSTRACT TAIL";
+const LEFT_ABSTRACT_ONE: &str = "LEFT_ABSTRACT_ONE";
+const LEFT_ABSTRACT_TWO: &str = "LEFT_ABSTRACT_TWO";
+const RIGHT_MOTIVATION_ONE: &str = "RIGHT_MOTIVATION_ONE";
+const RIGHT_MOTIVATION_TWO: &str = "RIGHT_MOTIVATION_TWO";
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -81,6 +86,21 @@ fn assert_left_before_right(markdown: &str) -> Result<(), String> {
     if left >= right {
         return Err(format!(
             "expected left column before right column; left at {left}, right at {right}"
+        ));
+    }
+    Ok(())
+}
+
+fn assert_abstract_tail_column_order(markdown: &str) -> Result<(), String> {
+    let left_two = markdown
+        .find(LEFT_ABSTRACT_TWO)
+        .ok_or_else(|| format!("expected {LEFT_ABSTRACT_TWO} in markdown"))?;
+    let right_one = markdown
+        .find(RIGHT_MOTIVATION_ONE)
+        .ok_or_else(|| format!("expected {RIGHT_MOTIVATION_ONE} in markdown"))?;
+    if left_two >= right_one {
+        return Err(format!(
+            "expected left abstract column before right motivation column; left at {left_two}, right at {right_one}"
         ));
     }
     Ok(())
@@ -358,9 +378,42 @@ fn fallback_unsupported_provider() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn digital_abstract_tail_layout_pipeline() -> Result<(), Box<dyn Error>> {
+    if skip_if_pdfium_unavailable().is_err() {
+        return Ok(());
+    }
+
+    let path = require_fixture("digital_abstract_tail.pdf")?;
+    let result = IngestJobEngine::process_pdf_job(
+        "ingest-test-abstract-tail",
+        path.as_path(),
+        no_llm_config(),
+        None,
+        None,
+    )
+    .map_err(|err| format!("process_pdf_job failed: {err}"))?;
+
+    assert_eq!(result.total_pages, 1);
+    assert_eq!(result.digital_pages, 1);
+    assert_eq!(result.hybrid_pages, 0);
+
+    let markdown = &result.assembled_markdown;
+    assert!(markdown.contains(ABSTRACT_TAIL_TITLE));
+    assert!(markdown.contains("Abstract-This is the full-width abstract opener"));
+    assert!(markdown.contains(LEFT_ABSTRACT_ONE));
+    assert!(markdown.contains(LEFT_ABSTRACT_TWO));
+    assert!(markdown.contains(RIGHT_MOTIVATION_ONE));
+    assert!(markdown.contains(RIGHT_MOTIVATION_TWO));
+    assert_abstract_tail_column_order(markdown)?;
+
+    Ok(())
+}
+
+#[test]
 fn fixtures_are_present_on_disk() -> Result<(), Box<dyn Error>> {
     for name in [
         "digital_two_column.pdf",
+        "digital_abstract_tail.pdf",
         "digital_injection.pdf",
         "digital_minimal.pdf",
         "scanned_single_page.pdf",
