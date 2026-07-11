@@ -28,6 +28,8 @@ const RIGHT_MOTIVATION_TWO: &str = "RIGHT_MOTIVATION_TWO";
 const HANGING_INDENT_TITLE: &str = "TWO COLUMN HANGING INDENT FIXTURE";
 const LEFT_REF_BETA: &str = "LEFT_REF_BETA";
 const RIGHT_REF_GAMMA: &str = "RIGHT_REF_GAMMA";
+const HEADER_FOOTER_BODY: &str = "HEADER FOOTER FIXTURE BODY";
+const DENSE_FOOTER_BODY: &str = "DENSE FOOTER BAND body line one";
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -270,7 +272,7 @@ fn mock_ocr_blocks_layout_markdown_and_chunk_metrics() -> Result<(), Box<dyn Err
         return Err("expected left OCR column before right in markdown".into());
     }
 
-    let chunks = chunk_ingest_blocks(&ingest_blocks, 350, 60);
+    let chunks = chunk_ingest_blocks(&ingest_blocks, 350, 60, false);
     assert!(!chunks.is_empty());
     let chunk = &chunks[0];
     let ocr_conf = chunk
@@ -459,11 +461,77 @@ fn digital_two_column_hanging_indent_layout_pipeline() -> Result<(), Box<dyn Err
 }
 
 #[test]
+fn digital_header_footer_layout_pipeline() -> Result<(), Box<dyn Error>> {
+    if skip_if_pdfium_unavailable().is_err() {
+        return Ok(());
+    }
+
+    let path = require_fixture("digital_header_footer.pdf")?;
+    let result = IngestJobEngine::process_pdf_job(
+        "ingest-test-header-footer",
+        path.as_path(),
+        no_llm_config(),
+        None,
+        None,
+    )
+    .map_err(|err| format!("process_pdf_job failed: {err}"))?;
+
+    let markdown = &result.assembled_markdown;
+    assert!(markdown.contains("Page 1"));
+    assert!(markdown.contains(HEADER_FOOTER_BODY));
+    assert!(markdown.contains("Footer stamp line"));
+
+    let chunk_text = result
+        .chunks
+        .iter()
+        .map(|c| c.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !chunk_text.contains("Page 1"),
+        "header should be filtered from chunks by default"
+    );
+    assert!(
+        !chunk_text.contains("Footer stamp line"),
+        "footer should be filtered from chunks by default"
+    );
+    assert!(chunk_text.contains(HEADER_FOOTER_BODY));
+
+    Ok(())
+}
+
+#[test]
+fn digital_dense_footer_band_layout_pipeline() -> Result<(), Box<dyn Error>> {
+    if skip_if_pdfium_unavailable().is_err() {
+        return Ok(());
+    }
+
+    let path = require_fixture("digital_dense_footer_band.pdf")?;
+    let result = IngestJobEngine::process_pdf_job(
+        "ingest-test-dense-footer",
+        path.as_path(),
+        no_llm_config(),
+        None,
+        None,
+    )
+    .map_err(|err| format!("process_pdf_job failed: {err}"))?;
+
+    let markdown = &result.assembled_markdown;
+    assert!(markdown.contains(DENSE_FOOTER_BODY));
+    assert!(markdown.contains("REF_ALPHA"));
+    assert!(markdown.contains("REF_DELTA"));
+
+    Ok(())
+}
+
+#[test]
 fn fixtures_are_present_on_disk() -> Result<(), Box<dyn Error>> {
     for name in [
         "digital_two_column.pdf",
         "digital_abstract_tail.pdf",
         "digital_two_column_hanging_indent.pdf",
+        "digital_header_footer.pdf",
+        "digital_dense_footer_band.pdf",
         "digital_injection.pdf",
         "digital_minimal.pdf",
         "scanned_single_page.pdf",

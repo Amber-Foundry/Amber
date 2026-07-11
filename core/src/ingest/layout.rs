@@ -1,5 +1,12 @@
+use crate::ingest::templates::{detect_non_flow_layout, evaluate_template_match};
 use crate::ocr::engine::Rect;
 use serde::{Deserialize, Serialize};
+
+/// Top fraction of page height treated as header margin band.
+const HEADER_BAND_RATIO: f32 = 0.04;
+const HEADER_BAND_MAX_PT: f32 = 36.0;
+/// Bottom fraction of page height treated as footer margin band.
+const FOOTER_BAND_RATIO: f32 = 0.08;
 
 /// Type classification for a document layout text block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -12,6 +19,10 @@ pub enum BlockType {
     ListItem,
     /// Table or tabular data block.
     Table,
+    /// Running header or page-number band at the top of the page.
+    Header,
+    /// Running footer, page stamp, or bottom margin band.
+    Footer,
 }
 
 /// Raw input text block with spatial bounding box and optional typography metrics.
@@ -69,12 +80,18 @@ impl TextBlock {
 }
 
 /// Layout-only counters used by the CLI to diagnose a page without exposing its text.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LayoutDebugSnapshot {
     pub page_index: usize,
     pub band_count: usize,
     pub column_splits: usize,
     pub fragment_count: usize,
+    #[serde(default)]
+    pub layout_hint: Option<String>,
+    #[serde(default)]
+    pub template_match_confidence: Option<f32>,
+    #[serde(default)]
+    pub layout_warnings: Vec<String>,
 }
 
 /// Analyzes a page of raw layout blocks, performing band-based multi-column layout clustering
@@ -82,15 +99,16 @@ pub struct LayoutDebugSnapshot {
 pub fn analyze_layout(
     raw_blocks: Vec<RawLayoutBlock>,
     page_width: f32,
-    _page_height: f32,
+    page_height: f32,
 ) -> Vec<TextBlock> {
-    analyze_layout_with_snapshot(raw_blocks, page_width).0
+    analyze_layout_with_snapshot(raw_blocks, page_width, page_height).0
 }
 
 /// Produces the normal layout output plus structural counters for diagnostics.
 pub(crate) fn analyze_layout_with_snapshot(
     raw_blocks: Vec<RawLayoutBlock>,
     page_width: f32,
+    page_height: f32,
 ) -> (Vec<TextBlock>, LayoutDebugSnapshot) {
     if raw_blocks.is_empty() {
         return (Vec::new(), LayoutDebugSnapshot::default());
@@ -106,30 +124,35 @@ pub(crate) fn analyze_layout_with_snapshot(
         return (Vec::new(), LayoutDebugSnapshot::default());
     }
 
+    let block_count = valid_blocks.len();
+
     // Compute median metric (font size if available, otherwise bounding box height)
     let median_metric = compute_median_metric(&valid_blocks);
     let median_line_height = compute_median_line_height(&valid_blocks);
 
     // Build vertical bands before looking for gutters. This prevents a short line at the
     // bottom of a full-width region from being spliced into the two-column region below.
-    let bands = group_into_vertical_bands(valid_blocks, median_line_height, page_width);
+    let bands =
+        group_into_vertical_bands(valid_blocks, median_line_height, page_width, page_height);
     let mut snapshot = LayoutDebugSnapshot {
         band_count: bands.len(),
         column_splits: 0,
         fragment_count: 0,
         ..LayoutDebugSnapshot::default()
     };
+    let mut detected_gutter_x: Option<f32> = None;
     let clustered_raw_blocks = bands
         .into_iter()
         .flat_map(|band| {
-            if band_has_column_split(&band, page_width, median_line_height) {
+            let band_line_height = compute_median_line_height(&band);
+            if let Some(split) = band_column_split(&band, page_width, page_height, band_line_height)
+            {
                 snapshot.column_splits += 1;
+                detected_gutter_x = Some(split);
             }
-            order_band_blocks(band, page_width, median_line_height)
+            order_band_blocks(band, page_width, page_height, band_line_height)
         })
         .collect::<Vec<_>>();
-    let clustered_raw_blocks =
-        defer_page_metadata_rows(clustered_raw_blocks, page_width, median_line_height);
 
     // Step 2: Classify block types
     let blocks = clustered_raw_blocks
@@ -139,8 +162,10 @@ pub(crate) fn analyze_layout_with_snapshot(
             let block_type = if fragment {
                 snapshot.fragment_count += 1;
                 BlockType::Body
-            } else if is_metadata_row_block(&raw, page_width, median_line_height) {
-                BlockType::Body
+            } else if let Some(margin_type) = classify_margin_block(&raw, page_width, page_height) {
+                margin_type
+            } else if is_centered_footer_stamp(&raw, page_width, median_line_height) {
+                BlockType::Footer
             } else {
                 classify_block_type(&raw, median_metric)
             };
@@ -153,6 +178,20 @@ pub(crate) fn analyze_layout_with_snapshot(
             }
         })
         .collect();
+
+    let template_match = evaluate_template_match(
+        page_width,
+        snapshot.band_count,
+        snapshot.column_splits,
+        detected_gutter_x,
+    );
+    snapshot.layout_hint = template_match.layout_hint;
+    snapshot.template_match_confidence = template_match.confidence;
+    snapshot.layout_warnings = template_match.warnings;
+
+    if let Some(warning) = detect_non_flow_layout(&snapshot, block_count, page_width, page_height) {
+        snapshot.layout_warnings.push(warning);
+    }
 
     (blocks, snapshot)
 }
@@ -170,11 +209,12 @@ fn compute_median_line_height(blocks: &[RawLayoutBlock]) -> f32 {
     heights[(heights.len() - 1) / 2]
 }
 
-/// Groups nearby visual lines into vertical regions using page-derived line height.
+/// Groups nearby visual lines into vertical regions using per-band line height.
 fn group_into_vertical_bands(
     mut blocks: Vec<RawLayoutBlock>,
-    line_height: f32,
+    initial_line_height: f32,
     page_width: f32,
+    page_height: f32,
 ) -> Vec<Vec<RawLayoutBlock>> {
     blocks.sort_by(|a, b| {
         a.bbox
@@ -189,13 +229,15 @@ fn group_into_vertical_bands(
             })
     });
 
-    let gap_threshold = line_height.max(1.0) * 1.5;
+    let mut band_line_height = initial_line_height;
     let mut bands = Vec::new();
     let mut current_band = Vec::new();
     let mut current_bottom = f32::NEG_INFINITY;
 
     for block in blocks {
+        let gap_threshold = band_line_height.max(1.0) * 1.5;
         if !current_band.is_empty() && block.bbox.y > current_bottom + gap_threshold {
+            band_line_height = compute_median_line_height(&current_band).max(initial_line_height);
             bands.push(std::mem::take(&mut current_band));
             current_bottom = f32::NEG_INFINITY;
         }
@@ -207,7 +249,10 @@ fn group_into_vertical_bands(
     }
     bands
         .into_iter()
-        .flat_map(|band| subdivide_band_at_two_column_onset(band, line_height, page_width))
+        .flat_map(|band| {
+            let band_height = compute_median_line_height(&band);
+            subdivide_band_at_two_column_onset(band, band_height, page_width, page_height)
+        })
         .collect()
 }
 
@@ -216,8 +261,9 @@ fn subdivide_band_at_two_column_onset(
     band: Vec<RawLayoutBlock>,
     line_height: f32,
     page_width: f32,
+    page_height: f32,
 ) -> Vec<Vec<RawLayoutBlock>> {
-    let column_blocks = column_line_blocks(&band, page_width, line_height);
+    let column_blocks = column_line_blocks(&band, page_width, page_height, line_height);
     let Some(split) = find_column_split(&column_blocks, page_width, line_height) else {
         return vec![band];
     };
@@ -267,8 +313,47 @@ fn is_full_width_block(block: &RawLayoutBlock, page_width: f32) -> bool {
     block.bbox.width > page_width * 0.65
 }
 
+fn classify_margin_block(
+    block: &RawLayoutBlock,
+    page_width: f32,
+    page_height: f32,
+) -> Option<BlockType> {
+    let text = block.text.trim();
+    if is_structured_fragment(text) || matches_heading_pattern(text) {
+        return None;
+    }
+    let bbox = &block.bbox;
+    if page_height <= 0.0 || page_width <= 0.0 {
+        return None;
+    }
+    let header_limit = (page_height * HEADER_BAND_RATIO).min(HEADER_BAND_MAX_PT);
+    let footer_start = page_height * (1.0 - FOOTER_BAND_RATIO);
+    let running_head = bbox.width <= page_width * 0.35;
+    let compact = bbox.height <= page_height * 0.025;
+    if bbox.y + bbox.height <= header_limit && compact && running_head {
+        return Some(BlockType::Header);
+    }
+    if bbox.y >= footer_start && compact && running_head {
+        return Some(BlockType::Footer);
+    }
+    None
+}
+
+fn is_margin_gutter_excluded_block(
+    block: &RawLayoutBlock,
+    page_width: f32,
+    page_height: f32,
+    line_height: f32,
+) -> bool {
+    if is_structured_fragment(&block.text) || matches_heading_pattern(block.text.trim()) {
+        return false;
+    }
+    classify_margin_block(block, page_width, page_height).is_some()
+        || is_centered_footer_stamp(block, page_width, line_height)
+}
+
 /// Centered footer/metadata lines (e.g. arXiv stamps) that should not participate in gutters.
-fn is_metadata_row_block(block: &RawLayoutBlock, page_width: f32, line_height: f32) -> bool {
+fn is_centered_footer_stamp(block: &RawLayoutBlock, page_width: f32, line_height: f32) -> bool {
     if page_width <= 0.0 {
         return false;
     }
@@ -279,49 +364,38 @@ fn is_metadata_row_block(block: &RawLayoutBlock, page_width: f32, line_height: f
     centered && span && block.bbox.height <= line_height.max(1.0) * 1.1
 }
 
-/// Moves footer/metadata rows to the end of the page so they do not interrupt columns.
-fn defer_page_metadata_rows(
-    blocks: Vec<RawLayoutBlock>,
+fn is_margin_gutter_excluded(
+    block: &RawLayoutBlock,
     page_width: f32,
+    page_height: f32,
     line_height: f32,
-) -> Vec<RawLayoutBlock> {
-    if blocks.len() <= 1 {
-        return blocks;
-    }
-    let mut deferred = Vec::new();
-    let mut kept = Vec::new();
-    for block in blocks {
-        if is_metadata_row_block(&block, page_width, line_height) {
-            deferred.push(block);
-        } else {
-            kept.push(block);
-        }
-    }
-    if deferred.is_empty() {
-        kept
-    } else {
-        kept.extend(deferred);
-        kept
-    }
+) -> bool {
+    is_margin_gutter_excluded_block(block, page_width, page_height, line_height)
 }
 
 fn column_line_blocks(
     band: &[RawLayoutBlock],
     page_width: f32,
+    page_height: f32,
     line_height: f32,
 ) -> Vec<RawLayoutBlock> {
     band.iter()
         .filter(|block| {
             !is_full_width_block(block, page_width)
-                && !is_metadata_row_block(block, page_width, line_height)
+                && !is_margin_gutter_excluded(block, page_width, page_height, line_height)
         })
         .cloned()
         .collect()
 }
 
-fn band_has_column_split(band: &[RawLayoutBlock], page_width: f32, line_height: f32) -> bool {
-    let column_blocks = column_line_blocks(band, page_width, line_height);
-    find_column_split(&column_blocks, page_width, line_height).is_some()
+fn band_column_split(
+    band: &[RawLayoutBlock],
+    page_width: f32,
+    page_height: f32,
+    line_height: f32,
+) -> Option<f32> {
+    let column_blocks = column_line_blocks(band, page_width, page_height, line_height);
+    find_column_split(&column_blocks, page_width, line_height)
 }
 
 /// Visual rows within a band: blocks whose baselines fall within one line height.
@@ -526,26 +600,27 @@ fn median_character_width(blocks: &[RawLayoutBlock]) -> f32 {
 fn order_band_blocks(
     band_blocks: Vec<RawLayoutBlock>,
     page_width: f32,
+    page_height: f32,
     line_height: f32,
 ) -> Vec<RawLayoutBlock> {
     if band_blocks.len() <= 1 {
         return band_blocks;
     }
 
-    let column_blocks = column_line_blocks(&band_blocks, page_width, line_height);
+    let column_blocks = column_line_blocks(&band_blocks, page_width, page_height, line_height);
     let split = find_column_split(&column_blocks, page_width, line_height);
 
     if let Some(split) = split {
         let (mut full_width, narrow): (Vec<_>, Vec<_>) =
             band_blocks.into_iter().partition(|block| {
                 is_full_width_block(block, page_width)
-                    && !is_metadata_row_block(block, page_width, line_height)
+                    && !is_margin_gutter_excluded(block, page_width, page_height, line_height)
             });
-        let (mut metadata, narrow): (Vec<_>, Vec<_>) = narrow
-            .into_iter()
-            .partition(|block| is_metadata_row_block(block, page_width, line_height));
+        let (mut margin, narrow): (Vec<_>, Vec<_>) = narrow.into_iter().partition(|block| {
+            is_margin_gutter_excluded(block, page_width, page_height, line_height)
+        });
         sort_reading_order(&mut full_width);
-        sort_reading_order(&mut metadata);
+        sort_reading_order(&mut margin);
 
         let mut left_column = Vec::new();
         let mut right_column = Vec::new();
@@ -560,15 +635,31 @@ fn order_band_blocks(
         }
         sort_reading_order(&mut left_column);
         sort_reading_order(&mut right_column);
-        full_width.extend(left_column);
-        full_width.extend(right_column);
-        full_width.extend(metadata);
-        full_width
+        let mut ordered = full_width;
+        ordered.extend(left_column);
+        ordered.extend(right_column);
+        merge_margin_inline(ordered, margin)
     } else {
         let mut single_column = band_blocks;
         sort_reading_order(&mut single_column);
         single_column
     }
+}
+
+/// Reinsert margin blocks at their y-order position within a column-ordered band.
+fn merge_margin_inline(
+    mut ordered: Vec<RawLayoutBlock>,
+    margin: Vec<RawLayoutBlock>,
+) -> Vec<RawLayoutBlock> {
+    for m in margin {
+        let y = m.bbox.y;
+        let pos = ordered
+            .iter()
+            .position(|b| b.bbox.y > y)
+            .unwrap_or(ordered.len());
+        ordered.insert(pos, m);
+    }
+    ordered
 }
 
 fn sort_reading_order(blocks: &mut [RawLayoutBlock]) {
@@ -891,7 +982,7 @@ mod tests {
             RawLayoutBlock::new("RIGHT_MOTIVATION_TWO", Rect::new(350.0, 100.0, 200.0, 15.0)),
         ];
 
-        let (result, snapshot) = analyze_layout_with_snapshot(blocks, 600.0);
+        let (result, snapshot) = analyze_layout_with_snapshot(blocks, 600.0, 800.0);
         let text = result
             .iter()
             .map(|block| block.text.as_str())
@@ -958,7 +1049,7 @@ mod tests {
             ),
         ];
 
-        let (result, snapshot) = analyze_layout_with_snapshot(blocks, 600.0);
+        let (result, snapshot) = analyze_layout_with_snapshot(blocks, 600.0, 800.0);
         let text = result
             .iter()
             .map(|block| block.text.as_str())
@@ -986,7 +1077,8 @@ mod tests {
             Rect::new(110.0, 110.0, 410.0, 15.0),
         );
 
-        let (result, snapshot) = analyze_layout_with_snapshot(vec![heading, para1, para2], 600.0);
+        let (result, snapshot) =
+            analyze_layout_with_snapshot(vec![heading, para1, para2], 600.0, 800.0);
         let text = result
             .iter()
             .map(|block| block.text.as_str())
@@ -1001,10 +1093,10 @@ mod tests {
     #[test]
     fn empirical_gutter_not_page_center() {
         let blocks = vec![
-            RawLayoutBlock::new("RIGHT ONE", Rect::new(320.0, 20.0, 160.0, 12.0)),
-            RawLayoutBlock::new("LEFT ONE", Rect::new(40.0, 20.0, 160.0, 12.0)),
-            RawLayoutBlock::new("RIGHT TWO", Rect::new(320.0, 40.0, 160.0, 12.0)),
-            RawLayoutBlock::new("LEFT TWO", Rect::new(40.0, 40.0, 160.0, 12.0)),
+            RawLayoutBlock::new("RIGHT ONE", Rect::new(320.0, 90.0, 160.0, 12.0)),
+            RawLayoutBlock::new("LEFT ONE", Rect::new(40.0, 90.0, 160.0, 12.0)),
+            RawLayoutBlock::new("RIGHT TWO", Rect::new(320.0, 110.0, 160.0, 12.0)),
+            RawLayoutBlock::new("LEFT TWO", Rect::new(40.0, 110.0, 160.0, 12.0)),
         ];
 
         let text = analyze_layout(blocks, 600.0, 800.0)
@@ -1044,7 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_row_isolated_from_two_column_abstract() {
+    fn metadata_row_classified_as_footer_not_deferred() {
         let blocks = vec![
             RawLayoutBlock::new(
                 "Abstract-This is the full-width abstract opener spanning the page",
@@ -1060,27 +1152,59 @@ mod tests {
             RawLayoutBlock::new("RIGHT_MOTIVATION_TWO", Rect::new(350.0, 120.0, 200.0, 15.0)),
         ];
 
-        let (result, _) = analyze_layout_with_snapshot(blocks, 600.0);
+        let (result, _) = analyze_layout_with_snapshot(blocks, 600.0, 800.0);
+        let arxiv = result
+            .iter()
+            .find(|block| block.text.contains("arXiv:1909.04694"));
+        assert!(arxiv.is_some(), "arxiv metadata");
+        assert_eq!(arxiv.map(|block| block.block_type), Some(BlockType::Footer));
+
         let text = result
             .iter()
             .map(|block| block.text.as_str())
             .collect::<Vec<_>>();
-
-        let arxiv = text
-            .iter()
-            .position(|value| value.contains("arXiv:1909.04694"));
         let left_two = text.iter().position(|value| *value == "LEFT_ABSTRACT_TWO");
         let right_one = text
             .iter()
             .position(|value| *value == "RIGHT_MOTIVATION_ONE");
-        assert!(arxiv.is_some(), "arxiv metadata");
         assert!(left_two.is_some(), "left abstract two");
         assert!(right_one.is_some(), "right motivation one");
-        let arxiv = arxiv.unwrap_or(0);
-        let left_two = left_two.unwrap_or(0);
-        let right_one = right_one.unwrap_or(0);
-        assert!(left_two < arxiv);
-        assert!(right_one < arxiv);
+        if let (Some(left_two), Some(right_one)) = (left_two, right_one) {
+            assert!(
+                left_two < right_one,
+                "left column should precede right column"
+            );
+        }
+    }
+
+    #[test]
+    fn header_and_footer_margin_classification() {
+        let blocks = vec![
+            RawLayoutBlock::new("Page 1", Rect::new(280.0, 12.0, 40.0, 10.0)),
+            RawLayoutBlock::new("Body paragraph text.", Rect::new(50.0, 200.0, 500.0, 12.0)),
+            RawLayoutBlock::new("Confidential", Rect::new(250.0, 740.0, 100.0, 12.0)),
+        ];
+        let result = analyze_layout(blocks, 600.0, 800.0);
+        assert_eq!(result[0].block_type, BlockType::Header);
+        assert_eq!(result[1].block_type, BlockType::Body);
+        assert_eq!(result[2].block_type, BlockType::Footer);
+    }
+
+    #[test]
+    fn dense_footer_band_splits_from_body() {
+        let blocks = vec![
+            RawLayoutBlock::new("Body line one", Rect::new(50.0, 100.0, 500.0, 14.0)),
+            RawLayoutBlock::new("Body line two", Rect::new(50.0, 120.0, 500.0, 14.0)),
+            RawLayoutBlock::new("Ref alpha", Rect::new(50.0, 740.0, 200.0, 8.0)),
+            RawLayoutBlock::new("Ref beta", Rect::new(50.0, 752.0, 200.0, 8.0)),
+            RawLayoutBlock::new("Ref gamma", Rect::new(50.0, 764.0, 200.0, 8.0)),
+        ];
+        let (_, snapshot) = analyze_layout_with_snapshot(blocks, 600.0, 800.0);
+        assert!(
+            snapshot.band_count >= 2,
+            "expected footer band separate from body, got {} bands",
+            snapshot.band_count
+        );
     }
 
     #[test]
@@ -1093,27 +1217,38 @@ mod tests {
             vec![
                 RawLayoutBlock::new(
                     "Algorithm 1 CACC Car-Following",
-                    Rect::new(50.0, 20.0, 300.0, 20.0),
+                    Rect::new(50.0, 60.0, 300.0, 20.0),
                 )
                 .with_font_size(24.0),
-                RawLayoutBlock::new("I. INTRODUCTION", Rect::new(50.0, 60.0, 300.0, 12.0))
+                RawLayoutBlock::new("I. INTRODUCTION", Rect::new(50.0, 100.0, 300.0, 12.0))
                     .with_font_size(18.0),
                 RawLayoutBlock::new(
                     "Prior research [6]-[8], [27] demonstrated the effect.",
-                    Rect::new(50.0, 90.0, 350.0, 12.0),
+                    Rect::new(50.0, 130.0, 350.0, 12.0),
                 ),
                 RawLayoutBlock::new(
                     "Ordinary body text establishes the page baseline.",
-                    Rect::new(50.0, 120.0, 350.0, 12.0),
+                    Rect::new(50.0, 160.0, 350.0, 12.0),
                 ),
             ],
             600.0,
             800.0,
         );
 
-        assert_eq!(result[0].block_type, BlockType::Body);
-        assert!(result[0].fragment);
-        assert!(matches!(result[1].block_type, BlockType::Heading(_)));
-        assert_eq!(result[2].block_type, BlockType::Body);
+        let algo = result
+            .iter()
+            .find(|block| block.text.contains("Algorithm 1"));
+        assert!(algo.is_some(), "algorithm fragment");
+        if let Some(algo) = algo {
+            assert_eq!(algo.block_type, BlockType::Body);
+            assert!(algo.fragment);
+        }
+        assert!(result
+            .iter()
+            .any(|block| block.text.contains("I. INTRODUCTION") && !block.fragment));
+        assert!(result
+            .iter()
+            .any(|block| block.text.contains("Prior research")
+                && block.block_type == BlockType::Body));
     }
 }

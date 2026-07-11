@@ -94,12 +94,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             output_log.push_str("==================================================\n");
             for snapshot in &result.layout_debug {
                 output_log.push_str(&format!(
-                    "page={} bands={} column_splits={} fragments={}\n",
+                    "page={} bands={} column_splits={} fragments={} hint={:?} confidence={:?}\n",
                     snapshot.page_index + 1,
                     snapshot.band_count,
                     snapshot.column_splits,
                     snapshot.fragment_count,
+                    snapshot.layout_hint,
+                    snapshot.template_match_confidence,
                 ));
+                if !snapshot.layout_warnings.is_empty() {
+                    output_log.push_str(&format!(
+                        "  warnings: {}\n",
+                        snapshot.layout_warnings.join(", ")
+                    ));
+                }
             }
         }
 

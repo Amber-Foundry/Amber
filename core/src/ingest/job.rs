@@ -1,11 +1,12 @@
 use crate::embed::chunking::count_tokens;
+use crate::ingest::coords::normalize_blocks_to_pdf_points;
 use crate::ingest::layout::{
     analyze_layout, analyze_layout_with_snapshot, LayoutDebugSnapshot, RawLayoutBlock,
 };
 use crate::ingest::markdown::{assemble_markdown_blocks, join_ingest_blocks, IngestBlock};
 use crate::memory_agent::parser::{CandidateAction, CandidateNode};
 use crate::ocr::bundled::BundledOcrEngine;
-use crate::ocr::engine::{OcrEngine, OcrError, Rect};
+use crate::ocr::engine::{OcrEngine, OcrError};
 use crate::ocr::pdf::{LoadedPdf, PdfPageType, PdfRasterizer, PdfRasterizerConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -86,6 +87,9 @@ pub struct IngestJobConfig {
     pub allowed_vault_keys: Option<Vec<String>>,
     #[serde(default)]
     pub hybrid_merge_strategy: HybridMergeStrategy,
+    /// Include Header/Footer blocks in generated import chunks (default: false).
+    #[serde(default)]
+    pub include_margin_blocks_in_chunks: bool,
 }
 
 impl Default for IngestJobConfig {
@@ -99,6 +103,7 @@ impl Default for IngestJobConfig {
             model: None,
             allowed_vault_keys: None,
             hybrid_merge_strategy: HybridMergeStrategy::DigitalPreferred,
+            include_margin_blocks_in_chunks: false,
         }
     }
 }
@@ -230,7 +235,7 @@ impl IngestJobEngine {
                     (raw_blocks, p.width_pts, p.height_pts)
                 }
                 PdfPageType::Ocr => {
-                    let (raw_blocks, image_width, image_height, confidence) =
+                    let (ocr_blocks, image_width, image_height, confidence) =
                         Self::recognize_ocr_page(
                             &rasterizer,
                             &document,
@@ -241,7 +246,14 @@ impl IngestJobEngine {
                     total_ocr_confidence_sum += confidence;
                     ocr_pass_count += 1;
 
-                    (raw_blocks, image_width, image_height)
+                    let raw_blocks = normalize_blocks_to_pdf_points(
+                        ocr_blocks,
+                        image_width,
+                        image_height,
+                        p.width_pts,
+                        p.height_pts,
+                    );
+                    (raw_blocks, p.width_pts, p.height_pts)
                 }
                 PdfPageType::Hybrid => {
                     let (ocr_blocks, image_width, image_height, confidence) =
@@ -255,17 +267,17 @@ impl IngestJobEngine {
                     total_ocr_confidence_sum += confidence;
                     ocr_pass_count += 1;
 
+                    let ocr_blocks = normalize_blocks_to_pdf_points(
+                        ocr_blocks,
+                        image_width,
+                        image_height,
+                        p.width_pts,
+                        p.height_pts,
+                    );
                     let digital_blocks =
                         PdfRasterizer::extract_digital_blocks_from_document(&document, i)?;
-                    let scaled_digital_blocks = scale_blocks_to_page(
-                        digital_blocks,
-                        image_width / p.width_pts.max(1.0),
-                        image_height / p.height_pts.max(1.0),
-                    );
-                    let strategy = if digital_extraction_sparse(
-                        &scaled_digital_blocks,
-                        image_width * image_height,
-                    ) {
+                    let page_area = p.width_pts * p.height_pts;
+                    let strategy = if digital_extraction_sparse(&digital_blocks, page_area) {
                         eprintln!(
                             "[ingest] Sparse digital text on page {}; preferring OCR.",
                             i + 1
@@ -274,15 +286,15 @@ impl IngestJobEngine {
                     } else {
                         config.hybrid_merge_strategy
                     };
-                    let raw_blocks =
-                        merge_hybrid_raw_blocks(scaled_digital_blocks, ocr_blocks, strategy);
+                    let raw_blocks = merge_hybrid_raw_blocks(digital_blocks, ocr_blocks, strategy);
 
-                    (raw_blocks, image_width, image_height)
+                    (raw_blocks, p.width_pts, p.height_pts)
                 }
             };
 
             let layout_blocks = if debug_layout {
-                let (blocks, mut snapshot) = analyze_layout_with_snapshot(raw_blocks, page_width);
+                let (blocks, mut snapshot) =
+                    analyze_layout_with_snapshot(raw_blocks, page_width, page_height);
                 snapshot.page_index = i;
                 layout_debug.push(snapshot);
                 blocks
@@ -312,6 +324,7 @@ impl IngestJobEngine {
             &all_ingest_blocks,
             config.target_chunk_tokens,
             config.overlap_chunk_tokens,
+            config.include_margin_blocks_in_chunks,
         );
 
         if let Some(ref tx) = progress_tx {
@@ -404,6 +417,7 @@ impl IngestJobEngine {
             &ingest_blocks,
             config.target_chunk_tokens,
             config.overlap_chunk_tokens,
+            config.include_margin_blocks_in_chunks,
         );
 
         let (runtime_handle, _owned_runtime) = prepare_job_runtime()?;
@@ -788,28 +802,6 @@ fn prepare_job_runtime() -> Result<(tokio::runtime::Handle, tokio::runtime::Runt
     Ok((handle, runtime))
 }
 
-fn scale_blocks_to_page(
-    blocks: Vec<RawLayoutBlock>,
-    scale_x: f32,
-    scale_y: f32,
-) -> Vec<RawLayoutBlock> {
-    blocks
-        .into_iter()
-        .map(|mut block| {
-            block.bbox = Rect::new(
-                block.bbox.x * scale_x,
-                block.bbox.y * scale_y,
-                block.bbox.width * scale_x,
-                block.bbox.height * scale_y,
-            );
-            if let Some(font_size) = block.font_size {
-                block.font_size = Some(font_size * scale_y);
-            }
-            block
-        })
-        .collect()
-}
-
 fn merge_hybrid_raw_blocks(
     digital_blocks: Vec<RawLayoutBlock>,
     ocr_blocks: Vec<RawLayoutBlock>,
@@ -864,6 +856,7 @@ pub fn chunk_ingest_blocks(
     blocks: &[IngestBlock],
     target_tokens: usize,
     overlap_tokens: usize,
+    include_margin_blocks: bool,
 ) -> Vec<ImportChunkSpec> {
     if blocks.is_empty() {
         return Vec::new();
@@ -878,6 +871,15 @@ pub fn chunk_ingest_blocks(
     let mut current_heading_context: Option<String> = None;
 
     for block in blocks {
+        if !include_margin_blocks
+            && matches!(
+                block.block_type,
+                crate::ingest::layout::BlockType::Header | crate::ingest::layout::BlockType::Footer
+            )
+        {
+            continue;
+        }
+
         let block_tokens = count_tokens(&block.formatted_text);
 
         let next_heading_context =
@@ -1007,6 +1009,7 @@ fn source_page_indices(blocks: &[&IngestBlock]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ocr::engine::Rect;
 
     fn test_chunk_markdown_string(
         md: &str,
@@ -1030,7 +1033,7 @@ mod tests {
                 }
             })
             .collect();
-        chunk_ingest_blocks(&blocks, target_tokens, overlap_tokens)
+        chunk_ingest_blocks(&blocks, target_tokens, overlap_tokens, false)
     }
 
     #[test]
@@ -1342,7 +1345,7 @@ mod tests {
                 fragment: true,
             },
         ];
-        let chunks = chunk_ingest_blocks(&blocks, 500, 0);
+        let chunks = chunk_ingest_blocks(&blocks, 500, 0, false);
         assert_eq!(chunks.len(), 1);
         assert_eq!(
             chunks[0].heading_context.as_deref(),

@@ -183,10 +183,51 @@ def write_scanned_single_page() -> None:
     print(f"wrote {out}")
 
 
+def write_digital_header_footer() -> None:
+    """Page with header band, body, and footer band."""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=9)
+    pdf.set_xy(10, 6)
+    pdf.cell(0, 6, "Page 1", align="C")
+    pdf.set_font("Helvetica", size=11)
+    pdf.set_xy(10, 80)
+    pdf.multi_cell(0, 6, "HEADER FOOTER FIXTURE BODY paragraph for integration testing.")
+    pdf.set_font("Helvetica", size=9)
+    pdf.set_xy(10, 276)
+    pdf.cell(0, 6, "Footer stamp line", align="C")
+    out = FIXTURES_DIR / "digital_header_footer.pdf"
+    pdf.output(str(out))
+    print(f"wrote {out}")
+
+
+def write_digital_dense_footer_band() -> None:
+    """Body with normal leading plus a tighter footer/reference band."""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=11)
+    pdf.set_xy(10, 40)
+    pdf.multi_cell(0, 7, "DENSE FOOTER BAND body line one for layout regression.")
+    pdf.set_xy(10, 55)
+    pdf.multi_cell(0, 7, "DENSE FOOTER BAND body line two continues the paragraph.")
+    pdf.set_font("Helvetica", size=7)
+    y_ref = 250
+    for i, label in enumerate(["REF_ALPHA", "REF_BETA", "REF_GAMMA", "REF_DELTA"]):
+        pdf.set_xy(10, y_ref + i * 5)
+        pdf.cell(0, 5, f"{label} tight reference line.")
+    out = FIXTURES_DIR / "digital_dense_footer_band.pdf"
+    pdf.output(str(out))
+    print(f"wrote {out}")
+
+
 if __name__ == "__main__":
     write_digital_two_column()
     write_digital_abstract_tail()
     write_digital_two_column_hanging_indent()
     write_digital_injection()
     write_digital_minimal()
+    write_digital_header_footer()
+    write_digital_dense_footer_band()
     write_scanned_single_page()

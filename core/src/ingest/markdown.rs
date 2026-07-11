@@ -68,12 +68,24 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
 
         flush_pending_body(&mut pending_body, &mut out, page_index);
 
+        if matches!(block.block_type, BlockType::Header | BlockType::Footer) {
+            out.push(IngestBlock {
+                formatted_text: collapse_internal_whitespace_block(text),
+                block_type: block.block_type,
+                confidence: block.confidence,
+                page_index,
+                fragment: block.fragment,
+            });
+            continue;
+        }
+
         let formatted = match block.block_type {
             BlockType::Heading(level) => {
                 let hashes = "#".repeat((level.clamp(1, 6)) as usize);
                 format!("{hashes} {text}")
             }
             BlockType::ListItem => format_list_item(text),
+            BlockType::Header | BlockType::Footer => text.to_string(),
             BlockType::Table | BlockType::Body => text.to_string(),
         };
 

@@ -1,10 +1,12 @@
 pub mod changeset;
+pub mod coords;
 pub mod job;
 pub mod layout;
 pub mod markdown;
 pub mod prompt;
 pub mod security;
 pub mod storage;
+pub mod templates;
 pub mod text;
 
 pub use changeset::finalize_import_changeset;
