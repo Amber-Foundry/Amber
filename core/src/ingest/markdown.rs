@@ -1,5 +1,7 @@
 use crate::ingest::layout::{BlockType, TextBlock};
-use crate::ingest::text::collapse_internal_whitespace_block;
+use crate::ingest::text::{
+    attaches_to_following_word, attaches_to_previous_word, collapse_internal_whitespace_block,
+};
 use crate::ocr::engine::Rect;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -208,7 +210,11 @@ fn append_body_line(
     } else {
         let trimmed_len = current.trim_end().len();
         current.truncate(trimmed_len);
-        if !current.is_empty() && !next.chars().next().is_some_and(char::is_whitespace) {
+        if !current.is_empty()
+            && !next.chars().next().is_some_and(char::is_whitespace)
+            && !attaches_to_previous_word(next)
+            && !attaches_to_following_word(current)
+        {
             current.push(' ');
         }
         current.push_str(next);

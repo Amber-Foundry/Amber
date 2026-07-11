@@ -157,6 +157,69 @@ def write_digital_injection() -> None:
     print(f"wrote {out}")
 
 
+def _write_fragment_line(pdf: FPDF, parts: list[str], x: float, y: float, line_height: float) -> None:
+    """Emit one pdfium text object per fragment with tight horizontal packing."""
+    cursor_x = x
+    for part in parts:
+        pdf.set_xy(cursor_x, y)
+        w = pdf.get_string_width(part)
+        pdf.cell(w, line_height, part, ln=0)
+        cursor_x += w
+
+
+def write_digital_per_glyph_punctuation() -> None:
+    """Separate text objects at word/punctuation boundaries (Word/Docs export pattern)."""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    _write_fragment_line(pdf, ["Hello", ",", " world", "."], 10.0, 40.0, 8.0)
+    out = FIXTURES_DIR / "digital_per_glyph_punctuation.pdf"
+    pdf.output(str(out))
+    print(f"wrote {out}")
+
+
+def write_digital_per_glyph_sentence() -> None:
+    """Longer sentence split into punctuation-adjacent fragments."""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=11)
+    _write_fragment_line(
+        pdf,
+        [
+            "First clause",
+            ",",
+            " second clause",
+            ";",
+            " and a final end",
+            ".",
+        ],
+        10.0,
+        50.0,
+        7.0,
+    )
+    out = FIXTURES_DIR / "digital_per_glyph_sentence.pdf"
+    pdf.output(str(out))
+    print(f"wrote {out}")
+
+
+def write_digital_word_fragment_line() -> None:
+    """Word split across objects mid-word (Mem + bers pattern)."""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    pdf.set_xy(10, 40)
+    pdf.cell(pdf.get_string_width("Mem"), 8, "Mem", ln=0)
+    pdf.cell(pdf.get_string_width("bers"), 8, "bers", ln=0)
+    pdf.set_xy(70, 40)
+    pdf.cell(pdf.get_string_width("chosen"), 8, "chosen")
+    out = FIXTURES_DIR / "digital_word_fragment_line.pdf"
+    pdf.output(str(out))
+    print(f"wrote {out}")
+
+
 def write_digital_minimal() -> None:
     """Small single-column PDF for fallback routing tests."""
     pdf = FPDF()
@@ -230,4 +293,7 @@ if __name__ == "__main__":
     write_digital_minimal()
     write_digital_header_footer()
     write_digital_dense_footer_band()
+    write_digital_per_glyph_punctuation()
+    write_digital_per_glyph_sentence()
+    write_digital_word_fragment_line()
     write_scanned_single_page()

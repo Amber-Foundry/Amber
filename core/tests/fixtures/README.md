@@ -41,4 +41,10 @@ For an unseen PDF, run the demo with `AMBER_INGEST_DEBUG=1` and verify:
 | `digital_dense_footer_band.pdf` | Per-band line height splits footer/reference band |
 | `digital_injection.pdf` | Prompt injection → `injection_flagged` fallback |
 | `digital_minimal.pdf` | Single-column fallback routing (`no_llm_configured`, unsupported provider) |
+| `digital_per_glyph_punctuation.pdf` | Punctuation-adjacent fragments: `Hello, world.` without spurious spaces |
+| `digital_per_glyph_sentence.pdf` | Longer fragmented sentence with commas, semicolons, period |
+| `digital_word_fragment_line.pdf` | Mid-word fragment merge (`Members chosen`) |
 | `scanned_single_page.pdf` | Image-only page for rasterization / `Ocr` classification |
+
+Extraction-hygiene fixtures (`digital_per_glyph_*`, `digital_word_fragment_line`) validate
+[`core/src/ocr/pdf.rs`](../../src/ocr/pdf.rs) typographic join rules in CI — not real TestDocuments.

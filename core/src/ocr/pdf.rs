@@ -1,3 +1,7 @@
+use crate::ingest::text::{
+    attaches_to_previous_word, has_spurious_punctuation_spacing, is_punctuation_only,
+    should_insert_typographic_space,
+};
 use crate::ocr::engine::OcrError;
 use crate::ocr::ocr_models_dir;
 use crate::{ingest::layout::RawLayoutBlock, ocr::engine::Rect};
@@ -291,6 +295,9 @@ impl PdfRasterizer {
 
         let height_pts = page.height().value;
         let mut raw_blocks = Vec::new();
+        let extract_debug = std::env::var("AMBER_EXTRACT_DEBUG")
+            .ok()
+            .is_some_and(|v| v == "1");
 
         // Collect objects upfront to avoid the known pdfium-render bug where
         // chars_for_object() resets the page's object iterator mid-loop.
@@ -346,10 +353,10 @@ impl PdfRasterizer {
                             }
                             text
                         }
-                        Err(_) => object_text,
+                        Err(_) => object_text.clone(),
                     }
                 } else {
-                    object_text
+                    object_text.clone()
                 };
 
                 let reconstructed = normalize_short_text_object(&reconstructed);
@@ -363,6 +370,13 @@ impl PdfRasterizer {
                 let width = bounds.width().value;
                 let height = bounds.height().value;
                 let screen_y = (height_pts - (pdf_bottom + height)).max(0.0);
+
+                if extract_debug {
+                    eprintln!(
+                        "[extract] object_text={object_text:?} reconstructed={reconstructed:?} \
+                         bbox=({pdf_left:.1},{screen_y:.1},{width:.1},{height:.1})"
+                    );
+                }
 
                 let bbox = Rect::new(pdf_left, screen_y, width, height);
                 raw_blocks.push(RawLayoutBlock::new(reconstructed, bbox).with_font_size(font_size));
@@ -388,10 +402,23 @@ impl PdfRasterizer {
             }
         }
 
-        Ok(merge_text_objects_on_visual_lines(
-            raw_blocks,
-            page.width().value,
-        ))
+        if extract_debug {
+            eprintln!("[extract] pre-merge blocks={}", raw_blocks.len());
+            for (idx, block) in raw_blocks.iter().enumerate() {
+                eprintln!("  [{idx}] {:?}", block.text);
+            }
+        }
+
+        let merged = merge_text_objects_on_visual_lines(raw_blocks, page.width().value);
+
+        if extract_debug {
+            eprintln!("[extract] post-merge blocks={}", merged.len());
+            for (idx, block) in merged.iter().enumerate() {
+                eprintln!("  [{idx}] {:?}", block.text);
+            }
+        }
+
+        Ok(merged)
     }
 }
 
@@ -436,7 +463,7 @@ fn reconstruct_text_from_char_boxes(char_boxes: &[PdfCharBox], font_size: f32) -
     for b in char_boxes {
         if let Some(prev) = prev_right {
             let gap = b.left - prev;
-            if gap > space_threshold {
+            if gap > space_threshold && !attaches_to_previous_word(&b.ch.to_string()) {
                 result.push(' ');
             }
         }
@@ -464,6 +491,13 @@ fn choose_text_object_reconstruction(
     let chars_have_spaces = from_chars.chars().any(char::is_whitespace);
     if object_has_spaces
         && !chars_have_spaces
+        && has_spurious_punctuation_spacing(object_text)
+        && !has_spurious_punctuation_spacing(&from_chars)
+    {
+        return from_chars;
+    }
+    if object_has_spaces
+        && !chars_have_spaces
         && from_chars.len() > 10
         && object_text.len().saturating_sub(from_chars.len()) <= object_text.len() / 4
     {
@@ -482,6 +516,9 @@ fn normalize_short_text_object(text: &str) -> String {
     }
     let letters: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     if letters.chars().count() <= 3 {
+        if is_punctuation_only(&letters) {
+            return letters;
+        }
         if text.chars().last().is_some_and(char::is_whitespace) {
             let narrow_word_final = letters.chars().count() == 1
                 && letters
@@ -621,8 +658,12 @@ fn merge_text_objects_on_visual_lines(
     let mut lines: Vec<Line> = Vec::new();
     for block in blocks {
         let center_y = block.bbox.y + (block.bbox.height / 2.0);
+        let punct_fragment = is_punctuation_only(block.text.trim()) || block.text.trim().len() <= 2;
         if let Some(line) = lines.iter_mut().find(|line| {
-            let tolerance = (line.max_height.min(block.bbox.height) * 0.6).max(2.0);
+            let mut tolerance = (line.max_height.min(block.bbox.height) * 0.6).max(2.0);
+            if punct_fragment {
+                tolerance = tolerance.max(8.0);
+            }
             (line.center_y - center_y).abs() <= tolerance
         }) {
             let line_len = line.blocks.len() as f32;
@@ -746,7 +787,7 @@ fn merge_nearby_line_run(blocks: Vec<RawLayoutBlock>) -> Option<RawLayoutBlock> 
             if let Some(prev) = prev_right {
                 let gap = block.bbox.x - prev;
                 let threshold = inter_block_space_threshold(prev_block, &block);
-                if gap > threshold
+                if should_insert_typographic_space(&prev_block.text, text, gap, threshold)
                     && !merged_text.ends_with(char::is_whitespace)
                     && !text.starts_with(char::is_whitespace)
                 {
@@ -800,6 +841,78 @@ mod tests {
         assert_eq!(normalize_short_text_object(" "), " ");
         assert_eq!(normalize_short_text_object("Th"), "Th");
         assert_eq!(normalize_short_text_object("This report"), "This report");
+        assert_eq!(normalize_short_text_object(", "), ",");
+        assert_eq!(normalize_short_text_object(". "), ".");
+        assert_eq!(normalize_short_text_object("; "), ";");
+    }
+
+    #[test]
+    fn test_normalize_does_not_add_space_after_comma_object() {
+        assert_eq!(normalize_short_text_object(","), ",");
+        assert_eq!(normalize_short_text_object("."), ".");
+    }
+
+    #[test]
+    fn test_merge_joins_word_comma_without_space() {
+        let blocks = vec![
+            RawLayoutBlock::new("Hello", Rect::new(10.0, 20.0, 30.0, 8.0)).with_font_size(12.0),
+            RawLayoutBlock::new(",", Rect::new(40.5, 20.0, 4.0, 8.0)).with_font_size(12.0),
+            RawLayoutBlock::new("world", Rect::new(46.0, 20.0, 36.0, 8.0)).with_font_size(12.0),
+        ];
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "Hello, world");
+    }
+
+    #[test]
+    fn test_merge_joins_sentence_period_without_space() {
+        let blocks = vec![
+            RawLayoutBlock::new("end", Rect::new(10.0, 20.0, 18.0, 8.0)).with_font_size(12.0),
+            RawLayoutBlock::new(".", Rect::new(28.5, 20.0, 4.0, 8.0)).with_font_size(12.0),
+        ];
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "end.");
+    }
+
+    #[test]
+    fn test_merge_preserves_word_space() {
+        let blocks = vec![
+            RawLayoutBlock::new("Hello", Rect::new(10.0, 20.0, 30.0, 8.0)).with_font_size(12.0),
+            RawLayoutBlock::new("world", Rect::new(50.0, 20.0, 36.0, 8.0)).with_font_size(12.0),
+        ];
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "Hello world");
+    }
+
+    #[test]
+    fn test_reconstruct_text_joins_punctuation_without_space() {
+        let font_size = 12.0;
+        let word_gap = font_size * 0.3;
+        let boxes = vec![
+            PdfCharBox {
+                left: 0.0,
+                right: 6.0,
+                ch: 'H',
+            },
+            PdfCharBox {
+                left: 6.0,
+                right: 12.0,
+                ch: 'i',
+            },
+            PdfCharBox {
+                left: 12.5,
+                right: 14.5,
+                ch: ',',
+            },
+            PdfCharBox {
+                left: 14.5 + word_gap,
+                right: 20.5 + word_gap,
+                ch: 'w',
+            },
+        ];
+        assert_eq!(reconstruct_text_from_char_boxes(&boxes, font_size), "Hi, w");
     }
 
     #[test]
