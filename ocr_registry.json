@@ -1,0 +1,20 @@
+{
+  "det": {
+    "url": "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx",
+    "filename": "det.onnx",
+    "size_mb": 10,
+    "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363F67E06E2762B5E814FE9C9410E"
+  },
+  "rec": {
+    "url": "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.onnx",
+    "filename": "rec.onnx",
+    "size_mb": 21,
+    "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
+  },
+  "dict": {
+    "url": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/dict/ppocrv6_dict.txt",
+    "filename": "ppocrv6_dict.txt",
+    "size_mb": 1,
+    "sha256": "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d"
+  }
+}

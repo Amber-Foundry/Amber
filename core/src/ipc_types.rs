@@ -337,6 +337,38 @@ pub struct EmbeddingReembedInput {
     pub backend: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../ui/types/generated/")]
+pub struct ImportJobStatus {
+    pub id: String,
+    pub status: String,
+    pub source_name: String,
+    pub total_pages: i32,
+    pub digital_pages: i32,
+    pub ocr_pages: i32,
+    pub hybrid_pages: i32,
+    pub avg_ocr_confidence: f32,
+    /// IPC exposes 0 or 1; DB may store a table-block count from the engine.
+    pub tables_detected_unpreserved: i32,
+    pub extraction_path: Option<String>,
+    pub rasterization_dpi: i32,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../ui/types/generated/")]
+pub struct ImportStartJobInput {
+    pub file_path: String,
+    pub target_vault_id: Option<String>,
+    pub rasterization_dpi: i32,
+    pub use_llm_extraction: bool,
+    pub provider: Option<String>,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +431,12 @@ mod tests {
         }
         if let Err(err) = EmbeddingReembedInput::export() {
             panic!("failed to export EmbeddingReembedInput: {err}");
+        }
+        if let Err(err) = ImportJobStatus::export() {
+            panic!("failed to export ImportJobStatus: {err}");
+        }
+        if let Err(err) = ImportStartJobInput::export() {
+            panic!("failed to export ImportStartJobInput: {err}");
         }
     }
 }
