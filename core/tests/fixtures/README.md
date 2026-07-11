@@ -12,7 +12,15 @@ After changing fixtures, calibrate assertions with:
 cargo run --example ocr_demo -- core/tests/fixtures/<name>.pdf
 ```
 
-Inspect `ocr_output.txt` for `assembled_markdown`, chunk text, and candidate `meta.fallback_reason` before updating test expectations.
+Inspect `ocr_output.md` for `assembled_markdown`, chunk text, and candidate `meta.fallback_reason` before updating test expectations.
+
+For an unseen PDF, run the demo with `AMBER_INGEST_DEBUG=1` and verify:
+
+1. Per-page band and column-split counts are plausible for the document layout.
+2. Markdown has no mid-sentence column jumps and no duplicate spaces.
+3. `heading_context` is a complete title rather than one wrapped line.
+4. Candidate details are contained in the source chunk; warnings in candidate metadata identify exceptions.
+5. Do not add an arbitrary real document to CI: make a small synthetic fixture that isolates the regression.
 
 | File | Purpose |
 |------|---------|

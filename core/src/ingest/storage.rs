@@ -400,6 +400,7 @@ mod tests {
             avg_ocr_confidence: 0.985,
             tables_detected_unpreserved: 2,
             candidates: vec![],
+            layout_debug: vec![],
         };
         update_import_job_staged_metadata(&conn, "job-003", &result, 300, "hybrid")?;
 
@@ -515,6 +516,7 @@ mod tests {
             avg_ocr_confidence: 0.88,
             tables_detected_unpreserved: 0,
             candidates: vec![],
+            layout_debug: vec![],
         };
         let extraction_path = crate::ingest::derive_document_extraction_path(
             result.digital_pages,

@@ -1,4 +1,4 @@
-use amber_lib::ingest::{ImportJobProgress, IngestJobConfig, IngestJobEngine};
+use amber_lib::ingest::{HybridMergeStrategy, ImportJobProgress, IngestJobConfig, IngestJobEngine};
 use std::env;
 use std::fs::File;
 use std::io::Write;
@@ -27,10 +27,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or("")
         .to_lowercase();
 
+    let hybrid_merge_strategy = env::var("AMBER_HYBRID_MERGE")
+        .ok()
+        .and_then(|value| HybridMergeStrategy::from_env_value(&value))
+        .unwrap_or_default();
     let config = IngestJobConfig {
         rasterization_dpi: 300,
         target_chunk_tokens: 300,
         overlap_chunk_tokens: 50,
+        hybrid_merge_strategy,
         ..Default::default()
     };
 
@@ -78,6 +83,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         output_log.push_str(&format!("Total Chunks:  {}\n", result.chunks.len()));
 
         output_log.push_str("\n==================================================\n");
+        output_log.push_str("               ASSEMBLED MARKDOWN\n");
+        output_log.push_str("==================================================\n");
+        output_log.push_str(&result.assembled_markdown);
+        output_log.push('\n');
+
+        if !result.layout_debug.is_empty() {
+            output_log.push_str("\n==================================================\n");
+            output_log.push_str("            LAYOUT DEBUG SNAPSHOT\n");
+            output_log.push_str("==================================================\n");
+            for snapshot in &result.layout_debug {
+                output_log.push_str(&format!(
+                    "page={} bands={} column_splits={} fragments={}\n",
+                    snapshot.page_index + 1,
+                    snapshot.band_count,
+                    snapshot.column_splits,
+                    snapshot.fragment_count,
+                ));
+            }
+        }
+
+        output_log.push_str("\n==================================================\n");
         output_log.push_str("            GENERATED IMPORT CHUNKS\n");
         output_log.push_str("==================================================\n");
         for chunk in &result.chunks {
@@ -114,10 +140,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let mut file = File::create("ocr_output.txt")?;
+        let mut file = File::create("ocr_output.md")?;
         file.write_all(output_log.as_bytes())?;
         println!("\nIngestion completed successfully!");
-        println!("Detailed metrics, chunks, and candidate nodes written to: ocr_output.txt");
+        println!("Detailed metrics, chunks, and candidate nodes written to: ocr_output.md");
     } else {
         println!("Running single image ingestion job...");
         let result = IngestJobEngine::process_image_job("job-cli-image-demo", file_path, config)?;
@@ -134,6 +160,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         output_log.push_str(&format!("Total Chunks:  {}\n", result.chunks.len()));
 
         output_log.push_str("\n==================================================\n");
+        output_log.push_str("               ASSEMBLED MARKDOWN\n");
+        output_log.push_str("==================================================\n");
+        output_log.push_str(&result.assembled_markdown);
+        output_log.push('\n');
+
+        output_log.push_str("\n==================================================\n");
         output_log.push_str("            GENERATED IMPORT CHUNKS\n");
         output_log.push_str("==================================================\n");
         for chunk in &result.chunks {
@@ -170,10 +202,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let mut file = File::create("ocr_output.txt")?;
+        let mut file = File::create("ocr_output.md")?;
         file.write_all(output_log.as_bytes())?;
         println!("\nIngestion completed successfully!");
-        println!("Detailed metrics, chunks, and candidate nodes written to: ocr_output.txt");
+        println!("Detailed metrics, chunks, and candidate nodes written to: ocr_output.md");
     }
 
     println!("\n==================================================");

@@ -590,9 +590,7 @@ fn merge_line_blocks(blocks: Vec<RawLayoutBlock>) -> Vec<RawLayoutBlock> {
 
         if let (Some(prev), Some(prev_block)) = (prev_right, prev_block.as_ref()) {
             let gap = block.bbox.x - prev;
-            let column_split_threshold = inter_block_space_threshold(prev_block, &block)
-                .mul_add(8.0, 0.0)
-                .max(24.0);
+            let column_split_threshold = line_run_split_threshold(prev_block, &block);
             if gap > column_split_threshold && !current_run.is_empty() {
                 if let Some(merged) = merge_nearby_line_run(std::mem::take(&mut current_run)) {
                     merged_blocks.push(merged);
@@ -610,6 +608,27 @@ fn merge_line_blocks(blocks: Vec<RawLayoutBlock>) -> Vec<RawLayoutBlock> {
     }
 
     merged_blocks
+}
+
+/// Preserves normal word-fragment runs while splitting adjacent line-length objects into
+/// columns. PDF producers commonly use one object per visual column line, where a gutter
+/// can be only one to two font-heights wide.
+fn line_run_split_threshold(prev: &RawLayoutBlock, next: &RawLayoutBlock) -> f32 {
+    let font_size = next.font_size.or(prev.font_size).unwrap_or_else(|| {
+        average_char_width(&next.text, next.bbox.width)
+            .max(average_char_width(&prev.text, prev.bbox.width))
+            * 2.0
+    });
+    if is_line_length_object(prev, font_size) || is_line_length_object(next, font_size) {
+        return font_size.max(1.0);
+    }
+    inter_block_space_threshold(prev, next)
+        .mul_add(8.0, 0.0)
+        .max(24.0)
+}
+
+fn is_line_length_object(block: &RawLayoutBlock, font_size: f32) -> bool {
+    block.text.split_whitespace().count() >= 3 && block.bbox.width >= font_size.max(1.0) * 12.0
 }
 
 fn merge_nearby_line_run(blocks: Vec<RawLayoutBlock>) -> Option<RawLayoutBlock> {
@@ -924,5 +943,50 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].text, "Left column");
         assert_eq!(merged[1].text, "Right column");
+    }
+
+    #[test]
+    fn test_merge_text_objects_on_visual_lines_splits_narrow_line_object_gutter() {
+        let blocks = vec![
+            RawLayoutBlock::new(
+                "A complete left-column visual line with several words",
+                Rect::new(50.0, 20.0, 250.0, 9.0),
+            )
+            .with_font_size(9.0),
+            RawLayoutBlock::new(
+                "A complete right-column visual line with several words",
+                Rect::new(312.0, 20.5, 250.0, 9.0),
+            )
+            .with_font_size(9.0),
+        ];
+
+        let merged = merge_text_objects_on_visual_lines(blocks);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(
+            merged[0].text,
+            "A complete left-column visual line with several words"
+        );
+        assert_eq!(
+            merged[1].text,
+            "A complete right-column visual line with several words"
+        );
+    }
+
+    #[test]
+    fn test_merge_text_objects_on_visual_lines_keeps_short_column_tail_separate() {
+        let blocks = vec![
+            RawLayoutBlock::new(
+                "A complete left-column visual line with several words",
+                Rect::new(50.0, 20.0, 250.0, 9.0),
+            )
+            .with_font_size(9.0),
+            RawLayoutBlock::new("tail", Rect::new(312.0, 20.5, 24.0, 9.0)).with_font_size(9.0),
+        ];
+
+        let merged = merge_text_objects_on_visual_lines(blocks);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[1].text, "tail");
     }
 }

@@ -1,11 +1,14 @@
 use crate::embed::chunking::count_tokens;
-use crate::ingest::layout::{analyze_layout, RawLayoutBlock};
+use crate::ingest::layout::{
+    analyze_layout, analyze_layout_with_snapshot, LayoutDebugSnapshot, RawLayoutBlock,
+};
 use crate::ingest::markdown::{assemble_markdown_blocks, join_ingest_blocks, IngestBlock};
 use crate::memory_agent::parser::{CandidateAction, CandidateNode};
 use crate::ocr::bundled::BundledOcrEngine;
 use crate::ocr::engine::{OcrEngine, OcrError, Rect};
 use crate::ocr::pdf::{LoadedPdf, PdfPageType, PdfRasterizer, PdfRasterizerConfig};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -44,6 +47,30 @@ pub struct ImportJobHandle {
     pub cancel: Arc<AtomicBool>,
 }
 
+/// Chooses which extraction source wins where digital text and OCR overlap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HybridMergeStrategy {
+    /// Preserve selectable PDF text and add OCR-only regions (the legacy behavior).
+    #[default]
+    DigitalPreferred,
+    /// Prefer OCR text in overlapping regions, while preserving digital-only regions.
+    OcrPreferred,
+    /// Explicit name for the legacy digital base plus OCR supplement behavior.
+    OcrNonOverlappingOnly,
+}
+
+impl HybridMergeStrategy {
+    pub fn from_env_value(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "digital_preferred" => Some(Self::DigitalPreferred),
+            "ocr_preferred" => Some(Self::OcrPreferred),
+            "ocr_non_overlapping_only" => Some(Self::OcrNonOverlappingOnly),
+            _ => None,
+        }
+    }
+}
+
 /// Configuration options for an import job execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestJobConfig {
@@ -57,6 +84,8 @@ pub struct IngestJobConfig {
     pub endpoint: Option<String>,
     pub model: Option<String>,
     pub allowed_vault_keys: Option<Vec<String>>,
+    #[serde(default)]
+    pub hybrid_merge_strategy: HybridMergeStrategy,
 }
 
 impl Default for IngestJobConfig {
@@ -69,6 +98,7 @@ impl Default for IngestJobConfig {
             endpoint: None,
             model: None,
             allowed_vault_keys: None,
+            hybrid_merge_strategy: HybridMergeStrategy::DigitalPreferred,
         }
     }
 }
@@ -96,6 +126,8 @@ pub struct ImportChunkSpec {
     pub chunk_type: String,
     pub ocr_confidence: Option<f32>,
     pub tables_unstructured: bool,
+    #[serde(default)]
+    pub source_page_indices: Vec<usize>,
 }
 
 /// Final result payload from a completed document ingestion job.
@@ -112,6 +144,8 @@ pub struct IngestJobResult {
     pub avg_ocr_confidence: f32,
     pub tables_detected_unpreserved: i32,
     pub candidates: Vec<CandidateNode>,
+    #[serde(default)]
+    pub layout_debug: Vec<LayoutDebugSnapshot>,
 }
 
 /// Core background engine managing job execution, lazy ONNX initialization, and chunking.
@@ -161,6 +195,8 @@ impl IngestJobEngine {
         let mut total_ocr_confidence_sum = 0.0f32;
         let mut ocr_pass_count = 0usize;
         let mut tables_detected_unpreserved = 0;
+        let debug_layout = std::env::var_os("AMBER_INGEST_DEBUG").is_some();
+        let mut layout_debug = Vec::new();
 
         for (i, p) in pages_info.iter().enumerate() {
             if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
@@ -187,11 +223,11 @@ impl IngestJobEngine {
                 });
             }
 
-            let layout_blocks = match p.page_type {
+            let (raw_blocks, page_width, page_height) = match p.page_type {
                 PdfPageType::Digital => {
                     let raw_blocks =
                         PdfRasterizer::extract_digital_blocks_from_document(&document, i)?;
-                    analyze_layout(raw_blocks, p.width_pts, p.height_pts)
+                    (raw_blocks, p.width_pts, p.height_pts)
                 }
                 PdfPageType::Ocr => {
                     let (raw_blocks, image_width, image_height, confidence) =
@@ -205,7 +241,7 @@ impl IngestJobEngine {
                     total_ocr_confidence_sum += confidence;
                     ocr_pass_count += 1;
 
-                    analyze_layout(raw_blocks, image_width, image_height)
+                    (raw_blocks, image_width, image_height)
                 }
                 PdfPageType::Hybrid => {
                     let (ocr_blocks, image_width, image_height, confidence) =
@@ -226,10 +262,32 @@ impl IngestJobEngine {
                         image_width / p.width_pts.max(1.0),
                         image_height / p.height_pts.max(1.0),
                     );
-                    let raw_blocks = merge_hybrid_raw_blocks(scaled_digital_blocks, ocr_blocks);
+                    let strategy = if digital_extraction_sparse(
+                        &scaled_digital_blocks,
+                        image_width * image_height,
+                    ) {
+                        eprintln!(
+                            "[ingest] Sparse digital text on page {}; preferring OCR.",
+                            i + 1
+                        );
+                        HybridMergeStrategy::OcrPreferred
+                    } else {
+                        config.hybrid_merge_strategy
+                    };
+                    let raw_blocks =
+                        merge_hybrid_raw_blocks(scaled_digital_blocks, ocr_blocks, strategy);
 
-                    analyze_layout(raw_blocks, image_width, image_height)
+                    (raw_blocks, image_width, image_height)
                 }
+            };
+
+            let layout_blocks = if debug_layout {
+                let (blocks, mut snapshot) = analyze_layout_with_snapshot(raw_blocks, page_width);
+                snapshot.page_index = i;
+                layout_debug.push(snapshot);
+                blocks
+            } else {
+                analyze_layout(raw_blocks, page_width, page_height)
             };
 
             // Count table blocks across all page types
@@ -276,12 +334,16 @@ impl IngestJobEngine {
             if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
                 return Err(OcrError::Cancelled);
             }
-            candidates.extend(IngestJobEngine::extract_chunk_candidates(
+            let mut chunk_candidates = IngestJobEngine::extract_chunk_candidates(
                 chunk,
                 &source_name,
                 &config,
                 &runtime_handle,
-            ));
+            );
+            for candidate in &mut chunk_candidates {
+                attach_integrity_trace(chunk, candidate, &chunks);
+            }
+            candidates.extend(chunk_candidates);
         }
 
         Ok(IngestJobResult {
@@ -296,6 +358,7 @@ impl IngestJobEngine {
             avg_ocr_confidence,
             tables_detected_unpreserved,
             candidates,
+            layout_debug,
         })
     }
 
@@ -347,12 +410,16 @@ impl IngestJobEngine {
 
         let mut candidates = Vec::new();
         for chunk in &chunks {
-            candidates.extend(IngestJobEngine::extract_chunk_candidates(
+            let mut chunk_candidates = IngestJobEngine::extract_chunk_candidates(
                 chunk,
                 &source_name,
                 &config,
                 &runtime_handle,
-            ));
+            );
+            for candidate in &mut chunk_candidates {
+                attach_integrity_trace(chunk, candidate, &chunks);
+            }
+            candidates.extend(chunk_candidates);
         }
 
         Ok(IngestJobResult {
@@ -367,6 +434,7 @@ impl IngestJobEngine {
             avg_ocr_confidence: ocr_output.avg_confidence,
             tables_detected_unpreserved,
             candidates,
+            layout_debug: Vec::new(),
         })
     }
 
@@ -421,7 +489,11 @@ impl IngestJobEngine {
             summary.pop();
         }
         if summary.chars().count() > MAX_SUMMARY_LEN {
-            summary = summary.chars().take(MAX_SUMMARY_LEN).collect::<String>() + "...";
+            summary = summary
+                .chars()
+                .take(MAX_SUMMARY_LEN.saturating_sub(3))
+                .collect::<String>()
+                + "...";
         }
 
         let mut meta_obj = serde_json::json!({
@@ -566,6 +638,104 @@ impl IngestJobEngine {
     }
 }
 
+/// Verifies that fallback output remains traceable to the exact chunk it represents.
+fn validate_fallback_candidate(chunk: &ImportChunkSpec, candidate: &CandidateNode) -> Vec<String> {
+    validate_candidate_integrity(chunk, candidate, &[])
+}
+
+fn validate_candidate_integrity(
+    chunk: &ImportChunkSpec,
+    candidate: &CandidateNode,
+    all_chunks: &[ImportChunkSpec],
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let normalized_chunk = normalize_line_endings(&chunk.text);
+    if let Some(detail) = candidate.detail.as_deref() {
+        if !normalized_chunk.contains(&normalize_line_endings(detail)) {
+            warnings.push("candidate detail is not contained in its source chunk".to_string());
+        }
+    }
+    if candidate.summary.chars().count() > 120 {
+        warnings.push("candidate summary exceeds the 120-character ingestion limit".to_string());
+    }
+
+    let title_matches_current_heading = chunk
+        .heading_context
+        .as_deref()
+        .is_some_and(|heading| heading == candidate.title);
+    if !title_matches_current_heading {
+        for other in all_chunks {
+            let title_matches_other_heading = other
+                .heading_context
+                .as_deref()
+                .is_some_and(|heading| heading == candidate.title);
+            if other.chunk_index != chunk.chunk_index
+                && title_matches_other_heading
+                && text_overlap_ratio(&chunk.text, &other.text) <= 0.5
+            {
+                warnings.push(
+                    "candidate title matches a different chunk heading without sufficient text overlap"
+                        .to_string(),
+                );
+                break;
+            }
+        }
+    }
+    warnings
+}
+
+fn attach_integrity_trace(
+    chunk: &ImportChunkSpec,
+    candidate: &mut CandidateNode,
+    all_chunks: &[ImportChunkSpec],
+) {
+    let mut warnings = validate_fallback_candidate(chunk, candidate);
+    warnings.extend(validate_candidate_integrity(chunk, candidate, all_chunks));
+    warnings.sort();
+    warnings.dedup();
+    if !warnings.is_empty() {
+        eprintln!(
+            "[ingest] Candidate integrity warnings for chunk {}: {}",
+            chunk.chunk_index,
+            warnings.join("; ")
+        );
+    }
+
+    let meta = candidate.meta.get_or_insert_with(|| serde_json::json!({}));
+    if let Some(map) = meta.as_object_mut() {
+        map.insert(
+            "source_page_indices".to_string(),
+            serde_json::json!(chunk.source_page_indices),
+        );
+        if !warnings.is_empty() {
+            map.insert("warnings".to_string(), serde_json::json!(warnings));
+        }
+    }
+}
+
+fn normalize_line_endings(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn text_overlap_ratio(a: &str, b: &str) -> f32 {
+    let words = |text: &str| {
+        text.split_whitespace()
+            .map(|word| {
+                word.trim_matches(|ch: char| !ch.is_alphanumeric())
+                    .to_lowercase()
+            })
+            .filter(|word| !word.is_empty())
+            .collect::<HashSet<_>>()
+    };
+    let a_words = words(a);
+    let b_words = words(b);
+    let union = a_words.union(&b_words).count();
+    if union == 0 {
+        return 1.0;
+    }
+    a_words.intersection(&b_words).count() as f32 / union as f32
+}
+
 fn first_summary_boundary(text: &str, min_chars: usize) -> Option<usize> {
     let mut seen = 0usize;
     for (idx, ch) in text.char_indices() {
@@ -643,18 +813,34 @@ fn scale_blocks_to_page(
 fn merge_hybrid_raw_blocks(
     digital_blocks: Vec<RawLayoutBlock>,
     ocr_blocks: Vec<RawLayoutBlock>,
+    strategy: HybridMergeStrategy,
 ) -> Vec<RawLayoutBlock> {
-    if digital_blocks.is_empty() {
-        return ocr_blocks;
-    }
-
-    let mut merged = digital_blocks;
-    let non_overlapping_ocr: Vec<RawLayoutBlock> = ocr_blocks
+    let (mut merged, supplement) = match strategy {
+        HybridMergeStrategy::DigitalPreferred | HybridMergeStrategy::OcrNonOverlappingOnly => {
+            (digital_blocks, ocr_blocks)
+        }
+        HybridMergeStrategy::OcrPreferred => (ocr_blocks, digital_blocks),
+    };
+    let non_overlapping_supplement = supplement
         .into_iter()
-        .filter(|ocr| !merged.iter().any(|digital| blocks_overlap(digital, ocr)))
-        .collect();
-    merged.extend(non_overlapping_ocr);
+        .filter(|block| !merged.iter().any(|base| blocks_overlap(base, block)))
+        .collect::<Vec<_>>();
+    merged.extend(non_overlapping_supplement);
     merged
+}
+
+/// Treat digital text as sparse when it cannot represent even a modest fraction of the page.
+/// The geometry ratio remains resolution-independent; the block-count guard handles pages with
+/// a single selectable label over otherwise scanned content.
+fn digital_extraction_sparse(digital_blocks: &[RawLayoutBlock], page_area: f32) -> bool {
+    if digital_blocks.len() < 2 {
+        return true;
+    }
+    let text_area: f32 = digital_blocks
+        .iter()
+        .map(|block| block.bbox.width.max(0.0) * block.bbox.height.max(0.0))
+        .sum();
+    text_area / page_area.max(1.0) < 0.01
 }
 
 fn blocks_overlap(a: &RawLayoutBlock, b: &RawLayoutBlock) -> bool {
@@ -694,19 +880,23 @@ pub fn chunk_ingest_blocks(
     for block in blocks {
         let block_tokens = count_tokens(&block.formatted_text);
 
-        // Track current section heading if block is of type Heading
-        if let crate::ingest::layout::BlockType::Heading(_) = block.block_type {
-            current_heading_context = Some(
-                block
-                    .formatted_text
-                    .lines()
-                    .next()
-                    .unwrap_or(&block.formatted_text)
-                    .trim_start_matches('#')
-                    .trim()
-                    .to_string(),
-            );
-        }
+        let next_heading_context =
+            if let crate::ingest::layout::BlockType::Heading(_) = block.block_type {
+                if !block.fragment {
+                    let heading = block
+                        .formatted_text
+                        .lines()
+                        .map(|line| line.trim().trim_start_matches('#').trim())
+                        .filter(|line| !line.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    (!heading.is_empty()).then_some(heading)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
         if current_token_count + block_tokens > target_tokens && !current_blocks.is_empty() {
             let chunk_text = join_ingest_blocks(
@@ -727,6 +917,7 @@ pub fn chunk_ingest_blocks(
                 chunk_type: "import".to_string(),
                 ocr_confidence: ocr_conf,
                 tables_unstructured: has_tables,
+                source_page_indices: source_page_indices(&current_blocks),
             });
 
             // Handle overlap by keeping trailing blocks up to overlap_tokens
@@ -746,6 +937,9 @@ pub fn chunk_ingest_blocks(
             current_token_count = overlap_count;
         }
 
+        if let Some(heading) = next_heading_context {
+            current_heading_context = Some(heading);
+        }
         current_blocks.push(block);
         current_token_count += block_tokens;
     }
@@ -769,6 +963,7 @@ pub fn chunk_ingest_blocks(
             chunk_type: "import".to_string(),
             ocr_confidence: ocr_conf,
             tables_unstructured: has_tables,
+            source_page_indices: source_page_indices(&current_blocks),
         });
     }
 
@@ -799,6 +994,16 @@ fn calculate_chunk_metrics(blocks: &[&IngestBlock]) -> (Option<f32>, bool) {
     (avg_ocr, has_tables)
 }
 
+fn source_page_indices(blocks: &[&IngestBlock]) -> Vec<usize> {
+    let mut pages = blocks
+        .iter()
+        .map(|block| block.page_index)
+        .collect::<Vec<_>>();
+    pages.sort_unstable();
+    pages.dedup();
+    pages
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,6 +1026,7 @@ mod tests {
                     block_type,
                     confidence: None,
                     page_index: 0,
+                    fragment: false,
                 }
             })
             .collect();
@@ -919,6 +1125,7 @@ mod tests {
             chunk_type: "import".to_string(),
             ocr_confidence: None,
             tables_unstructured: false,
+            source_page_indices: vec![0],
         };
         let node = IngestJobEngine::run_fallback_extraction(
             &chunk,
@@ -939,6 +1146,7 @@ mod tests {
             chunk_type: "import".to_string(),
             ocr_confidence: None,
             tables_unstructured: false,
+            source_page_indices: vec![0],
         };
         let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
         assert_eq!(node.target_vault_key, None);
@@ -954,6 +1162,7 @@ mod tests {
             chunk_type: "import".to_string(),
             ocr_confidence: None,
             tables_unstructured: false,
+            source_page_indices: vec![0],
         };
         let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
         assert_eq!(node.summary, "Is this a question? Yes it is!");
@@ -969,6 +1178,7 @@ mod tests {
             chunk_type: "import".to_string(),
             ocr_confidence: None,
             tables_unstructured: false,
+            source_page_indices: vec![0],
         };
         let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
         assert_eq!(node.summary, "Mr. Smith met Dr. Jones at the clinic");
@@ -985,6 +1195,7 @@ mod tests {
             chunk_type: "import".to_string(),
             ocr_confidence: None,
             tables_unstructured: false,
+            source_page_indices: vec![0],
         };
         let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
         assert_eq!(
@@ -1004,6 +1215,7 @@ mod tests {
             chunk_type: "import".to_string(),
             ocr_confidence: None,
             tables_unstructured: false,
+            source_page_indices: vec![0],
         };
         let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
         assert_eq!(
@@ -1022,6 +1234,7 @@ mod tests {
             chunk_type: "import".to_string(),
             ocr_confidence: None,
             tables_unstructured: false,
+            source_page_indices: vec![0],
         };
         let config = IngestJobConfig {
             provider: None,
@@ -1047,6 +1260,7 @@ mod tests {
             chunk_type: "import".to_string(),
             ocr_confidence: None,
             tables_unstructured: false,
+            source_page_indices: vec![0],
         };
         let config = IngestJobConfig {
             provider: None, // Forces the 'no_llm_configured' fallback path
@@ -1076,10 +1290,85 @@ mod tests {
             RawLayoutBlock::new("Image-only caption", Rect::new(10.0, 50.0, 90.0, 12.0)),
         ];
 
-        let merged = merge_hybrid_raw_blocks(digital, ocr);
+        let merged = merge_hybrid_raw_blocks(digital, ocr, HybridMergeStrategy::DigitalPreferred);
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].text, "Congress of the United States");
         assert_eq!(merged[1].text, "Image-only caption");
+    }
+
+    #[test]
+    fn ocr_preferred_hybrid_merge_keeps_ocr_text_on_overlap() {
+        let digital = vec![
+            RawLayoutBlock::new("Digital overlap", Rect::new(10.0, 10.0, 120.0, 12.0)),
+            RawLayoutBlock::new("Digital only", Rect::new(10.0, 50.0, 120.0, 12.0)),
+        ];
+        let ocr = vec![
+            RawLayoutBlock::new("OCR overlap", Rect::new(12.0, 10.0, 118.0, 12.0)),
+            RawLayoutBlock::new("OCR only", Rect::new(10.0, 90.0, 120.0, 12.0)),
+        ];
+        let merged = merge_hybrid_raw_blocks(digital, ocr, HybridMergeStrategy::OcrPreferred);
+        let text = merged
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(text, vec!["OCR overlap", "OCR only", "Digital only"]);
+    }
+
+    #[test]
+    fn sparse_digital_text_prefers_ocr() {
+        let sparse = vec![RawLayoutBlock::new(
+            "Selectable label",
+            Rect::new(20.0, 20.0, 100.0, 12.0),
+        )];
+        assert!(digital_extraction_sparse(&sparse, 600.0 * 800.0));
+    }
+
+    #[test]
+    fn chunk_tracks_full_heading_context_fragment_and_source_pages() {
+        let blocks = vec![
+            IngestBlock {
+                formatted_text: "# Full Document Title".to_string(),
+                block_type: crate::ingest::layout::BlockType::Heading(1),
+                confidence: None,
+                page_index: 0,
+                fragment: false,
+            },
+            IngestBlock {
+                formatted_text: "x = a + b / c".to_string(),
+                block_type: crate::ingest::layout::BlockType::Body,
+                confidence: None,
+                page_index: 1,
+                fragment: true,
+            },
+        ];
+        let chunks = chunk_ingest_blocks(&blocks, 500, 0);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(
+            chunks[0].heading_context.as_deref(),
+            Some("Full Document Title")
+        );
+        assert_eq!(chunks[0].source_page_indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn integrity_trace_warns_for_untraceable_candidate_detail() {
+        let chunk = ImportChunkSpec {
+            chunk_index: 0,
+            text: "This source chunk is intentionally short.".to_string(),
+            token_count: 7,
+            heading_context: Some("Source heading".to_string()),
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+            source_page_indices: vec![0],
+        };
+        let mut candidate =
+            IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+        candidate.detail = Some("invented detail".to_string());
+        let warnings = validate_fallback_candidate(&chunk, &candidate);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("not contained")));
     }
 }

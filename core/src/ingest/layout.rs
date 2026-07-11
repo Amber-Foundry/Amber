@@ -51,6 +51,9 @@ pub struct TextBlock {
     pub block_type: BlockType,
     pub bbox: Option<Rect>,
     pub confidence: Option<f32>,
+    /// Formula and algorithm fragments remain body text and never become section anchors.
+    #[serde(default)]
+    pub fragment: bool,
 }
 
 impl TextBlock {
@@ -60,8 +63,18 @@ impl TextBlock {
             block_type,
             bbox: None,
             confidence: None,
+            fragment: false,
         }
     }
+}
+
+/// Layout-only counters used by the CLI to diagnose a page without exposing its text.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayoutDebugSnapshot {
+    pub page_index: usize,
+    pub band_count: usize,
+    pub column_splits: usize,
+    pub fragment_count: usize,
 }
 
 /// Analyzes a page of raw layout blocks, performing band-based multi-column layout clustering
@@ -71,8 +84,16 @@ pub fn analyze_layout(
     page_width: f32,
     _page_height: f32,
 ) -> Vec<TextBlock> {
+    analyze_layout_with_snapshot(raw_blocks, page_width).0
+}
+
+/// Produces the normal layout output plus structural counters for diagnostics.
+pub(crate) fn analyze_layout_with_snapshot(
+    raw_blocks: Vec<RawLayoutBlock>,
+    page_width: f32,
+) -> (Vec<TextBlock>, LayoutDebugSnapshot) {
     if raw_blocks.is_empty() {
-        return Vec::new();
+        return (Vec::new(), LayoutDebugSnapshot::default());
     }
 
     // Filter out purely whitespace blocks
@@ -82,164 +103,233 @@ pub fn analyze_layout(
         .collect();
 
     if valid_blocks.is_empty() {
-        return Vec::new();
+        return (Vec::new(), LayoutDebugSnapshot::default());
     }
 
     // Compute median metric (font size if available, otherwise bounding box height)
     let median_metric = compute_median_metric(&valid_blocks);
+    let median_line_height = compute_median_line_height(&valid_blocks);
 
-    // Step 1: Perform Band-Based Multi-Column Layout Clustering
-    let clustered_raw_blocks = cluster_multi_column_layout(valid_blocks, page_width);
+    // Build vertical bands before looking for gutters. This prevents a short line at the
+    // bottom of a full-width region from being spliced into the two-column region below.
+    let bands = group_into_vertical_bands(valid_blocks, median_line_height);
+    let mut snapshot = LayoutDebugSnapshot {
+        band_count: bands.len(),
+        column_splits: 0,
+        fragment_count: 0,
+        ..LayoutDebugSnapshot::default()
+    };
+    let clustered_raw_blocks = bands
+        .into_iter()
+        .flat_map(|band| {
+            if find_largest_horizontal_gap(&project_x_intervals(&band), &band, page_width).is_some()
+            {
+                snapshot.column_splits += 1;
+            }
+            order_band_blocks(band, page_width)
+        })
+        .collect::<Vec<_>>();
 
     // Step 2: Classify block types
-    clustered_raw_blocks
+    let blocks = clustered_raw_blocks
         .into_iter()
         .map(|raw| {
-            let block_type = classify_block_type(&raw, median_metric);
+            let fragment = is_structured_fragment(&raw.text);
+            let block_type = if fragment {
+                snapshot.fragment_count += 1;
+                BlockType::Body
+            } else {
+                classify_block_type(&raw, median_metric)
+            };
             TextBlock {
                 text: raw.text.trim().to_string(),
                 block_type,
                 bbox: Some(raw.bbox),
                 confidence: raw.confidence,
+                fragment,
             }
         })
-        .collect()
+        .collect();
+
+    (blocks, snapshot)
 }
 
-/// Group blocks into vertical bands split by full-width elements (>60% page width),
-/// then detect column gutters within each band to order text left-to-right by column,
-/// top-to-bottom within each column.
-fn cluster_multi_column_layout(
-    blocks: Vec<RawLayoutBlock>,
-    page_width: f32,
-) -> Vec<RawLayoutBlock> {
-    let full_width_threshold = 0.60 * page_width;
+fn compute_median_line_height(blocks: &[RawLayoutBlock]) -> f32 {
+    let mut heights: Vec<f32> = blocks
+        .iter()
+        .map(|block| block.bbox.height)
+        .filter(|height| *height > 0.0)
+        .collect();
+    if heights.is_empty() {
+        return compute_median_metric(blocks);
+    }
+    heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    heights[(heights.len() - 1) / 2]
+}
 
-    // Separate blocks into full-width band dividers vs normal blocks
-    // We sort all blocks by top y-coordinate first to establish vertical band bounds
-    let mut sorted_blocks = blocks;
-    sorted_blocks.sort_by(|a, b| {
+/// Groups nearby visual lines into vertical regions using page-derived line height.
+fn group_into_vertical_bands(
+    mut blocks: Vec<RawLayoutBlock>,
+    line_height: f32,
+) -> Vec<Vec<RawLayoutBlock>> {
+    blocks.sort_by(|a, b| {
         a.bbox
             .y
             .partial_cmp(&b.bbox.y)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.bbox
+                    .x
+                    .partial_cmp(&b.bbox.x)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     });
 
-    let mut result = Vec::with_capacity(sorted_blocks.len());
-    let mut current_band: Vec<RawLayoutBlock> = Vec::new();
+    let gap_threshold = line_height.max(1.0) * 1.5;
+    let mut bands = Vec::new();
+    let mut current_band = Vec::new();
+    let mut current_bottom = f32::NEG_INFINITY;
 
-    for block in sorted_blocks {
-        let is_full_width = block.bbox.width >= full_width_threshold
-            || block_crosses_page_center(&block.bbox, page_width);
-
-        if is_full_width {
-            // Flush current band column clusters before pushing full-width block
-            if !current_band.is_empty() {
-                result.extend(cluster_single_band(
-                    std::mem::take(&mut current_band),
-                    page_width,
-                ));
-            }
-            result.push(block);
-        } else {
-            current_band.push(block);
+    for block in blocks {
+        if !current_band.is_empty() && block.bbox.y > current_bottom + gap_threshold {
+            bands.push(std::mem::take(&mut current_band));
+            current_bottom = f32::NEG_INFINITY;
         }
+        current_bottom = current_bottom.max(block.bbox.y + block.bbox.height);
+        current_band.push(block);
     }
-
     if !current_band.is_empty() {
-        result.extend(cluster_single_band(current_band, page_width));
+        bands.push(current_band);
     }
-
-    result
+    bands
 }
 
-/// Clusters blocks within a single vertical band into 1 or 2 (or N) columns by detecting X gutters.
-fn cluster_single_band(band_blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<RawLayoutBlock> {
+fn project_x_intervals(blocks: &[RawLayoutBlock]) -> Vec<(f32, f32)> {
+    blocks
+        .iter()
+        .map(|block| (block.bbox.x, block.bbox.x + block.bbox.width))
+        .collect()
+}
+
+/// Returns the midpoint of the largest significant gap between merged x-projections.
+fn find_largest_horizontal_gap(
+    intervals: &[(f32, f32)],
+    blocks: &[RawLayoutBlock],
+    page_width: f32,
+) -> Option<f32> {
+    if intervals.len() < 2 {
+        return None;
+    }
+    let mut intervals = intervals.to_vec();
+    intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut merged = Vec::new();
+    for (start, end) in intervals {
+        if let Some((_, merged_end)) = merged.last_mut() {
+            if start <= *merged_end {
+                *merged_end = (*merged_end).max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+
+    let median_width = median_block_width(blocks);
+    let median_char_width = median_character_width(blocks);
+    // A two-column PDF can have line objects hundreds of points wide while the gutter is
+    // only a few character widths. Cap the width-derived floor with text metrics so those
+    // legitimate narrow gutters are retained without mistaking normal word gaps for columns.
+    let min_gutter = (median_char_width * 1.5)
+        .max(page_width * 0.01)
+        .min(median_width * 0.5);
+    merged
+        .windows(2)
+        .filter_map(|pair| {
+            let gap_start = pair[0].1;
+            let gap_end = pair[1].0;
+            let gap_width = gap_end - gap_start;
+            (gap_width >= min_gutter).then_some((gap_width, (gap_start + gap_end) / 2.0))
+        })
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(_, split)| split)
+}
+
+fn median_block_width(blocks: &[RawLayoutBlock]) -> f32 {
+    let mut widths: Vec<f32> = blocks
+        .iter()
+        .map(|block| block.bbox.width)
+        .filter(|width| *width > 0.0)
+        .collect();
+    if widths.is_empty() {
+        return 0.0;
+    }
+    widths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    widths[(widths.len() - 1) / 2]
+}
+
+fn median_character_width(blocks: &[RawLayoutBlock]) -> f32 {
+    let mut widths: Vec<f32> = blocks
+        .iter()
+        .map(|block| {
+            let chars = block
+                .text
+                .chars()
+                .filter(|ch| !ch.is_whitespace())
+                .count()
+                .max(1) as f32;
+            block.bbox.width / chars
+        })
+        .filter(|width| *width > 0.0)
+        .collect();
+    if widths.is_empty() {
+        return 1.0;
+    }
+    widths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    widths[(widths.len() - 1) / 2]
+}
+
+/// Orders one vertical region as a single column or two empirical x-clusters.
+fn order_band_blocks(band_blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<RawLayoutBlock> {
     if band_blocks.len() <= 1 {
         return band_blocks;
     }
-
-    // Determine if there is a multi-column layout split in this band
-    // Collect x-centers
-    let mid_page = page_width / 2.0;
-
+    let split =
+        find_largest_horizontal_gap(&project_x_intervals(&band_blocks), &band_blocks, page_width);
     let mut left_column = Vec::new();
     let mut right_column = Vec::new();
 
-    let mut has_left = false;
-    let mut has_right = false;
-
-    for block in band_blocks {
-        let x_center = block.bbox.x + (block.bbox.width / 2.0);
-        // If block is clearly in the left or right half
-        if x_center < mid_page {
-            has_left = true;
-            left_column.push(block);
-        } else {
-            has_right = true;
-            right_column.push(block);
+    if let Some(split) = split {
+        for block in band_blocks {
+            if block.bbox.x + block.bbox.width / 2.0 < split {
+                left_column.push(block);
+            } else {
+                right_column.push(block);
+            }
         }
-    }
-
-    // If we have both left and right blocks, only treat as multi-column when a clear
-    // vertical gutter exists (no significant horizontal overlap between column envelopes).
-    if has_left && has_right && columns_have_clear_gutter(&left_column, &right_column, page_width) {
-        // Sort top-to-bottom within each column
-        left_column.sort_by(|a, b| {
-            a.bbox
-                .y
-                .partial_cmp(&b.bbox.y)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        right_column.sort_by(|a, b| {
-            a.bbox
-                .y
-                .partial_cmp(&b.bbox.y)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let mut ordered = Vec::with_capacity(left_column.len() + right_column.len());
-        ordered.extend(left_column);
-        ordered.extend(right_column);
-        ordered
+        sort_reading_order(&mut left_column);
+        sort_reading_order(&mut right_column);
+        left_column.extend(right_column);
+        left_column
     } else {
-        // Single column band: sort top-to-bottom
-        let mut single_col = left_column;
-        single_col.extend(right_column);
-        single_col.sort_by(|a, b| {
-            a.bbox
-                .y
-                .partial_cmp(&b.bbox.y)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        single_col
+        let mut single_column = band_blocks;
+        sort_reading_order(&mut single_column);
+        single_column
     }
 }
 
-/// Centered headings often span the page midline but stay narrower than the full-width threshold.
-/// Treat them as band dividers so two-column content below is clustered separately.
-fn block_crosses_page_center(bbox: &Rect, page_width: f32) -> bool {
-    let mid_page = page_width / 2.0;
-    let left = bbox.x;
-    let right = bbox.x + bbox.width;
-    let center = left + (bbox.width / 2.0);
-    let center_margin = page_width * 0.08;
-    left < mid_page && right > mid_page && (center - mid_page).abs() <= center_margin
-}
-
-/// Returns true when left and right column block envelopes are separated by a horizontal gutter.
-fn columns_have_clear_gutter(
-    left: &[RawLayoutBlock],
-    right: &[RawLayoutBlock],
-    page_width: f32,
-) -> bool {
-    let left_max_x = left
-        .iter()
-        .map(|b| b.bbox.x + b.bbox.width)
-        .fold(0.0f32, f32::max);
-    let right_min_x = right.iter().map(|b| b.bbox.x).fold(f32::MAX, f32::min);
-    let min_gutter = (page_width * 0.05).max(12.0);
-    left_max_x + min_gutter <= right_min_x
+fn sort_reading_order(blocks: &mut [RawLayoutBlock]) {
+    blocks.sort_by(|a, b| {
+        a.bbox
+            .y
+            .partial_cmp(&b.bbox.y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.bbox
+                    .x
+                    .partial_cmp(&b.bbox.x)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
 }
 
 /// Computes the median font size or median bounding box height.
@@ -300,6 +390,63 @@ fn classify_block_type(block: &RawLayoutBlock, median_metric: f32) -> BlockType 
     }
 
     BlockType::Body
+}
+
+/// Detects equation-like or algorithmic fragments that should flow as body text instead
+/// of acting as noisy structural headings. This deliberately degrades safely rather than
+/// attempting to parse mathematical notation.
+pub(crate) fn is_structured_fragment(text: &str) -> bool {
+    let trimmed = text.trim();
+    let char_count = trimmed.chars().count();
+    if char_count == 0 {
+        return false;
+    }
+
+    let mut words = trimmed.split_whitespace();
+    let algorithm_label = words
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("algorithm"))
+        && words.next().is_some_and(|word| {
+            word.trim_matches(|ch: char| !ch.is_ascii_digit())
+                .chars()
+                .any(|ch| ch.is_ascii_digit())
+        });
+    if algorithm_label || is_equation_number(trimmed) {
+        return true;
+    }
+
+    let symbol_count = trimmed
+        .chars()
+        .filter(|ch| !ch.is_alphanumeric() && !ch.is_whitespace())
+        .count();
+    if char_count > 10 && (symbol_count as f32 / char_count as f32) > 0.25 {
+        return true;
+    }
+
+    char_count < 80
+        && trimmed
+            .chars()
+            .filter(|ch| {
+                matches!(
+                    ch,
+                    '=' | '+' | '-' | '−' | '*' | '/' | '^' | '_' | '∑' | '∫'
+                )
+            })
+            .count()
+            > 3
+}
+
+fn is_equation_number(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.len() < 3 {
+        return false;
+    }
+    matches!(
+        (bytes[0], *bytes.last().unwrap_or(&0)),
+        (b'(', b')') | (b'[', b']')
+    ) && text[1..text.len() - 1]
+        .chars()
+        .all(|ch| ch.is_ascii_digit())
 }
 
 /// Checks if string starts with structural heading prefixes like "ARTICLE", "SECTION", "CHAPTER", etc.
@@ -475,5 +622,111 @@ mod tests {
         assert_eq!(result[0].text, "Introduction");
         assert_eq!(result[1].text, "This paragraph starts below the heading.");
         assert_eq!(result[2].text, "Indented continuation on the next line.");
+    }
+
+    #[test]
+    fn band_splits_trailing_short_line_from_two_column_body() {
+        let blocks = vec![
+            RawLayoutBlock::new(
+                "Full-width introduction",
+                Rect::new(50.0, 50.0, 500.0, 15.0),
+            ),
+            RawLayoutBlock::new("Short tail", Rect::new(50.0, 90.0, 220.0, 15.0)),
+            RawLayoutBlock::new("LEFT BODY ONE", Rect::new(50.0, 110.0, 200.0, 15.0)),
+            RawLayoutBlock::new("RIGHT BODY ONE", Rect::new(350.0, 110.0, 200.0, 15.0)),
+            RawLayoutBlock::new("LEFT BODY TWO", Rect::new(50.0, 130.0, 200.0, 15.0)),
+            RawLayoutBlock::new("RIGHT BODY TWO", Rect::new(350.0, 130.0, 200.0, 15.0)),
+        ];
+
+        let result = analyze_layout(blocks, 600.0, 800.0);
+        let text = result
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(text[0], "Full-width introduction");
+        assert_eq!(text[1], "Short tail");
+        assert!(
+            text.iter().position(|value| *value == "LEFT BODY TWO")
+                < text.iter().position(|value| *value == "RIGHT BODY ONE")
+        );
+    }
+
+    #[test]
+    fn empirical_gutter_not_page_center() {
+        let blocks = vec![
+            RawLayoutBlock::new("RIGHT ONE", Rect::new(320.0, 20.0, 160.0, 12.0)),
+            RawLayoutBlock::new("LEFT ONE", Rect::new(40.0, 20.0, 160.0, 12.0)),
+            RawLayoutBlock::new("RIGHT TWO", Rect::new(320.0, 40.0, 160.0, 12.0)),
+            RawLayoutBlock::new("LEFT TWO", Rect::new(40.0, 40.0, 160.0, 12.0)),
+        ];
+
+        let text = analyze_layout(blocks, 600.0, 800.0)
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>();
+        assert_eq!(text, vec!["LEFT ONE", "LEFT TWO", "RIGHT ONE", "RIGHT TWO"]);
+    }
+
+    #[test]
+    fn single_cluster_band_reads_top_to_bottom() {
+        let blocks = vec![
+            RawLayoutBlock::new("second", Rect::new(90.0, 40.0, 440.0, 12.0)),
+            RawLayoutBlock::new("first", Rect::new(60.0, 20.0, 460.0, 12.0)),
+            RawLayoutBlock::new("third", Rect::new(80.0, 60.0, 450.0, 12.0)),
+        ];
+        let text = analyze_layout(blocks, 600.0, 800.0)
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>();
+        assert_eq!(text, vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn three_band_page_keeps_regions_in_reading_order() {
+        let blocks = vec![
+            RawLayoutBlock::new("FOOTER", Rect::new(40.0, 220.0, 520.0, 12.0)),
+            RawLayoutBlock::new("RIGHT", Rect::new(330.0, 100.0, 180.0, 12.0)),
+            RawLayoutBlock::new("TITLE", Rect::new(40.0, 20.0, 520.0, 16.0)),
+            RawLayoutBlock::new("LEFT", Rect::new(40.0, 100.0, 180.0, 12.0)),
+        ];
+        let text = analyze_layout(blocks, 600.0, 800.0)
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>();
+        assert_eq!(text, vec!["TITLE", "LEFT", "RIGHT", "FOOTER"]);
+    }
+
+    #[test]
+    fn structured_fragments_are_body_not_headings() {
+        assert!(is_structured_fragment("Algorithm 1 CACC Car-Following"));
+        assert!(is_structured_fragment("(12)"));
+        assert!(is_structured_fragment("x = a + b / c ^ 2"));
+
+        let result = analyze_layout(
+            vec![
+                RawLayoutBlock::new(
+                    "Algorithm 1 CACC Car-Following",
+                    Rect::new(50.0, 20.0, 300.0, 20.0),
+                )
+                .with_font_size(24.0),
+                RawLayoutBlock::new("I. INTRODUCTION", Rect::new(50.0, 60.0, 300.0, 12.0))
+                    .with_font_size(18.0),
+                RawLayoutBlock::new(
+                    "Prior research [6]-[8], [27] demonstrated the effect.",
+                    Rect::new(50.0, 90.0, 350.0, 12.0),
+                ),
+                RawLayoutBlock::new(
+                    "Ordinary body text establishes the page baseline.",
+                    Rect::new(50.0, 120.0, 350.0, 12.0),
+                ),
+            ],
+            600.0,
+            800.0,
+        );
+
+        assert_eq!(result[0].block_type, BlockType::Body);
+        assert!(result[0].fragment);
+        assert!(matches!(result[1].block_type, BlockType::Heading(_)));
+        assert_eq!(result[2].block_type, BlockType::Body);
     }
 }

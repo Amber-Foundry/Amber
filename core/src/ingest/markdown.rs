@@ -1,4 +1,5 @@
 use crate::ingest::layout::{BlockType, TextBlock};
+use crate::ingest::text::collapse_internal_whitespace_block;
 use crate::ocr::engine::Rect;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -7,6 +8,8 @@ pub struct IngestBlock {
     pub block_type: BlockType,
     pub confidence: Option<f32>,
     pub page_index: usize,
+    #[serde(default)]
+    pub fragment: bool,
 }
 
 /// Assembles a sequential vector of layout `TextBlock`s into a clean Markdown document string.
@@ -19,8 +22,9 @@ pub fn assemble_markdown(blocks: &[TextBlock]) -> String {
 pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<IngestBlock> {
     let mut out = Vec::with_capacity(blocks.len());
     let mut pending_body: Option<PendingBody> = None;
+    let coalesced_blocks = coalesce_consecutive_headings(blocks);
 
-    for block in blocks {
+    for block in &coalesced_blocks {
         let text = block.text.trim();
         if text.is_empty() {
             continue;
@@ -43,6 +47,7 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
                     pending.last_text = text.to_string();
                     pending.last_bbox = block.bbox.clone();
                     pending.bbox = union_optional_rects(pending.bbox.take(), block.bbox.clone());
+                    pending.fragment |= block.fragment;
                     if let Some(confidence) = block.confidence {
                         pending.confidence_sum += confidence;
                         pending.confidence_count += 1;
@@ -52,7 +57,12 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
             }
 
             flush_pending_body(&mut pending_body, &mut out, page_index);
-            pending_body = Some(PendingBody::new(text, block.bbox.clone(), block.confidence));
+            pending_body = Some(PendingBody::new(
+                text,
+                block.bbox.clone(),
+                block.confidence,
+                block.fragment,
+            ));
             continue;
         }
 
@@ -68,10 +78,11 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
         };
 
         out.push(IngestBlock {
-            formatted_text: formatted,
+            formatted_text: collapse_internal_whitespace_block(&formatted),
             block_type: block.block_type,
             confidence: block.confidence,
             page_index,
+            fragment: block.fragment,
         });
     }
 
@@ -87,10 +98,11 @@ struct PendingBody {
     last_text: String,
     confidence_sum: f32,
     confidence_count: usize,
+    fragment: bool,
 }
 
 impl PendingBody {
-    fn new(text: &str, bbox: Option<Rect>, confidence: Option<f32>) -> Self {
+    fn new(text: &str, bbox: Option<Rect>, confidence: Option<f32>, fragment: bool) -> Self {
         Self {
             text: text.to_string(),
             bbox: bbox.clone(),
@@ -98,6 +110,7 @@ impl PendingBody {
             last_text: text.to_string(),
             confidence_sum: confidence.unwrap_or(0.0),
             confidence_count: usize::from(confidence.is_some()),
+            fragment,
         }
     }
 
@@ -118,10 +131,11 @@ fn flush_pending_body(
     if let Some(pending) = pending_body.take() {
         let confidence = pending.confidence();
         out.push(IngestBlock {
-            formatted_text: pending.text,
+            formatted_text: collapse_internal_whitespace_block(&pending.text),
             block_type: BlockType::Body,
             confidence,
             page_index,
+            fragment: pending.fragment,
         });
     }
 }
@@ -148,10 +162,14 @@ fn should_merge_body_line(
         }
     }
 
-    let vertical_gap = next.y - (union_prev.y + union_prev.height);
-    let line_height = union_prev.height.max(next.height).max(1.0);
-    let same_column = horizontal_overlap_ratio(union_prev, next) > 0.15
-        || (union_prev.x - next.x).abs() <= line_height * 3.0;
+    // Use the last visual fragment, not the union bounding box: a merged paragraph can
+    // span many lines, and treating its total height as a line height wrongly joins the
+    // next column or an unrelated block below it.
+    let reference = last_prev.unwrap_or(union_prev);
+    let vertical_gap = next.y - (reference.y + reference.height);
+    let line_height = reference.height.max(next.height).max(1.0);
+    let same_column = horizontal_overlap_ratio(reference, next) > 0.15
+        || (reference.x - next.x).abs() <= line_height * 3.0;
 
     vertical_gap >= -line_height * 0.5 && vertical_gap <= line_height * 1.8 && same_column
 }
@@ -163,6 +181,7 @@ fn append_body_line(
     next_bbox: Option<&Rect>,
     prev_text: &str,
 ) {
+    let next = next.trim_start();
     let next_starts_lowercase = next.chars().next().is_some_and(char::is_lowercase);
     if current.ends_with('-')
         && next_starts_lowercase
@@ -175,7 +194,9 @@ fn append_body_line(
         // Same-line fragments whose boxes sit tighter than a normal word gap.
         current.push_str(next);
     } else {
-        if !current.chars().last().is_some_and(char::is_whitespace) {
+        let trimmed_len = current.trim_end().len();
+        current.truncate(trimmed_len);
+        if !current.is_empty() && !next.chars().next().is_some_and(char::is_whitespace) {
             current.push(' ');
         }
         current.push_str(next);
@@ -253,6 +274,67 @@ fn union_optional_rects(a: Option<Rect>, b: Option<Rect>) -> Option<Rect> {
         (None, Some(b)) => Some(b),
         (None, None) => None,
     }
+}
+
+fn coalesce_consecutive_headings(blocks: &[TextBlock]) -> Vec<TextBlock> {
+    let median_line_height = median_line_height(blocks);
+    let mut out: Vec<TextBlock> = Vec::with_capacity(blocks.len());
+
+    for block in blocks {
+        if let Some(previous) = out.last_mut() {
+            if should_merge_headings(previous, block, median_line_height) {
+                previous.text = format!("{} {}", previous.text.trim(), block.text.trim());
+                previous.bbox = union_optional_rects(previous.bbox.take(), block.bbox.clone());
+                if let (Some(previous_confidence), Some(next_confidence)) =
+                    (previous.confidence, block.confidence)
+                {
+                    previous.confidence = Some((previous_confidence + next_confidence) / 2.0);
+                }
+                continue;
+            }
+        }
+        out.push(block.clone());
+    }
+    out
+}
+
+fn should_merge_headings(prev: &TextBlock, next: &TextBlock, median_line_height: f32) -> bool {
+    let (BlockType::Heading(prev_level), BlockType::Heading(next_level)) =
+        (prev.block_type, next.block_type)
+    else {
+        return false;
+    };
+    if prev_level != next_level || prev.fragment || next.fragment {
+        return false;
+    }
+    let (Some(prev_bbox), Some(next_bbox)) = (prev.bbox.as_ref(), next.bbox.as_ref()) else {
+        return false;
+    };
+
+    let vertical_gap = next_bbox.y - (prev_bbox.y + prev_bbox.height);
+    let heading_line_height = median_line_height
+        .max(prev_bbox.height)
+        .max(next_bbox.height)
+        .max(1.0);
+    if vertical_gap >= heading_line_height * 1.2 {
+        return false;
+    }
+
+    let same_visual_line = (next_bbox.y - prev_bbox.y).abs() <= heading_line_height * 0.25;
+    !(same_visual_line && horizontal_overlap_ratio(prev_bbox, next_bbox) == 0.0)
+}
+
+fn median_line_height(blocks: &[TextBlock]) -> f32 {
+    let mut heights: Vec<f32> = blocks
+        .iter()
+        .filter_map(|block| block.bbox.as_ref().map(|bbox| bbox.height))
+        .filter(|height| *height > 0.0)
+        .collect();
+    if heights.is_empty() {
+        return 1.0;
+    }
+    heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    heights[(heights.len() - 1) / 2]
 }
 
 /// Joins structured blocks into a formatted Markdown string, using `\n` for consecutive list items
@@ -343,12 +425,14 @@ mod tests {
                 block_type: BlockType::ListItem,
                 confidence: None,
                 page_index: 0,
+                fragment: false,
             },
             IngestBlock {
                 formatted_text: "- Item 2 on Page 1".to_string(),
                 block_type: BlockType::ListItem,
                 confidence: None,
                 page_index: 1,
+                fragment: false,
             },
         ];
 
@@ -365,12 +449,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 220.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "ate and House of Representatives.".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 22.0, 160.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -392,12 +478,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 180.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "bers chosen every second Year".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(190.2, 10.1, 160.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -418,12 +506,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 18.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "ernment of the United States".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(28.2, 10.0, 150.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -443,12 +533,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 90.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "of the United States".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 22.0, 120.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -468,12 +560,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 120.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "Unrelated second block.".to_string(),
                 block_type: BlockType::Body,
                 bbox: None,
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -492,12 +586,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 20.0, 60.0, 8.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "Right column".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(220.0, 20.0, 70.0, 8.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -517,12 +613,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 42.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "States".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(58.0, 10.0, 40.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -539,17 +637,89 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 36.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "level".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(58.0, 10.0, 40.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
         let ingest_blocks = assemble_markdown_blocks(&blocks, 0);
 
         assert_eq!(ingest_blocks[0].formatted_text, "multi- level");
+    }
+
+    fn heading(text: &str, level: u8, y: f32, x: f32) -> TextBlock {
+        TextBlock {
+            text: text.to_string(),
+            block_type: BlockType::Heading(level),
+            bbox: Some(Rect::new(x, y, 180.0, 14.0)),
+            confidence: None,
+            fragment: false,
+        }
+    }
+
+    #[test]
+    fn markdown_sink_collapses_duplicate_spaces_without_changing_paragraphs() {
+        let blocks = vec![TextBlock {
+            text: "Density  Preserving".to_string(),
+            block_type: BlockType::Body,
+            bbox: None,
+            confidence: None,
+            fragment: false,
+        }];
+        let markdown = assemble_markdown(&blocks);
+        assert_eq!(markdown, "Density Preserving");
+        crate::ingest::text::assert_no_duplicate_spaces(&markdown)
+            .unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    #[test]
+    fn merge_three_line_title() {
+        let blocks = vec![
+            heading("Title Line One", 1, 10.0, 50.0),
+            heading("Title Line Two", 1, 26.0, 50.0),
+            heading("Title Line Three", 1, 42.0, 50.0),
+        ];
+        let assembled = assemble_markdown_blocks(&blocks, 0);
+        assert_eq!(assembled.len(), 1);
+        assert_eq!(
+            assembled[0].formatted_text,
+            "# Title Line One Title Line Two Title Line Three"
+        );
+    }
+
+    #[test]
+    fn heading_merge_rejects_different_levels_distant_and_side_by_side_titles() {
+        let different_levels = assemble_markdown_blocks(
+            &[
+                heading("First", 1, 10.0, 50.0),
+                heading("Second", 2, 26.0, 50.0),
+            ],
+            0,
+        );
+        assert_eq!(different_levels.len(), 2);
+
+        let distant = assemble_markdown_blocks(
+            &[
+                heading("First", 1, 10.0, 50.0),
+                heading("Second", 1, 200.0, 50.0),
+            ],
+            0,
+        );
+        assert_eq!(distant.len(), 2);
+
+        let side_by_side = assemble_markdown_blocks(
+            &[
+                heading("Left", 1, 10.0, 50.0),
+                heading("Right", 1, 10.0, 350.0),
+            ],
+            0,
+        );
+        assert_eq!(side_by_side.len(), 2);
     }
 }
