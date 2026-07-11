@@ -26,6 +26,7 @@ For an unseen PDF, run the demo with `AMBER_INGEST_DEBUG=1` and verify:
 |------|---------|
 | `digital_two_column.pdf` | Digital path, two-column layout ordering |
 | `digital_abstract_tail.pdf` | Full-width abstract opener + two-column body (IEEE regression) |
+| `digital_two_column_hanging_indent.pdf` | Two-column bibliography-style hanging indents |
 | `digital_injection.pdf` | Prompt injection → `injection_flagged` fallback |
 | `digital_minimal.pdf` | Single-column fallback routing (`no_llm_configured`, unsupported provider) |
 | `scanned_single_page.pdf` | Image-only page for rasterization / `Ocr` classification |

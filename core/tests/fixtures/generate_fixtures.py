@@ -93,6 +93,50 @@ def write_digital_abstract_tail() -> None:
     print(f"wrote {out}")
 
 
+def write_digital_two_column_hanging_indent() -> None:
+    """Two-column page with hanging indents (bibliography-style geometry)."""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, "TWO COLUMN HANGING INDENT FIXTURE", ln=True, align="C")
+    pdf.ln(3)
+    pdf.set_font("Helvetica", size=9)
+
+    col_w = 75
+    gap = 28
+    indent = 12
+    left_x = 10
+    right_x = left_x + col_w + gap
+    row_h = 6
+    y0 = pdf.get_y()
+
+    # Dense two-column grid: every row has left+right at the same y so the page
+    # forms one vertical band (like a reference list), not one band per row.
+    rows = [
+        ("LEFT_REF_ALPHA first line.", "RIGHT_REF_GAMMA first line."),
+        ("LEFT_REF_ALPHA continuation.", "RIGHT_REF_GAMMA continuation."),
+        ("LEFT_REF_BETA first line.", "RIGHT_REF_DELTA first line."),
+        ("LEFT_REF_BETA continuation.", "RIGHT_REF_DELTA continuation."),
+        ("LEFT_REF_ALPHA cont2 bridges gutter.", "RIGHT_REF_GAMMA cont2 bridges gutter."),
+        ("LEFT_REF_BETA cont2 bridges gutter.", "RIGHT_REF_DELTA cont2 bridges gutter."),
+    ]
+
+    for i, (left_text, right_text) in enumerate(rows):
+        y = y0 + i * row_h
+        use_indent = i >= 4
+        lx = left_x + (indent if use_indent else 0)
+        rx = right_x + (indent if use_indent else 0)
+        pdf.set_xy(lx, y)
+        pdf.cell(col_w, row_h, left_text)
+        pdf.set_xy(rx, y)
+        pdf.cell(col_w, row_h, right_text)
+
+    out = FIXTURES_DIR / "digital_two_column_hanging_indent.pdf"
+    pdf.output(str(out))
+    print(f"wrote {out}")
+
+
 def write_digital_injection() -> None:
     pdf = FPDF()
     pdf.add_page()
@@ -142,6 +186,7 @@ def write_scanned_single_page() -> None:
 if __name__ == "__main__":
     write_digital_two_column()
     write_digital_abstract_tail()
+    write_digital_two_column_hanging_indent()
     write_digital_injection()
     write_digital_minimal()
     write_scanned_single_page()

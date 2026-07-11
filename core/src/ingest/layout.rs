@@ -122,10 +122,10 @@ pub(crate) fn analyze_layout_with_snapshot(
     let clustered_raw_blocks = bands
         .into_iter()
         .flat_map(|band| {
-            if band_has_column_split(&band, page_width) {
+            if band_has_column_split(&band, page_width, median_line_height) {
                 snapshot.column_splits += 1;
             }
-            order_band_blocks(band, page_width)
+            order_band_blocks(band, page_width, median_line_height)
         })
         .collect::<Vec<_>>();
 
@@ -223,17 +223,97 @@ fn column_line_blocks(band: &[RawLayoutBlock], page_width: f32) -> Vec<RawLayout
         .collect()
 }
 
-fn band_has_column_split(band: &[RawLayoutBlock], page_width: f32) -> bool {
+fn band_has_column_split(band: &[RawLayoutBlock], page_width: f32, line_height: f32) -> bool {
     let column_blocks = column_line_blocks(band, page_width);
+    find_column_split(&column_blocks, page_width, line_height).is_some()
+}
+
+/// Visual rows within a band: blocks whose baselines fall within one line height.
+const ROW_Y_TOLERANCE_RATIO: f32 = 0.6;
+
+fn group_visual_rows(blocks: &[RawLayoutBlock], line_height: f32) -> Vec<Vec<RawLayoutBlock>> {
+    if blocks.is_empty() {
+        return Vec::new();
+    }
+    let mut sorted = blocks.to_vec();
+    sort_reading_order(&mut sorted);
+    let tolerance = line_height.max(1.0) * ROW_Y_TOLERANCE_RATIO;
+    let mut rows = Vec::new();
+    let mut current_row = vec![sorted[0].clone()];
+    let mut row_y = sorted[0].bbox.y;
+
+    for block in sorted.into_iter().skip(1) {
+        if (block.bbox.y - row_y).abs() <= tolerance {
+            current_row.push(block);
+        } else {
+            rows.push(current_row);
+            current_row = vec![block.clone()];
+            row_y = block.bbox.y;
+        }
+    }
+    rows.push(current_row);
+    rows
+}
+
+/// Samples the leftmost x on each visual row so hanging-indent continuations do not
+/// bridge the column gutter in merged x-projections.
+fn project_row_left_edge_intervals(blocks: &[RawLayoutBlock], line_height: f32) -> Vec<(f32, f32)> {
+    let sample_width = median_character_width(blocks).max(1.0);
+    group_visual_rows(blocks, line_height)
+        .into_iter()
+        .filter_map(|row| {
+            row.iter()
+                .min_by(|a, b| {
+                    a.bbox
+                        .x
+                        .partial_cmp(&b.bbox.x)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|block| (block.bbox.x, block.bbox.x + sample_width))
+        })
+        .collect()
+}
+
+fn find_largest_gap_in_left_edges(blocks: &[RawLayoutBlock], page_width: f32) -> Option<f32> {
+    if blocks.len() < 4 {
+        return None;
+    }
+    let mut edges: Vec<f32> = blocks.iter().map(|block| block.bbox.x).collect();
+    edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_char_width = median_character_width(blocks);
+    let min_gutter = (median_char_width * 1.5)
+        .max(page_width * 0.01)
+        .min(median_block_width(blocks) * 0.5);
+    edges
+        .windows(2)
+        .filter_map(|pair| {
+            let gap_width = pair[1] - pair[0];
+            (gap_width >= min_gutter).then_some((gap_width, (pair[0] + pair[1]) / 2.0))
+        })
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(_, split)| split)
+}
+
+fn find_column_split(
+    column_blocks: &[RawLayoutBlock],
+    page_width: f32,
+    line_height: f32,
+) -> Option<f32> {
     if column_blocks.len() < 2 {
-        return false;
+        return None;
+    }
+    let row_intervals = project_row_left_edge_intervals(column_blocks, line_height);
+    if let Some(split) = find_largest_horizontal_gap(&row_intervals, column_blocks, page_width) {
+        return Some(split);
+    }
+    if let Some(split) = find_largest_gap_in_left_edges(column_blocks, page_width) {
+        return Some(split);
     }
     find_largest_horizontal_gap(
-        &project_x_intervals(&column_blocks),
-        &column_blocks,
+        &project_x_intervals(column_blocks),
+        column_blocks,
         page_width,
     )
-    .is_some()
 }
 
 /// Returns the midpoint of the largest significant gap between merged x-projections.
@@ -314,21 +394,17 @@ fn median_character_width(blocks: &[RawLayoutBlock]) -> f32 {
 }
 
 /// Orders one vertical region as a single column or two empirical x-clusters.
-fn order_band_blocks(band_blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<RawLayoutBlock> {
+fn order_band_blocks(
+    band_blocks: Vec<RawLayoutBlock>,
+    page_width: f32,
+    line_height: f32,
+) -> Vec<RawLayoutBlock> {
     if band_blocks.len() <= 1 {
         return band_blocks;
     }
 
     let column_blocks = column_line_blocks(&band_blocks, page_width);
-    let split = if column_blocks.len() >= 2 {
-        find_largest_horizontal_gap(
-            &project_x_intervals(&column_blocks),
-            &column_blocks,
-            page_width,
-        )
-    } else {
-        None
-    };
+    let split = find_column_split(&column_blocks, page_width, line_height);
 
     if let Some(split) = split {
         let (mut full_width, narrow): (Vec<_>, Vec<_>) = band_blocks
@@ -339,7 +415,9 @@ fn order_band_blocks(band_blocks: Vec<RawLayoutBlock>, page_width: f32) -> Vec<R
         let mut left_column = Vec::new();
         let mut right_column = Vec::new();
         for block in narrow {
-            if block.bbox.x + block.bbox.width / 2.0 < split {
+            // Left-edge assignment keeps hanging-indent continuations in the left column
+            // even when a long line's centroid would cross the gutter split.
+            if block.bbox.x < split {
                 left_column.push(block);
             } else {
                 right_column.push(block);
@@ -718,6 +796,70 @@ mod tests {
             text.iter().position(|value| *value == "LEFT BODY TWO")
                 < text.iter().position(|value| *value == "RIGHT BODY ONE")
         );
+    }
+
+    #[test]
+    fn hanging_indent_two_column_left_before_right() {
+        let indent = 25.0;
+        let blocks = vec![
+            RawLayoutBlock::new("LEFT_ROW_A first line", Rect::new(50.0, 100.0, 180.0, 12.0)),
+            RawLayoutBlock::new(
+                "RIGHT_ROW_A first line",
+                Rect::new(350.0, 100.0, 180.0, 12.0),
+            ),
+            RawLayoutBlock::new(
+                "LEFT_ROW_A continuation bridges gutter",
+                Rect::new(50.0 + indent, 120.0, 220.0, 12.0),
+            ),
+            RawLayoutBlock::new(
+                "RIGHT_ROW_B first line",
+                Rect::new(350.0, 120.0, 180.0, 12.0),
+            ),
+            RawLayoutBlock::new("LEFT_ROW_B first line", Rect::new(50.0, 140.0, 180.0, 12.0)),
+            RawLayoutBlock::new(
+                "RIGHT_ROW_B continuation bridges gutter",
+                Rect::new(350.0 + indent, 140.0, 200.0, 12.0),
+            ),
+        ];
+
+        let (result, snapshot) = analyze_layout_with_snapshot(blocks, 600.0);
+        let text = result
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(snapshot.column_splits >= 1);
+        assert!(
+            text.iter()
+                .position(|value| *value == "LEFT_ROW_B first line")
+                < text
+                    .iter()
+                    .position(|value| *value == "RIGHT_ROW_A first line")
+        );
+    }
+
+    #[test]
+    fn hanging_indent_does_not_false_split_single_column() {
+        let heading = RawLayoutBlock::new("Section Title", Rect::new(220.0, 50.0, 160.0, 20.0));
+        let para1 = RawLayoutBlock::new(
+            "Opening line of a single-column paragraph.",
+            Rect::new(80.0, 90.0, 440.0, 15.0),
+        );
+        let para2 = RawLayoutBlock::new(
+            "Indented continuation of the same paragraph.",
+            Rect::new(110.0, 110.0, 410.0, 15.0),
+        );
+
+        let (result, snapshot) = analyze_layout_with_snapshot(vec![heading, para1, para2], 600.0);
+        let text = result
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(snapshot.column_splits, 0);
+        assert_eq!(text[0], "Section Title");
+        assert_eq!(text[1], "Opening line of a single-column paragraph.");
+        assert_eq!(text[2], "Indented continuation of the same paragraph.");
     }
 
     #[test]
