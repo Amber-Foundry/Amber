@@ -76,14 +76,36 @@ pub(crate) fn attaches_to_following_word(text: &str) -> bool {
         .is_some_and(|c| ATTACHES_FOLLOWING.contains(c))
 }
 
+/// True when `next` continues a decimal numeral after `prev` (e.g. `2.` + `5` → `2.5`).
+pub(crate) fn is_decimal_continuation(prev: &str, next: &str) -> bool {
+    let prev = prev.trim_end();
+    let next = next.trim_start();
+    prev.ends_with('.')
+        && prev
+            .strip_suffix('.')
+            .and_then(|s| s.chars().last())
+            .is_some_and(|c| c.is_ascii_digit())
+        && next.chars().next().is_some_and(|c| c.is_ascii_digit())
+}
+
 /// True when typography requires a space after `prev` before `next` (e.g. `,` + `world`).
 fn requires_following_word_space(prev: &str, next: &str) -> bool {
     let prev = prev.trim_end();
     let next = next.trim_start();
-    prev.chars()
-        .last()
-        .is_some_and(|c| REQUIRES_SPACE_AFTER.contains(c))
-        && next.chars().next().is_some_and(|c| c.is_alphanumeric())
+    let last = match prev.chars().last() {
+        Some(c) => c,
+        None => return false,
+    };
+    if !REQUIRES_SPACE_AFTER.contains(last) {
+        return false;
+    }
+    if !next.chars().next().is_some_and(|c| c.is_alphanumeric()) {
+        return false;
+    }
+    if last == '.' && is_decimal_continuation(prev, next) {
+        return false;
+    }
+    true
 }
 
 fn letter_count(text: &str) -> usize {
@@ -233,6 +255,9 @@ pub(crate) fn should_insert_inter_object_space(ctx: &InterObjectJoinContext<'_>)
         return false;
     }
     if attaches_to_previous_word(next) || attaches_to_following_word(prev) {
+        return false;
+    }
+    if is_decimal_continuation(prev, next) {
         return false;
     }
     if requires_following_word_space(prev, next) {
@@ -409,6 +434,15 @@ mod tests {
         assert!(typographic_join("said", "'Hello", gap, 3.0));
         assert!(!typographic_join("word", "\"", 2.0, 3.0));
         assert!(assert_no_space_before_punctuation("He said \"Hello\"").is_ok());
+    }
+
+    #[test]
+    fn typographic_decimal_point_no_space() {
+        let gap = 12.0_f32 * 0.3;
+        assert!(!typographic_join("2.", "5", gap, 3.0));
+        assert!(!typographic_join("0.", "0012", gap, 3.0));
+        assert!(typographic_join("end.", "Next", gap, 3.0));
+        assert!(typographic_join("Fig.", "2", gap, 3.0));
     }
 
     #[test]

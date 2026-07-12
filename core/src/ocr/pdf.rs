@@ -1,6 +1,7 @@
 use crate::ingest::text::{
-    attaches_to_previous_word, has_spurious_punctuation_spacing, is_punctuation_only,
-    should_insert_inter_object_space, word_gap_threshold, InterObjectJoinContext,
+    attaches_to_previous_word, has_spurious_punctuation_spacing, is_decimal_continuation,
+    is_punctuation_only, should_insert_inter_object_space, word_gap_threshold,
+    InterObjectJoinContext,
 };
 use crate::ocr::engine::OcrError;
 use crate::ocr::ocr_models_dir;
@@ -460,7 +461,10 @@ fn reconstruct_text_from_char_boxes(char_boxes: &[PdfCharBox], font_size: f32) -
         if let Some(prev) = prev_right {
             let gap = b.left - prev;
             if gap > space_threshold && !attaches_to_previous_word(&b.ch.to_string()) {
-                result.push(' ');
+                let next = b.ch.to_string();
+                if !is_decimal_continuation(&result, &next) {
+                    result.push(' ');
+                }
             }
         }
         result.push(b.ch);
@@ -794,7 +798,14 @@ fn merge_nearby_line_run(blocks: Vec<RawLayoutBlock>) -> Option<RawLayoutBlock> 
                         .max(average_char_width(&prev_block.text, prev_block.bbox.width))
                         * 2.0
                 });
-                let prev_join_text = merge_object_text_for_line(&prev_block.text).unwrap_or("");
+                let immediate_prev = merge_object_text_for_line(&prev_block.text).unwrap_or("");
+                let accumulated_prev = merged_text.trim_end();
+                let next_trim = text.trim_start();
+                let prev_join_text = if is_decimal_continuation(accumulated_prev, next_trim) {
+                    accumulated_prev
+                } else {
+                    immediate_prev
+                };
                 let join_ctx = InterObjectJoinContext {
                     prev_text: prev_join_text,
                     next_text: text,
@@ -1189,6 +1200,35 @@ mod tests {
         let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].text, "Maximum");
+    }
+
+    #[test]
+    fn test_merge_per_glyph_decimal_without_space() {
+        let font_size = 12.0;
+        let char_w = 8.0;
+        let gap = font_size * 0.3;
+        let blocks = vec![
+            RawLayoutBlock::new("2", Rect::new(10.0, 20.0, char_w, font_size))
+                .with_font_size(font_size),
+            RawLayoutBlock::new(
+                ".",
+                Rect::new(10.0 + char_w + gap, 20.0, char_w * 0.4, font_size),
+            )
+            .with_font_size(font_size),
+            RawLayoutBlock::new(
+                "5",
+                Rect::new(
+                    10.0 + char_w + gap + char_w * 0.4 + gap,
+                    20.0,
+                    char_w,
+                    font_size,
+                ),
+            )
+            .with_font_size(font_size),
+        ];
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "2.5");
     }
 
     #[test]
