@@ -45,9 +45,22 @@ pub(crate) fn is_punctuation_only(text: &str) -> bool {
     !trimmed.is_empty() && trimmed.chars().all(|c| ATTACHES_PREVIOUS.contains(c))
 }
 
+/// True when `text` begins with an opening quote followed by a word character.
+fn is_opening_quote_fragment(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let mut chars = trimmed.chars();
+    match chars.next() {
+        Some('"' | '\'') => chars.next().is_some_and(|c| c.is_alphanumeric()),
+        _ => false,
+    }
+}
+
 /// True when `text` should join without a leading space (e.g. `,` or `.` fragments).
 pub(crate) fn attaches_to_previous_word(text: &str) -> bool {
     let trimmed = text.trim();
+    if is_opening_quote_fragment(trimmed) {
+        return false;
+    }
     trimmed
         .chars()
         .next()
@@ -292,12 +305,18 @@ pub(crate) fn has_spurious_punctuation_spacing(text: &str) -> bool {
 /// Fail on `word ,` or `word .` patterns (focused extraction-hygiene assertions).
 pub fn assert_no_space_before_punctuation(text: &str) -> Result<(), String> {
     for (idx, window) in text.as_bytes().windows(2).enumerate() {
-        if window[0] == b' ' && ATTACHES_PREVIOUS.as_bytes().contains(&window[1]) {
-            return Err(format!(
-                "space before punctuation '{}' at byte index {}",
-                window[1] as char,
-                idx + 1
-            ));
+        if window[0] == b' ' {
+            let rest = &text[idx + 1..];
+            if is_opening_quote_fragment(rest) {
+                continue;
+            }
+            if ATTACHES_PREVIOUS.as_bytes().contains(&window[1]) {
+                return Err(format!(
+                    "space before punctuation '{}' at byte index {}",
+                    window[1] as char,
+                    idx + 1
+                ));
+            }
         }
     }
     for (idx, window) in text.as_bytes().windows(2).enumerate() {
@@ -381,6 +400,15 @@ mod tests {
         assert!(typographic_join("word", "next", 5.0, 2.0));
         assert!(!typographic_join("(", "word", 5.0, 2.0));
         assert!(!typographic_join("end", ")", 5.0, 2.0));
+    }
+
+    #[test]
+    fn typographic_space_before_opening_quote() {
+        let gap = 12.0_f32 * 0.3;
+        assert!(typographic_join("said", "\"Hello", gap, 3.0));
+        assert!(typographic_join("said", "'Hello", gap, 3.0));
+        assert!(!typographic_join("word", "\"", 2.0, 3.0));
+        assert!(assert_no_space_before_punctuation("He said \"Hello\"").is_ok());
     }
 
     #[test]

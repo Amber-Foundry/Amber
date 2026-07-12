@@ -655,7 +655,7 @@ fn merge_text_objects_on_visual_lines(
     let mut lines: Vec<Line> = Vec::new();
     for block in blocks {
         let center_y = block.bbox.y + (block.bbox.height / 2.0);
-        let punct_fragment = is_punctuation_only(block.text.trim()) || block.text.trim().len() <= 2;
+        let punct_fragment = is_punctuation_only(block.text.trim());
         if let Some(line) = lines.iter_mut().find(|line| {
             let mut tolerance = (line.max_height.min(block.bbox.height) * 0.6).max(2.0);
             if punct_fragment {
@@ -1307,5 +1307,22 @@ mod tests {
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[1].text, "tail");
+    }
+
+    #[test]
+    fn test_merge_short_word_does_not_widen_line_tolerance() {
+        let font_size = 12.0;
+        let blocks = vec![
+            RawLayoutBlock::new("Dr", Rect::new(10.0, 20.0, 14.0, font_size))
+                .with_font_size(font_size),
+            RawLayoutBlock::new("Smith", Rect::new(10.0, 30.0, 30.0, font_size))
+                .with_font_size(font_size),
+        ];
+
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].text, "Dr");
+        assert_eq!(merged[1].text, "Smith");
     }
 }
