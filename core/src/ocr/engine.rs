@@ -29,7 +29,7 @@ pub struct OcrTextBlock {
     pub text: String,
     pub bbox: Rect,
     /// Recognition quality score in [0.0, 1.0]: Paddle CTCLabelDecode mean per-emitted-token peak
-    /// probability. See `core/tests/fixtures/ocr_confidence/PHASE_A.md`.
+    /// probability. See `core/tests/fixtures/README.md` (OCR confidence calibration).
     pub confidence: f32,
 }
 

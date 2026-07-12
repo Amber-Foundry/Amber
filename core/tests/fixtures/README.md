@@ -53,7 +53,7 @@ For an unseen PDF, run the demo with `AMBER_INGEST_DEBUG=1` and verify:
 
 ## OCR confidence calibration fixtures
 
-Golden logit vectors for [`bundled.rs`](../../src/ocr/bundled.rs) `decode_ctc_logits_detailed` unit tests live in `ocr_confidence/`. Regenerate diagnostics with `AMBER_OCR_CONF_DEBUG=1` and `scripts/ocr_rec_parity.py`.
+Golden logit vectors for [`bundled.rs`](../../src/ocr/bundled.rs) `decode_ctc_logits_detailed` unit tests live in `ocr_confidence/`. PP-OCRv6 `rec.onnx` emits **softmax probabilities** (not raw logits); block `confidence` is the mean per-emitted-token peak probability (Paddle CTCLabelDecode) — do not re-softmax. Token margin is diagnostic-only (`AMBER_OCR_CONF_DEBUG`). Local spike notes: `test-results/ocr-confidence-spike/` (gitignored). Regenerate diagnostics with `AMBER_OCR_CONF_DEBUG=1` and `scripts/ocr_rec_parity.py`.
 
 Regenerate form fixtures with `py -3.13 core/tests/fixtures/write_form_fixtures.py` (requires `pikepdf` + `Pillow`).
 

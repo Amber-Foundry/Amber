@@ -243,8 +243,9 @@ pub enum RecOutputKind {
 /// Result of CTC greedy decode with diagnostic scores.
 ///
 /// `confidence` is always Paddle CTCLabelDecode semantics: arithmetic mean of per-emitted-token
-/// peak probabilities in [0, 1]. See `core/tests/fixtures/ocr_confidence/PHASE_A.md` for why
-/// this single metric was chosen after the Phase A spike (Path A / B1 — no per-block switching).
+/// peak probabilities in [0, 1]. PP-OCRv6 `rec.onnx` emits softmax probabilities (not logits);
+/// detect `RecOutputKind::Probabilities` and use the peak directly — re-softmaxing collapsed
+/// scores to ~1/vocab. See `core/tests/fixtures/README.md` (OCR confidence calibration).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CtcDecodeResult {
     pub text: String,
@@ -882,8 +883,8 @@ mod tests {
     /// Phase A validation: preamble OCR block must outrank seal garbage on constitution page 1
     /// (PDF page index 1 — the preamble scan, not the cover).
     ///
-    /// Recorded 2026-07-12 spike (Path A / B1): seal `DelheJeoble` conf=0.7316,
-    /// preamble `WethePeopleofthe...` conf=0.9997. See PHASE_A.md.
+    /// Recorded 2026-07-12 manual validation: seal `DelheJeoble` conf=0.7316,
+    /// preamble `WethePeopleofthe...` conf=0.9997.
     #[test]
     #[ignore = "requires downloaded OCR models and constitution.pdf (set CONSTITUTION_PDF)"]
     fn test_real_model_constitution_discrimination() -> Result<(), Box<dyn std::error::Error>> {
