@@ -973,25 +973,20 @@ pub fn chunk_ingest_blocks(
 }
 
 fn calculate_chunk_metrics(blocks: &[&IngestBlock]) -> (Option<f32>, bool) {
-    let mut ocr_sum = 0.0f32;
-    let mut ocr_count = 0usize;
     let mut has_tables = false;
 
     for block in blocks {
-        if let Some(conf) = block.confidence {
-            ocr_sum += conf;
-            ocr_count += 1;
-        }
         if block.block_type == crate::ingest::layout::BlockType::Table {
             has_tables = true;
         }
     }
 
-    let avg_ocr = if ocr_count > 0 {
-        Some(ocr_sum / (ocr_count as f32))
-    } else {
-        None
-    };
+    let entries = blocks.iter().filter_map(|block| {
+        block
+            .confidence
+            .map(|confidence| (block.recognized_text.as_str(), confidence))
+    });
+    let avg_ocr = crate::ocr::engine::char_weighted_confidence(entries);
 
     (avg_ocr, has_tables)
 }
@@ -1025,6 +1020,7 @@ mod tests {
                     crate::ingest::layout::BlockType::Body
                 };
                 IngestBlock {
+                    recognized_text: s.to_string(),
                     formatted_text: s.to_string(),
                     block_type,
                     confidence: None,
@@ -1328,9 +1324,82 @@ mod tests {
     }
 
     #[test]
+    fn calculate_chunk_metrics_char_weighted_prefers_large_block() {
+        let paragraph = IngestBlock {
+            recognized_text: "A".repeat(200),
+            formatted_text: "A".repeat(200),
+            block_type: crate::ingest::layout::BlockType::Body,
+            confidence: Some(0.95),
+            page_index: 0,
+            fragment: false,
+        };
+        let speck = IngestBlock {
+            recognized_text: "?".to_string(),
+            formatted_text: "?".to_string(),
+            block_type: crate::ingest::layout::BlockType::Footer,
+            confidence: Some(0.01),
+            page_index: 0,
+            fragment: false,
+        };
+        let blocks = vec![&paragraph, &speck];
+        let (ocr_conf, _) = calculate_chunk_metrics(&blocks);
+        let ocr_conf = match ocr_conf {
+            Some(value) => value,
+            None => panic!("expected chunk ocr confidence"),
+        };
+        assert!(
+            ocr_conf > 0.90,
+            "large paragraph should dominate speck: {ocr_conf}"
+        );
+    }
+
+    #[test]
+    fn calculate_chunk_metrics_hybrid_excludes_digital_blocks() {
+        let digital = IngestBlock {
+            recognized_text: "A".repeat(500),
+            formatted_text: "A".repeat(500),
+            block_type: crate::ingest::layout::BlockType::Body,
+            confidence: None,
+            page_index: 0,
+            fragment: false,
+        };
+        let ocr_high = IngestBlock {
+            recognized_text: "High confidence OCR body.".to_string(),
+            formatted_text: "High confidence OCR body.".to_string(),
+            block_type: crate::ingest::layout::BlockType::Body,
+            confidence: Some(0.9),
+            page_index: 0,
+            fragment: false,
+        };
+        let ocr_low = IngestBlock {
+            recognized_text: "Lo".to_string(),
+            formatted_text: "Lo".to_string(),
+            block_type: crate::ingest::layout::BlockType::Body,
+            confidence: Some(0.1),
+            page_index: 0,
+            fragment: false,
+        };
+        let blocks = vec![&digital, &ocr_high, &ocr_low];
+        let (ocr_conf, _) = calculate_chunk_metrics(&blocks);
+        let expected = match crate::ocr::engine::char_weighted_confidence([
+            (ocr_high.recognized_text.as_str(), 0.9),
+            (ocr_low.recognized_text.as_str(), 0.1),
+        ]) {
+            Some(value) => value,
+            None => panic!("expected char-weighted confidence for ocr blocks"),
+        };
+        let ocr_conf = match ocr_conf {
+            Some(value) => value,
+            None => panic!("expected hybrid chunk confidence"),
+        };
+        assert!((ocr_conf - expected).abs() < 1e-4);
+    }
+
+    #[test]
     fn chunk_tracks_full_heading_context_fragment_and_source_pages() {
         let blocks = vec![
             IngestBlock {
+                recognized_text: "Full Document Title".to_string(),
                 formatted_text: "# Full Document Title".to_string(),
                 block_type: crate::ingest::layout::BlockType::Heading(1),
                 confidence: None,
@@ -1338,6 +1407,7 @@ mod tests {
                 fragment: false,
             },
             IngestBlock {
+                recognized_text: "x = a + b / c".to_string(),
                 formatted_text: "x = a + b / c".to_string(),
                 block_type: crate::ingest::layout::BlockType::Body,
                 confidence: None,

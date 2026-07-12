@@ -7,12 +7,39 @@ use crate::ocr::engine::Rect;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct IngestBlock {
+    /// Pre-markdown layout text used for OCR confidence weighting (not display).
+    #[serde(default)]
+    pub recognized_text: String,
     pub formatted_text: String,
     pub block_type: BlockType,
     pub confidence: Option<f32>,
     pub page_index: usize,
     #[serde(default)]
     pub fragment: bool,
+}
+
+impl IngestBlock {
+    fn from_layout_block(
+        recognized_text: &str,
+        formatted_text: String,
+        block_type: BlockType,
+        confidence: Option<f32>,
+        page_index: usize,
+        fragment: bool,
+    ) -> Self {
+        debug_assert!(
+            confidence.is_none() || !recognized_text.trim().is_empty(),
+            "OCR-confidence block must have non-empty recognized_text"
+        );
+        Self {
+            recognized_text: recognized_text.to_string(),
+            formatted_text,
+            block_type,
+            confidence,
+            page_index,
+            fragment,
+        }
+    }
 }
 
 /// Assembles a sequential vector of layout `TextBlock`s into a clean Markdown document string.
@@ -72,13 +99,14 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
         flush_pending_body(&mut pending_body, &mut out, page_index);
 
         if matches!(block.block_type, BlockType::Header | BlockType::Footer) {
-            out.push(IngestBlock {
-                formatted_text: collapse_internal_whitespace_block(text),
-                block_type: block.block_type,
-                confidence: block.confidence,
+            out.push(IngestBlock::from_layout_block(
+                text,
+                collapse_internal_whitespace_block(text),
+                block.block_type,
+                block.confidence,
                 page_index,
-                fragment: block.fragment,
-            });
+                block.fragment,
+            ));
             continue;
         }
 
@@ -89,16 +117,18 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
             }
             BlockType::ListItem => format_list_item(text),
             BlockType::Header | BlockType::Footer => text.to_string(),
+            // Table layout text may already include grid separators (|, tabs, newlines).
             BlockType::Table | BlockType::Body => text.to_string(),
         };
 
-        out.push(IngestBlock {
-            formatted_text: collapse_internal_whitespace_block(&formatted),
-            block_type: block.block_type,
-            confidence: block.confidence,
+        out.push(IngestBlock::from_layout_block(
+            text,
+            collapse_internal_whitespace_block(&formatted),
+            block.block_type,
+            block.confidence,
             page_index,
-            fragment: block.fragment,
-        });
+            block.fragment,
+        ));
     }
 
     flush_pending_body(&mut pending_body, &mut out, page_index);
@@ -145,13 +175,14 @@ fn flush_pending_body(
 ) {
     if let Some(pending) = pending_body.take() {
         let confidence = pending.confidence();
-        out.push(IngestBlock {
-            formatted_text: collapse_internal_whitespace_block(&pending.text),
-            block_type: BlockType::Body,
+        out.push(IngestBlock::from_layout_block(
+            &pending.text,
+            collapse_internal_whitespace_block(&pending.text),
+            BlockType::Body,
             confidence,
             page_index,
-            fragment: pending.fragment,
-        });
+            pending.fragment,
+        ));
     }
 }
 
@@ -405,6 +436,7 @@ mod tests {
     fn test_markdown_assembler_list_items_cross_pages() {
         let blocks = vec![
             IngestBlock {
+                recognized_text: "Item 1 on Page 0".to_string(),
                 formatted_text: "- Item 1 on Page 0".to_string(),
                 block_type: BlockType::ListItem,
                 confidence: None,
@@ -412,6 +444,7 @@ mod tests {
                 fragment: false,
             },
             IngestBlock {
+                recognized_text: "Item 2 on Page 1".to_string(),
                 formatted_text: "- Item 2 on Page 1".to_string(),
                 block_type: BlockType::ListItem,
                 confidence: None,

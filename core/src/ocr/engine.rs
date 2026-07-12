@@ -46,25 +46,47 @@ impl OcrTextBlock {
     }
 }
 
+/// Character-weighted mean confidence in [0.0, 1.0].
+///
+/// Each entry is weighted by `max(text.chars().count(), 1)`. Returns `None` when there
+/// are no entries.
+pub fn char_weighted_confidence<'a>(
+    entries: impl IntoIterator<Item = (&'a str, f32)>,
+) -> Option<f32> {
+    let mut weighted_sum = 0.0f32;
+    let mut weight_total = 0.0f32;
+
+    for (text, confidence) in entries {
+        let weight = text.chars().count().max(1) as f32;
+        let confidence = confidence.clamp(0.0, 1.0);
+        weighted_sum += confidence * weight;
+        weight_total += weight;
+    }
+
+    if weight_total <= 0.0 {
+        None
+    } else {
+        Some((weighted_sum / weight_total).clamp(0.0, 1.0))
+    }
+}
+
 /// Aggregated output from an OCR recognition pass over an image.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OcrOutput {
     pub blocks: Vec<OcrTextBlock>,
-    /// Average confidence rating across all text blocks, constrained to [0.0, 1.0].
+    /// Character-weighted mean confidence across text blocks, constrained to [0.0, 1.0].
     pub avg_confidence: f32,
 }
 
 impl OcrOutput {
     pub fn new(blocks: Vec<OcrTextBlock>) -> Self {
-        let avg_confidence = if blocks.is_empty() {
-            1.0
-        } else {
-            let total: f32 = blocks.iter().map(|b| b.confidence).sum();
-            total / (blocks.len() as f32)
-        };
+        let avg_confidence =
+            char_weighted_confidence(blocks.iter().map(|b| (b.text.as_str(), b.confidence)))
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0);
         Self {
             blocks,
-            avg_confidence: avg_confidence.clamp(0.0, 1.0),
+            avg_confidence,
         }
     }
 }
@@ -138,6 +160,31 @@ mod tests {
         let output = OcrOutput::new(vec![]);
         assert_eq!(output.blocks.len(), 0);
         assert_eq!(output.avg_confidence, 1.0);
+    }
+
+    #[test]
+    fn test_char_weighted_confidence_empty_and_whitespace() {
+        let empty = char_weighted_confidence(std::iter::empty::<(&str, f32)>());
+        assert_eq!(empty, None);
+
+        let whitespace = match char_weighted_confidence(std::iter::once(("   ", 0.42f32))) {
+            Some(value) => value,
+            None => panic!("whitespace block should contribute one vote"),
+        };
+        assert!((whitespace - 0.42).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_ocr_output_char_weighted_resists_speckle() {
+        let big_text = "x".repeat(200);
+        let big = OcrTextBlock::new(big_text, Rect::new(0.0, 0.0, 400.0, 40.0), 0.95);
+        let speck = OcrTextBlock::new("?", Rect::new(0.0, 50.0, 2.0, 2.0), 0.01);
+        let output = OcrOutput::new(vec![big, speck]);
+        assert!(
+            output.avg_confidence > 0.90,
+            "speckle should not tank weighted avg: {}",
+            output.avg_confidence
+        );
     }
 
     #[test]

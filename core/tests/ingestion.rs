@@ -15,7 +15,7 @@ use amber_lib::ingest::text::{
 use amber_lib::ingest::{
     chunk_ingest_blocks, derive_document_extraction_path, IngestJobConfig, IngestJobEngine,
 };
-use amber_lib::ocr::engine::Rect;
+use amber_lib::ocr::engine::{char_weighted_confidence, Rect};
 use amber_lib::ocr::pdf::{PdfPageType, PdfRasterizer, PdfRasterizerConfig};
 
 const LEFT_COL_ONE: &str = "Left column line one for integration";
@@ -259,6 +259,22 @@ fn mock_ocr_blocks_layout_markdown_and_chunk_metrics() -> Result<(), Box<dyn Err
     );
 
     let ingest_blocks = assemble_markdown_blocks(&layout_blocks, 0);
+    for block in &ingest_blocks {
+        if block.confidence.is_some() {
+            assert!(
+                !block.recognized_text.trim().is_empty(),
+                "confidence-bearing block must have recognized_text"
+            );
+            if matches!(block.block_type, BlockType::Heading(_)) {
+                assert!(
+                    !block.recognized_text.starts_with('#'),
+                    "recognized_text must be pre-markdown: {:?}",
+                    block.recognized_text
+                );
+            }
+        }
+    }
+
     let markdown = join_ingest_blocks(&ingest_blocks);
     assert!(
         markdown.contains("# MOCK OCR TITLE") || markdown.contains("MOCK OCR TITLE"),
@@ -281,9 +297,15 @@ fn mock_ocr_blocks_layout_markdown_and_chunk_metrics() -> Result<(), Box<dyn Err
     let ocr_conf = chunk
         .ocr_confidence
         .ok_or("expected chunk ocr_confidence from mock OCR blocks")?;
+    let expected = char_weighted_confidence(ingest_blocks.iter().filter_map(|block| {
+        block
+            .confidence
+            .map(|confidence| (block.recognized_text.as_str(), confidence))
+    }))
+    .ok_or("expected char-weighted confidence from mock OCR blocks")?;
     assert!(
-        ocr_conf > 0.6 && ocr_conf < 0.85,
-        "unexpected averaged confidence: {ocr_conf}"
+        (ocr_conf - expected).abs() < 1e-4,
+        "unexpected char-weighted confidence: got {ocr_conf}, expected {expected}"
     );
     assert!(chunk.tables_unstructured, "expected table flag on chunk");
 
