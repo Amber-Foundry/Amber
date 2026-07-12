@@ -28,7 +28,9 @@ impl Rect {
 pub struct OcrTextBlock {
     pub text: String,
     pub bbox: Rect,
-    /// Model confidence rating for this text block, constrained to [0.0, 1.0].
+    /// Recognition quality score in [0.0, 1.0]. Usually mean per-token peak probability
+    /// (Paddle CTCLabelDecode). When posteriors are near-uniform (~1/vocab), falls back to
+    /// a calibrated mean token margin `(p1 - p2)`.
     pub confidence: f32,
 }
 

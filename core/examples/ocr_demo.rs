@@ -6,6 +6,15 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
+fn format_confidence_percent(conf: f32) -> String {
+    let pct = conf * 100.0;
+    if pct < 0.01 {
+        format!("{pct:.4}%")
+    } else {
+        format!("{pct:.2}%")
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -51,14 +60,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let progress_handle = thread::spawn(move || {
             while let Ok(prog) = rx.recv() {
                 println!(
-                    "  [Job Progress] Page {}/{} - Status: {} (Digital: {}, OCR: {}, Hybrid: {}, Conf: {:.1}%)",
+                    "  [Job Progress] Page {}/{} - Status: {} (Digital: {}, OCR: {}, Hybrid: {}, Conf: {})",
                     prog.current_page,
                     prog.total_pages,
                     prog.status,
                     prog.digital_pages,
                     prog.ocr_pages,
                     prog.hybrid_pages,
-                    prog.avg_ocr_confidence * 100.0
+                    format_confidence_percent(prog.avg_ocr_confidence)
                 );
             }
         });
@@ -77,8 +86,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         output_log.push_str(&format!("OCR Pages:     {}\n", result.ocr_pages));
         output_log.push_str(&format!("Hybrid Pages:  {}\n", result.hybrid_pages));
         output_log.push_str(&format!(
-            "Avg Confidence: {:.2}%\n",
-            result.avg_ocr_confidence * 100.0
+            "Avg Confidence: {}\n",
+            format_confidence_percent(result.avg_ocr_confidence)
         ));
         output_log.push_str(&format!("Total Chunks:  {}\n", result.chunks.len()));
 
@@ -116,8 +125,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         output_log.push_str("==================================================\n");
         for chunk in &result.chunks {
             output_log.push_str(&format!(
-                "\n--- [Chunk #{}] (Tokens: {}, Heading: {:?}, Type: {}) ---\n",
-                chunk.chunk_index, chunk.token_count, chunk.heading_context, chunk.chunk_type
+                "\n--- [Chunk #{}] (Tokens: {}, Heading: {:?}, Type: {}, OCR Conf: {}) ---\n",
+                chunk.chunk_index,
+                chunk.token_count,
+                chunk.heading_context,
+                chunk.chunk_type,
+                chunk
+                    .ocr_confidence
+                    .map(format_confidence_percent)
+                    .unwrap_or_else(|| "n/a".to_string())
             ));
             output_log.push_str(&chunk.text);
             output_log.push('\n');
@@ -162,8 +178,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         output_log.push_str("==================================================\n");
         output_log.push_str(&format!("Total Pages:   {}\n", result.total_pages));
         output_log.push_str(&format!(
-            "Avg Confidence: {:.2}%\n",
-            result.avg_ocr_confidence * 100.0
+            "Avg Confidence: {}\n",
+            format_confidence_percent(result.avg_ocr_confidence)
         ));
         output_log.push_str(&format!("Total Chunks:  {}\n", result.chunks.len()));
 
@@ -178,8 +194,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         output_log.push_str("==================================================\n");
         for chunk in &result.chunks {
             output_log.push_str(&format!(
-                "\n--- [Chunk #{}] (Tokens: {}, Heading: {:?}, Type: {}) ---\n",
-                chunk.chunk_index, chunk.token_count, chunk.heading_context, chunk.chunk_type
+                "\n--- [Chunk #{}] (Tokens: {}, Heading: {:?}, Type: {}, OCR Conf: {}) ---\n",
+                chunk.chunk_index,
+                chunk.token_count,
+                chunk.heading_context,
+                chunk.chunk_type,
+                chunk
+                    .ocr_confidence
+                    .map(format_confidence_percent)
+                    .unwrap_or_else(|| "n/a".to_string())
             ));
             output_log.push_str(&chunk.text);
             output_log.push('\n');

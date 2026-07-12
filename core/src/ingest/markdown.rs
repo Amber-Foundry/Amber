@@ -79,8 +79,9 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
                     pending.bbox = union_optional_rects(pending.bbox.take(), block.bbox.clone());
                     pending.fragment |= block.fragment;
                     if let Some(confidence) = block.confidence {
-                        pending.confidence_sum += confidence;
-                        pending.confidence_count += 1;
+                        let weight = text.chars().count().max(1) as f32;
+                        pending.confidence_weighted_sum += confidence * weight;
+                        pending.confidence_weight_total += weight;
                     }
                     continue;
                 }
@@ -141,27 +142,31 @@ struct PendingBody {
     /// Last fragment only — used for mid-word gap detection (not the union bbox).
     last_bbox: Option<Rect>,
     last_text: String,
-    confidence_sum: f32,
-    confidence_count: usize,
+    confidence_weighted_sum: f32,
+    confidence_weight_total: f32,
     fragment: bool,
 }
 
 impl PendingBody {
     fn new(text: &str, bbox: Option<Rect>, confidence: Option<f32>, fragment: bool) -> Self {
+        let weight = text.chars().count().max(1) as f32;
+        let (confidence_weighted_sum, confidence_weight_total) = confidence
+            .map(|c| (c * weight, weight))
+            .unwrap_or((0.0, 0.0));
         Self {
             text: text.to_string(),
             bbox: bbox.clone(),
             last_bbox: bbox,
             last_text: text.to_string(),
-            confidence_sum: confidence.unwrap_or(0.0),
-            confidence_count: usize::from(confidence.is_some()),
+            confidence_weighted_sum,
+            confidence_weight_total,
             fragment,
         }
     }
 
     fn confidence(&self) -> Option<f32> {
-        if self.confidence_count > 0 {
-            Some(self.confidence_sum / self.confidence_count as f32)
+        if self.confidence_weight_total > 0.0 {
+            Some(self.confidence_weighted_sum / self.confidence_weight_total)
         } else {
             None
         }
@@ -738,5 +743,35 @@ mod tests {
             0,
         );
         assert_eq!(side_by_side.len(), 2);
+    }
+
+    #[test]
+    fn pending_body_merge_char_weights_confidence() {
+        let blocks = vec![
+            TextBlock {
+                text: "Long paragraph body with many characters.".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(10.0, 100.0, 400.0, 14.0)),
+                confidence: Some(0.9),
+                fragment: false,
+            },
+            TextBlock {
+                text: "Short".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(10.0, 116.0, 40.0, 14.0)),
+                confidence: Some(0.1),
+                fragment: false,
+            },
+        ];
+        let assembled = assemble_markdown_blocks(&blocks, 0);
+        assert_eq!(assembled.len(), 1);
+        let conf = match assembled[0].confidence {
+            Some(value) => value,
+            None => panic!("merged body should have confidence"),
+        };
+        assert!(
+            conf > 0.8,
+            "char-weighted merge should favor long high-conf line, got {conf}"
+        );
     }
 }

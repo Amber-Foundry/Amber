@@ -51,6 +51,10 @@ For an unseen PDF, run the demo with `AMBER_INGEST_DEBUG=1` and verify:
 | `digital_vector_form_border.pdf` | Digital: vector path inside form, no nested images |
 | `scanned_single_page.pdf` | Image-only page for rasterization / `Ocr` classification |
 
+## OCR confidence calibration fixtures
+
+Golden logit vectors for [`bundled.rs`](../../src/ocr/bundled.rs) `decode_ctc_logits_detailed` unit tests live in `ocr_confidence/`. Regenerate spike notes with `AMBER_OCR_CONF_DEBUG=1` and `scripts/ocr_rec_parity.py`.
+
 Regenerate form fixtures with `py -3.13 core/tests/fixtures/write_form_fixtures.py` (requires `pikepdf` + `Pillow`).
 
 Extraction-hygiene fixtures (`digital_per_glyph_*`, `digital_word_fragment_line`) validate

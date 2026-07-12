@@ -232,35 +232,226 @@ impl BundledOcrEngine {
     }
 }
 
+/// How CRNN ONNX output values should be interpreted at each timestep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecOutputKind {
+    Logits,
+    Probabilities,
+    LogProbabilities,
+}
+
+/// Which signal was used for the block-level score in [0, 1].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfidenceMetric {
+    /// Arithmetic mean of per-emitted-token peak probabilities (Paddle CTCLabelDecode).
+    MeanTokenProbability,
+    /// Mean of `(p1 - p2)` per emitted token when probabilities are near-uniform (~1/C).
+    MeanTokenMargin,
+}
+
+/// Result of CTC greedy decode with diagnostic scores.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CtcDecodeResult {
+    pub text: String,
+    pub confidence: f32,
+    pub metric: ConfidenceMetric,
+    pub mean_probability: f32,
+    pub mean_margin: f32,
+}
+
+const BLANK_INDEX: usize = 0;
+/// When mean token probability stays below this, posteriors are near-uniform — use margin.
+const FLAT_PROB_THRESHOLD: f32 = 0.05;
+/// Minimum peak-to-runner-up probability gap to treat a block as discriminative on prob scale.
+const MIN_PROB_SPREAD: f32 = 0.002;
+/// Maps mean margin to [0, 1] for UI when probability scale is non-discriminative.
+const MARGIN_CALIBRATION_K: f32 = 80.0;
+
+fn ocr_confidence_debug_enabled() -> bool {
+    std::env::var("AMBER_OCR_CONF_DEBUG")
+        .ok()
+        .is_some_and(|v| v == "1")
+}
+
+fn classify_rec_timestep(values: &[f32]) -> RecOutputKind {
+    if values.is_empty() {
+        return RecOutputKind::Logits;
+    }
+    let sum: f32 = values.iter().sum();
+    let min = values.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if min >= 0.0 && max <= 1.0 && (sum - 1.0).abs() < 0.05 {
+        RecOutputKind::Probabilities
+    } else if max <= 0.0 {
+        RecOutputKind::LogProbabilities
+    } else {
+        RecOutputKind::Logits
+    }
+}
+
+fn softmax_peak_and_margin(values: &[f32]) -> (f32, f32, f32) {
+    let mut max_val = f32::NEG_INFINITY;
+    let mut max_idx = 0usize;
+    for (idx, &val) in values.iter().enumerate() {
+        if val > max_val {
+            max_val = val;
+            max_idx = idx;
+        }
+    }
+    let mut exp_sum = 0.0f32;
+    for &val in values {
+        exp_sum += (val - max_val).exp();
+    }
+    let peak = if exp_sum > 0.0 {
+        (1.0 / exp_sum).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let mut runner_up = f32::NEG_INFINITY;
+    for (idx, &val) in values.iter().enumerate() {
+        if idx != max_idx && val > runner_up {
+            runner_up = val;
+        }
+    }
+    let runner_up_prob = if runner_up.is_finite() && exp_sum > 0.0 {
+        ((runner_up - max_val).exp() / exp_sum).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let logit_sep = if runner_up.is_finite() {
+        max_val - runner_up
+    } else {
+        0.0
+    };
+    (peak, (peak - runner_up_prob).max(0.0), logit_sep)
+}
+
+fn timestep_peak_and_margin(values: &[f32], kind: RecOutputKind) -> (f32, f32, f32) {
+    match kind {
+        RecOutputKind::Logits => softmax_peak_and_margin(values),
+        RecOutputKind::Probabilities => {
+            let mut max_val = f32::NEG_INFINITY;
+            let mut max_idx = 0usize;
+            for (idx, &val) in values.iter().enumerate() {
+                if val > max_val {
+                    max_val = val;
+                    max_idx = idx;
+                }
+            }
+            let peak = max_val.clamp(0.0, 1.0);
+            let mut runner_up = 0.0f32;
+            for (idx, &val) in values.iter().enumerate() {
+                if idx != max_idx {
+                    runner_up = runner_up.max(val);
+                }
+            }
+            (peak, (peak - runner_up).max(0.0), peak - runner_up)
+        }
+        RecOutputKind::LogProbabilities => {
+            let mut max_log = f32::NEG_INFINITY;
+            for &val in values {
+                if val > max_log {
+                    max_log = val;
+                }
+            }
+            let mut exp_sum = 0.0f32;
+            for &val in values {
+                exp_sum += (val - max_log).exp();
+            }
+            let mut max_idx = 0usize;
+            let mut max_val = f32::NEG_INFINITY;
+            for (idx, &val) in values.iter().enumerate() {
+                if val > max_val {
+                    max_val = val;
+                    max_idx = idx;
+                }
+            }
+            let peak = if exp_sum > 0.0 {
+                ((max_val - max_log).exp() / exp_sum).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let mut runner_up_log = f32::NEG_INFINITY;
+            for (idx, &val) in values.iter().enumerate() {
+                if idx != max_idx && val > runner_up_log {
+                    runner_up_log = val;
+                }
+            }
+            let runner_up_prob = if runner_up_log.is_finite() && exp_sum > 0.0 {
+                ((runner_up_log - max_log).exp() / exp_sum).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (
+                peak,
+                (peak - runner_up_prob).max(0.0),
+                if runner_up_log.is_finite() {
+                    max_val - runner_up_log
+                } else {
+                    0.0
+                },
+            )
+        }
+    }
+}
+
+fn calibrate_margin(mean_margin: f32) -> f32 {
+    (1.0 - (-MARGIN_CALIBRATION_K * mean_margin.max(0.0)).exp()).clamp(0.0, 1.0)
+}
+
+fn choose_block_confidence(
+    mean_probability: f32,
+    prob_spread: f32,
+    mean_margin: f32,
+) -> (f32, ConfidenceMetric) {
+    let prob_discriminative =
+        mean_probability >= FLAT_PROB_THRESHOLD || prob_spread >= MIN_PROB_SPREAD;
+    if prob_discriminative {
+        (
+            mean_probability.clamp(0.0, 1.0),
+            ConfidenceMetric::MeanTokenProbability,
+        )
+    } else {
+        (
+            calibrate_margin(mean_margin),
+            ConfidenceMetric::MeanTokenMargin,
+        )
+    }
+}
+
+/// Paddle-style CTC greedy decode with output-kind detection and margin fallback.
 pub fn decode_ctc_logits(
     logits: &[f32],
     seq_len: usize,
     num_classes: usize,
     vocab: &[String],
 ) -> (String, f32) {
-    if seq_len == 0 || num_classes == 0 {
-        return (String::new(), 1.0);
+    let result = decode_ctc_logits_detailed(logits, seq_len, num_classes, vocab);
+    (result.text, result.confidence)
+}
+
+pub fn decode_ctc_logits_detailed(
+    preds: &[f32],
+    seq_len: usize,
+    num_classes: usize,
+    vocab: &[String],
+) -> CtcDecodeResult {
+    if seq_len == 0 || num_classes == 0 || preds.len() < seq_len * num_classes {
+        return CtcDecodeResult {
+            text: String::new(),
+            confidence: 0.0,
+            metric: ConfidenceMetric::MeanTokenProbability,
+            mean_probability: 0.0,
+            mean_margin: 0.0,
+        };
     }
 
-    if logits.len() < seq_len * num_classes {
-        return (String::new(), 1.0);
-    }
+    let kind = classify_rec_timestep(&preds[..num_classes]);
 
-    let mut recognized_text = String::new();
-    let mut prev_index = usize::MAX;
-    let mut conf_sum = 0.0f32;
-    let mut token_count = 0usize;
-
-    // Standard PaddleOCR / RapidOCR CTC decoding convention:
-    // Class 0 is BLANK.
-    // Class 1..=vocab.len() maps to vocab[class_idx - 1].
-    let blank_index = 0usize;
-
+    let mut indices = Vec::with_capacity(seq_len);
     for t in 0..seq_len {
-        let offset = t * num_classes;
-        let slice = &logits[offset..offset + num_classes];
-
-        let mut max_idx = 0;
+        let slice = &preds[t * num_classes..(t + 1) * num_classes];
+        let mut max_idx = 0usize;
         let mut max_val = f32::NEG_INFINITY;
         for (idx, &val) in slice.iter().enumerate() {
             if val > max_val {
@@ -268,37 +459,117 @@ pub fn decode_ctc_logits(
                 max_idx = idx;
             }
         }
-
-        let prob = {
-            let mut exp_sum = 0.0f32;
-            for &val in slice {
-                exp_sum += (val - max_val).exp();
-            }
-            if exp_sum > 0.0 {
-                (1.0 / exp_sum).clamp(0.0, 1.0)
-            } else {
-                0.5
-            }
-        };
-
-        if max_idx != blank_index && max_idx != prev_index && max_idx > 0 {
-            if let Some(ch) = vocab.get(max_idx - 1) {
-                recognized_text.push_str(ch);
-                conf_sum += prob;
-                token_count += 1;
-            }
-        }
-
-        prev_index = max_idx;
+        indices.push(max_idx);
     }
 
-    let avg_conf = if token_count > 0 {
-        (conf_sum / token_count as f32).clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
+    let mut selection = vec![true; seq_len];
+    for t in 1..seq_len {
+        selection[t] = indices[t] != indices[t - 1];
+    }
+    for t in 0..seq_len {
+        if indices[t] == BLANK_INDEX {
+            selection[t] = false;
+        }
+    }
 
-    (recognized_text, avg_conf)
+    let mut text = String::new();
+    let mut prob_sum = 0.0f32;
+    let mut margin_sum = 0.0f32;
+    let mut token_peaks = Vec::new();
+    let mut token_count = 0usize;
+
+    for t in 0..seq_len {
+        if !selection[t] {
+            continue;
+        }
+        let class_idx = indices[t];
+        if class_idx == 0 || class_idx > vocab.len() {
+            continue;
+        }
+        if let Some(ch) = vocab.get(class_idx - 1) {
+            text.push_str(ch);
+            let slice = &preds[t * num_classes..(t + 1) * num_classes];
+            let (peak, margin, _) = timestep_peak_and_margin(slice, kind);
+            prob_sum += peak;
+            margin_sum += margin;
+            token_peaks.push(peak);
+            token_count += 1;
+        }
+    }
+
+    if token_count == 0 {
+        return CtcDecodeResult {
+            text: String::new(),
+            confidence: 0.0,
+            metric: ConfidenceMetric::MeanTokenProbability,
+            mean_probability: 0.0,
+            mean_margin: 0.0,
+        };
+    }
+
+    let mean_probability = prob_sum / token_count as f32;
+    let mean_margin = margin_sum / token_count as f32;
+    let prob_spread = if token_peaks.is_empty() {
+        0.0
+    } else {
+        let min_p = token_peaks.iter().copied().fold(f32::INFINITY, f32::min);
+        let max_p = token_peaks
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        max_p - min_p
+    };
+    let (confidence, metric) = choose_block_confidence(mean_probability, prob_spread, mean_margin);
+
+    CtcDecodeResult {
+        text,
+        confidence,
+        metric,
+        mean_probability,
+        mean_margin,
+    }
+}
+
+fn log_rec_block_debug(
+    block_index: usize,
+    rec_shape: &[i64],
+    seq_len: usize,
+    num_classes: usize,
+    is_ct_layout: bool,
+    decode: &CtcDecodeResult,
+    preds: &[f32],
+) {
+    if !ocr_confidence_debug_enabled() {
+        return;
+    }
+    let t0 = &preds[..num_classes.min(preds.len())];
+    let kind = classify_rec_timestep(t0);
+    let t0_min = t0.iter().copied().fold(f32::INFINITY, f32::min);
+    let t0_max = t0.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let t0_sum: f32 = t0.iter().sum();
+    let (_, _, logit_sep) = timestep_peak_and_margin(t0, kind);
+    let preview: String = decode.text.chars().take(48).collect();
+    eprintln!(
+        "[ocr-rec] block={block_index} shape={rec_shape:?} seq={seq_len} classes={num_classes} \
+         ct_layout={is_ct_layout} kind={kind:?} t0_min={t0_min:.6} t0_max={t0_max:.6} t0_sum={t0_sum:.6} \
+         logit_sep={logit_sep:.4} metric={:?} mean_prob={:.8} mean_margin={:.8} conf={:.8} text={preview:?}",
+        decode.metric,
+        decode.mean_probability,
+        decode.mean_margin,
+        decode.confidence,
+    );
+}
+
+fn parse_rec_output_shape(rec_shape: &[i64]) -> Result<(usize, usize, bool), OcrError> {
+    match rec_shape {
+        [1, c, t] if *c > *t => Ok((*t as usize, *c as usize, true)),
+        [1, t, c] => Ok((*t as usize, *c as usize, false)),
+        [t, 1, c] => Ok((*t as usize, *c as usize, false)),
+        [t, c] => Ok((*t as usize, *c as usize, false)),
+        other => Err(OcrError::InferenceFailed(format!(
+            "unsupported CRNN output shape {other:?}; expected [1,T,C], [1,C,T], [T,1,C], or [T,C]"
+        ))),
+    }
 }
 
 impl OcrEngine for BundledOcrEngine {
@@ -339,7 +610,7 @@ impl OcrEngine for BundledOcrEngine {
         let mut text_blocks = Vec::with_capacity(bboxes.len());
         let (img_w, img_h) = image.dimensions();
 
-        for bbox in bboxes {
+        for (block_index, bbox) in bboxes.into_iter().enumerate() {
             let crop_x = (bbox.x.max(0.0) as u32).min(img_w.saturating_sub(1));
             let crop_y = (bbox.y.max(0.0) as u32).min(img_h.saturating_sub(1));
             let crop_w = (bbox.width as u32).min(img_w - crop_x).max(1);
@@ -368,13 +639,7 @@ impl OcrEngine for BundledOcrEngine {
                         OcrError::InferenceFailed(format!("failed extracting CRNN output: {err}"))
                     })?;
 
-            let (seq_len, num_classes, is_ct_layout) = match rec_shape {
-                [1, c, t] if *c > *t => (*t as usize, *c as usize, true),
-                [1, t, c] => (*t as usize, *c as usize, false),
-                [t, 1, c] => (*t as usize, *c as usize, false),
-                [t, c] => (*t as usize, *c as usize, false),
-                _ => (1, self.vocab.len() + 1, false),
-            };
+            let (seq_len, num_classes, is_ct_layout) = parse_rec_output_shape(rec_shape)?;
 
             let mut transposed_logits;
             let logits_slice = if is_ct_layout {
@@ -389,11 +654,22 @@ impl OcrEngine for BundledOcrEngine {
                 rec_data
             };
 
-            let (text, confidence) =
-                decode_ctc_logits(logits_slice, seq_len, num_classes, &self.vocab);
+            let decode =
+                decode_ctc_logits_detailed(logits_slice, seq_len, num_classes, &self.vocab);
+            if block_index < 3 {
+                log_rec_block_debug(
+                    block_index,
+                    rec_shape,
+                    seq_len,
+                    num_classes,
+                    is_ct_layout,
+                    &decode,
+                    logits_slice,
+                );
+            }
 
-            if !text.trim().is_empty() {
-                text_blocks.push(OcrTextBlock::new(text, bbox, confidence));
+            if !decode.text.trim().is_empty() {
+                text_blocks.push(OcrTextBlock::new(decode.text, bbox, decode.confidence));
             }
         }
 
@@ -471,27 +747,125 @@ mod tests {
     use super::*;
     use image::{ImageBuffer, Rgb};
 
+    fn sharp_logits_ab() -> Vec<f32> {
+        vec![
+            0.0, 10.0, 0.0, 0.0, // T0 -> A
+            0.0, 10.0, 0.0, 0.0, // T1 -> A (duplicate, collapsed)
+            0.0, 0.0, 10.0, 0.0, // T2 -> B
+        ]
+    }
+
     #[test]
     fn test_ctc_decoder_empty() {
         let (text, conf) = decode_ctc_logits(&[], 0, 0, &[]);
         assert_eq!(text, "");
-        assert_eq!(conf, 1.0);
+        assert_eq!(conf, 0.0);
     }
 
     #[test]
     fn test_ctc_decoder_basic() {
         let vocab = vec!["A".to_string(), "B".to_string(), "C".to_string()];
-        // 4 classes: 0=blank, 1=A, 2=B, 3=C
-        // Logits for 3 timesteps: A (class 1), A (class 1, duplicate collapsed), B (class 2)
-        let logits = vec![
-            0.0, 10.0, 0.0, 0.0, // T0 -> A
-            0.0, 10.0, 0.0, 0.0, // T1 -> A (duplicate, collapsed)
-            0.0, 0.0, 10.0, 0.0, // T2 -> B
-        ];
+        let logits = sharp_logits_ab();
 
         let (text, conf) = decode_ctc_logits(&logits, 3, 4, &vocab);
         assert_eq!(text, "AB");
         assert!(conf > 0.9);
+    }
+
+    #[test]
+    fn test_ctc_empty_emitted_returns_zero_confidence() {
+        let vocab = vec!["A".to_string()];
+        // All blank
+        let logits = vec![10.0, 0.0, 10.0, 0.0, 10.0, 0.0];
+        let result = decode_ctc_logits_detailed(&logits, 3, 2, &vocab);
+        assert_eq!(result.text, "");
+        assert_eq!(result.confidence, 0.0);
+    }
+
+    #[test]
+    fn test_ctc_paddle_duplicate_mask_parity() {
+        let vocab = vec!["A".to_string(), "B".to_string()];
+        // Indices: blank, A, A, B, blank -> selection emits A, B
+        let logits = vec![
+            10.0, 0.0, 0.0, // blank
+            0.0, 10.0, 0.0, // A
+            0.0, 10.0, 0.0, // A duplicate
+            0.0, 0.0, 10.0, // B
+            10.0, 0.0, 0.0, // blank
+        ];
+        let result = decode_ctc_logits_detailed(&logits, 5, 3, &vocab);
+        assert_eq!(result.text, "AB");
+        assert!(result.confidence > 0.9);
+        assert_eq!(result.metric, ConfidenceMetric::MeanTokenProbability);
+    }
+
+    #[test]
+    fn test_ctc_discriminates_peaked_vs_flat() {
+        let vocab = vec!["A".to_string(), "B".to_string()];
+        let peaked = sharp_logits_ab();
+        let peaked_result = decode_ctc_logits_detailed(&peaked, 3, 4, &vocab);
+
+        // Near-uniform logits (~1/4 per class after softmax)
+        let flat = vec![0.0f32; 3 * 4];
+        let flat_result = decode_ctc_logits_detailed(&flat, 3, 4, &vocab);
+
+        assert!(
+            peaked_result.confidence > flat_result.confidence * 5.0,
+            "peaked={} flat={}",
+            peaked_result.confidence,
+            flat_result.confidence
+        );
+    }
+
+    #[test]
+    fn test_ctc_probabilities_not_double_softmaxed() {
+        let vocab = vec!["A".to_string(), "B".to_string()];
+        // Already softmaxed: class 1 near 1.0
+        let probs = vec![
+            0.01, 0.97, 0.01, 0.01, 0.01, 0.97, 0.01, 0.01, 0.01, 0.01, 0.97, 0.01,
+        ];
+        let result = decode_ctc_logits_detailed(&probs, 3, 4, &vocab);
+        assert_eq!(result.text, "AB");
+        assert!(
+            result.confidence > 0.9,
+            "should use probability peak directly, got {}",
+            result.confidence
+        );
+        assert_eq!(result.metric, ConfidenceMetric::MeanTokenProbability);
+    }
+
+    #[test]
+    fn test_ctc_flat_logits_use_margin_metric() {
+        let vocab = vec!["A".to_string(); 100];
+        let num_classes = 101usize;
+        let seq_len = 3usize;
+
+        // Slightly peaked: class 1 wins by epsilon -> near-uniform softmax (~1/C)
+        let mut peaked_flat = vec![0.0f32; seq_len * num_classes];
+        for t in 0..seq_len {
+            peaked_flat[t * num_classes + 1] = 0.001;
+        }
+        let peaked_result = decode_ctc_logits_detailed(&peaked_flat, seq_len, num_classes, &vocab);
+
+        // More separated logits on same argmax path
+        let mut separated = vec![0.0f32; seq_len * num_classes];
+        for t in 0..seq_len {
+            separated[t * num_classes + 1] = 2.0;
+            separated[t * num_classes + 2] = -2.0;
+        }
+        let separated_result = decode_ctc_logits_detailed(&separated, seq_len, num_classes, &vocab);
+
+        assert_eq!(peaked_result.metric, ConfidenceMetric::MeanTokenMargin);
+        assert_eq!(
+            separated_result.metric,
+            ConfidenceMetric::MeanTokenProbability
+        );
+        assert!(
+            separated_result.confidence > peaked_result.confidence,
+            "separated={} peaked_flat={}",
+            separated_result.confidence,
+            peaked_result.confidence
+        );
     }
 
     #[test]
@@ -509,6 +883,15 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_rec_output_shape_rejects_unknown() {
+        match parse_rec_output_shape(&[2, 3, 4, 5]) {
+            Err(err) => assert!(err.to_string().contains("unsupported CRNN output shape")),
+            Ok(_) => panic!("expected unsupported shape error"),
+        }
+    }
+
+    #[test]
+    #[ignore = "requires downloaded OCR models"]
     fn test_bundled_ocr_engine_real_models_inference() -> Result<(), Box<dyn std::error::Error>> {
         if !crate::ocr::ocr_models_exist() {
             return Ok(());
@@ -522,6 +905,17 @@ mod tests {
             .recognize(&test_img)
             .map_err(Box::<dyn std::error::Error>::from)?;
         assert!(output.avg_confidence <= 1.0);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires downloaded OCR models and constitution.pdf"]
+    fn test_real_model_constitution_discrimination() -> Result<(), Box<dyn std::error::Error>> {
+        if !crate::ocr::ocr_models_exist() {
+            return Ok(());
+        }
+        // Manual validation target: preamble block should rank above seal garbage on page 1.
+        // Run with AMBER_OCR_CONF_DEBUG=1 via ocr_demo when constitution.pdf is available.
         Ok(())
     }
 }

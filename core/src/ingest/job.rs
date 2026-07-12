@@ -117,6 +117,9 @@ pub struct ImportJobProgress {
     pub digital_pages: usize,
     pub ocr_pages: usize,
     pub hybrid_pages: usize,
+    /// Character-weighted mean of per-page OCR inference passes (full-page raster + det/rec).
+    /// On Hybrid pages with DigitalPreferred merge, merged markdown may be mostly digital text;
+    /// this reflects OCR-pass quality on the rasterized page, not merged digital fidelity.
     pub avg_ocr_confidence: f32,
     pub status: String,
 }
@@ -146,6 +149,9 @@ pub struct IngestJobResult {
     pub hybrid_pages: usize,
     pub assembled_markdown: String,
     pub chunks: Vec<ImportChunkSpec>,
+    /// Character-weighted mean of per-page OCR inference passes (full-page raster + det/rec).
+    /// On Hybrid pages with DigitalPreferred merge, merged markdown may be mostly digital text;
+    /// this reflects OCR-pass quality on the rasterized page, not merged digital fidelity.
     pub avg_ocr_confidence: f32,
     pub tables_detected_unpreserved: i32,
     pub candidates: Vec<CandidateNode>,
