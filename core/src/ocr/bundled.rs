@@ -240,32 +240,21 @@ pub enum RecOutputKind {
     LogProbabilities,
 }
 
-/// Which signal was used for the block-level score in [0, 1].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfidenceMetric {
-    /// Arithmetic mean of per-emitted-token peak probabilities (Paddle CTCLabelDecode).
-    MeanTokenProbability,
-    /// Mean of `(p1 - p2)` per emitted token when probabilities are near-uniform (~1/C).
-    MeanTokenMargin,
-}
-
 /// Result of CTC greedy decode with diagnostic scores.
+///
+/// `confidence` is always Paddle CTCLabelDecode semantics: arithmetic mean of per-emitted-token
+/// peak probabilities in [0, 1]. See `core/tests/fixtures/ocr_confidence/PHASE_A.md` for why
+/// this single metric was chosen after the Phase A spike (Path A / B1 — no per-block switching).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CtcDecodeResult {
     pub text: String,
+    /// Mean per-emitted-token peak probability (Paddle `np.mean(conf_list)`).
     pub confidence: f32,
-    pub metric: ConfidenceMetric,
-    pub mean_probability: f32,
+    /// Diagnostic only (`AMBER_OCR_CONF_DEBUG`); mean `(p1 - p2)` per emitted token.
     pub mean_margin: f32,
 }
 
 const BLANK_INDEX: usize = 0;
-/// When mean token probability stays below this, posteriors are near-uniform — use margin.
-const FLAT_PROB_THRESHOLD: f32 = 0.05;
-/// Minimum peak-to-runner-up probability gap to treat a block as discriminative on prob scale.
-const MIN_PROB_SPREAD: f32 = 0.002;
-/// Maps mean margin to [0, 1] for UI when probability scale is non-discriminative.
-const MARGIN_CALIBRATION_K: f32 = 80.0;
 
 fn ocr_confidence_debug_enabled() -> bool {
     std::env::var("AMBER_OCR_CONF_DEBUG")
@@ -395,31 +384,7 @@ fn timestep_peak_and_margin(values: &[f32], kind: RecOutputKind) -> (f32, f32, f
     }
 }
 
-fn calibrate_margin(mean_margin: f32) -> f32 {
-    (1.0 - (-MARGIN_CALIBRATION_K * mean_margin.max(0.0)).exp()).clamp(0.0, 1.0)
-}
-
-fn choose_block_confidence(
-    mean_probability: f32,
-    prob_spread: f32,
-    mean_margin: f32,
-) -> (f32, ConfidenceMetric) {
-    let prob_discriminative =
-        mean_probability >= FLAT_PROB_THRESHOLD || prob_spread >= MIN_PROB_SPREAD;
-    if prob_discriminative {
-        (
-            mean_probability.clamp(0.0, 1.0),
-            ConfidenceMetric::MeanTokenProbability,
-        )
-    } else {
-        (
-            calibrate_margin(mean_margin),
-            ConfidenceMetric::MeanTokenMargin,
-        )
-    }
-}
-
-/// Paddle-style CTC greedy decode with output-kind detection and margin fallback.
+/// Paddle-style CTC greedy decode with output-kind detection (Phase A Path A / B1).
 pub fn decode_ctc_logits(
     logits: &[f32],
     seq_len: usize,
@@ -440,8 +405,6 @@ pub fn decode_ctc_logits_detailed(
         return CtcDecodeResult {
             text: String::new(),
             confidence: 0.0,
-            metric: ConfidenceMetric::MeanTokenProbability,
-            mean_probability: 0.0,
             mean_margin: 0.0,
         };
     }
@@ -475,7 +438,6 @@ pub fn decode_ctc_logits_detailed(
     let mut text = String::new();
     let mut prob_sum = 0.0f32;
     let mut margin_sum = 0.0f32;
-    let mut token_peaks = Vec::new();
     let mut token_count = 0usize;
 
     for t in 0..seq_len {
@@ -492,7 +454,6 @@ pub fn decode_ctc_logits_detailed(
             let (peak, margin, _) = timestep_peak_and_margin(slice, kind);
             prob_sum += peak;
             margin_sum += margin;
-            token_peaks.push(peak);
             token_count += 1;
         }
     }
@@ -501,31 +462,16 @@ pub fn decode_ctc_logits_detailed(
         return CtcDecodeResult {
             text: String::new(),
             confidence: 0.0,
-            metric: ConfidenceMetric::MeanTokenProbability,
-            mean_probability: 0.0,
             mean_margin: 0.0,
         };
     }
 
-    let mean_probability = prob_sum / token_count as f32;
+    let mean_probability = (prob_sum / token_count as f32).clamp(0.0, 1.0);
     let mean_margin = margin_sum / token_count as f32;
-    let prob_spread = if token_peaks.is_empty() {
-        0.0
-    } else {
-        let min_p = token_peaks.iter().copied().fold(f32::INFINITY, f32::min);
-        let max_p = token_peaks
-            .iter()
-            .copied()
-            .fold(f32::NEG_INFINITY, f32::max);
-        max_p - min_p
-    };
-    let (confidence, metric) = choose_block_confidence(mean_probability, prob_spread, mean_margin);
 
     CtcDecodeResult {
         text,
-        confidence,
-        metric,
-        mean_probability,
+        confidence: mean_probability,
         mean_margin,
     }
 }
@@ -552,9 +498,7 @@ fn log_rec_block_debug(
     eprintln!(
         "[ocr-rec] block={block_index} shape={rec_shape:?} seq={seq_len} classes={num_classes} \
          ct_layout={is_ct_layout} kind={kind:?} t0_min={t0_min:.6} t0_max={t0_max:.6} t0_sum={t0_sum:.6} \
-         logit_sep={logit_sep:.4} metric={:?} mean_prob={:.8} mean_margin={:.8} conf={:.8} text={preview:?}",
-        decode.metric,
-        decode.mean_probability,
+         logit_sep={logit_sep:.4} mean_margin={:.8} conf={:.8} text={preview:?}",
         decode.mean_margin,
         decode.confidence,
     );
@@ -746,13 +690,50 @@ fn ensure_file_exists(path: &Path, label: &str) -> Result<(), OcrError> {
 mod tests {
     use super::*;
     use image::{ImageBuffer, Rgb};
+    use std::path::PathBuf;
+
+    #[derive(serde::Deserialize)]
+    struct LogitFixture {
+        seq_len: usize,
+        num_classes: usize,
+        vocab: Vec<String>,
+        logits: Vec<f32>,
+        expected_text: String,
+        #[serde(default)]
+        min_confidence: Option<f32>,
+        #[serde(default)]
+        max_confidence: Option<f32>,
+    }
 
     fn sharp_logits_ab() -> Vec<f32> {
         vec![
-            0.0, 10.0, 0.0, 0.0, // T0 -> A
-            0.0, 10.0, 0.0, 0.0, // T1 -> A (duplicate, collapsed)
-            0.0, 0.0, 10.0, 0.0, // T2 -> B
+            0.0, 10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 10.0, 0.0,
         ]
+    }
+
+    fn load_logit_fixture(name: &str) -> LogitFixture {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/ocr_confidence")
+            .join(name);
+        let json = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+        serde_json::from_str(&json)
+            .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()))
+    }
+
+    fn constitution_pdf_path() -> Option<PathBuf> {
+        if let Ok(path) = std::env::var("CONSTITUTION_PDF") {
+            let path = PathBuf::from(path);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        [
+            PathBuf::from(r"C:\Users\aashi\Desktop\TestDocuments\constitution.pdf"),
+            PathBuf::from("../TestDocuments/constitution.pdf"),
+        ]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
     }
 
     #[test]
@@ -765,17 +746,54 @@ mod tests {
     #[test]
     fn test_ctc_decoder_basic() {
         let vocab = vec!["A".to_string(), "B".to_string(), "C".to_string()];
-        let logits = sharp_logits_ab();
-
-        let (text, conf) = decode_ctc_logits(&logits, 3, 4, &vocab);
+        let (text, conf) = decode_ctc_logits(&sharp_logits_ab(), 3, 4, &vocab);
         assert_eq!(text, "AB");
         assert!(conf > 0.9);
     }
 
     #[test]
+    fn test_ctc_decoder_from_sharp_logits_fixture() {
+        let fixture = load_logit_fixture("sharp_logits.json");
+        let result = decode_ctc_logits_detailed(
+            &fixture.logits,
+            fixture.seq_len,
+            fixture.num_classes,
+            &fixture.vocab,
+        );
+        assert_eq!(result.text, fixture.expected_text);
+        if let Some(min) = fixture.min_confidence {
+            assert!(
+                result.confidence >= min,
+                "confidence {} < min {}",
+                result.confidence,
+                min
+            );
+        }
+    }
+
+    #[test]
+    fn test_ctc_decoder_from_flat_logits_fixture() {
+        let fixture = load_logit_fixture("flat_logits.json");
+        let result = decode_ctc_logits_detailed(
+            &fixture.logits,
+            fixture.seq_len,
+            fixture.num_classes,
+            &fixture.vocab,
+        );
+        assert_eq!(result.text, fixture.expected_text);
+        if let Some(max) = fixture.max_confidence {
+            assert!(
+                result.confidence <= max,
+                "confidence {} > max {}",
+                result.confidence,
+                max
+            );
+        }
+    }
+
+    #[test]
     fn test_ctc_empty_emitted_returns_zero_confidence() {
         let vocab = vec!["A".to_string()];
-        // All blank
         let logits = vec![10.0, 0.0, 10.0, 0.0, 10.0, 0.0];
         let result = decode_ctc_logits_detailed(&logits, 3, 2, &vocab);
         assert_eq!(result.text, "");
@@ -785,30 +803,19 @@ mod tests {
     #[test]
     fn test_ctc_paddle_duplicate_mask_parity() {
         let vocab = vec!["A".to_string(), "B".to_string()];
-        // Indices: blank, A, A, B, blank -> selection emits A, B
         let logits = vec![
-            10.0, 0.0, 0.0, // blank
-            0.0, 10.0, 0.0, // A
-            0.0, 10.0, 0.0, // A duplicate
-            0.0, 0.0, 10.0, // B
-            10.0, 0.0, 0.0, // blank
+            10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0, 10.0, 0.0, 0.0,
         ];
         let result = decode_ctc_logits_detailed(&logits, 5, 3, &vocab);
         assert_eq!(result.text, "AB");
         assert!(result.confidence > 0.9);
-        assert_eq!(result.metric, ConfidenceMetric::MeanTokenProbability);
     }
 
     #[test]
     fn test_ctc_discriminates_peaked_vs_flat() {
         let vocab = vec!["A".to_string(), "B".to_string()];
-        let peaked = sharp_logits_ab();
-        let peaked_result = decode_ctc_logits_detailed(&peaked, 3, 4, &vocab);
-
-        // Near-uniform logits (~1/4 per class after softmax)
-        let flat = vec![0.0f32; 3 * 4];
-        let flat_result = decode_ctc_logits_detailed(&flat, 3, 4, &vocab);
-
+        let peaked_result = decode_ctc_logits_detailed(&sharp_logits_ab(), 3, 4, &vocab);
+        let flat_result = decode_ctc_logits_detailed(&[0.0f32; 12], 3, 4, &vocab);
         assert!(
             peaked_result.confidence > flat_result.confidence * 5.0,
             "peaked={} flat={}",
@@ -820,7 +827,6 @@ mod tests {
     #[test]
     fn test_ctc_probabilities_not_double_softmaxed() {
         let vocab = vec!["A".to_string(), "B".to_string()];
-        // Already softmaxed: class 1 near 1.0
         let probs = vec![
             0.01, 0.97, 0.01, 0.01, 0.01, 0.97, 0.01, 0.01, 0.01, 0.01, 0.97, 0.01,
         ];
@@ -830,41 +836,6 @@ mod tests {
             result.confidence > 0.9,
             "should use probability peak directly, got {}",
             result.confidence
-        );
-        assert_eq!(result.metric, ConfidenceMetric::MeanTokenProbability);
-    }
-
-    #[test]
-    fn test_ctc_flat_logits_use_margin_metric() {
-        let vocab = vec!["A".to_string(); 100];
-        let num_classes = 101usize;
-        let seq_len = 3usize;
-
-        // Slightly peaked: class 1 wins by epsilon -> near-uniform softmax (~1/C)
-        let mut peaked_flat = vec![0.0f32; seq_len * num_classes];
-        for t in 0..seq_len {
-            peaked_flat[t * num_classes + 1] = 0.001;
-        }
-        let peaked_result = decode_ctc_logits_detailed(&peaked_flat, seq_len, num_classes, &vocab);
-
-        // More separated logits on same argmax path
-        let mut separated = vec![0.0f32; seq_len * num_classes];
-        for t in 0..seq_len {
-            separated[t * num_classes + 1] = 2.0;
-            separated[t * num_classes + 2] = -2.0;
-        }
-        let separated_result = decode_ctc_logits_detailed(&separated, seq_len, num_classes, &vocab);
-
-        assert_eq!(peaked_result.metric, ConfidenceMetric::MeanTokenMargin);
-        assert_eq!(
-            separated_result.metric,
-            ConfidenceMetric::MeanTokenProbability
-        );
-        assert!(
-            separated_result.confidence > peaked_result.confidence,
-            "separated={} peaked_flat={}",
-            separated_result.confidence,
-            peaked_result.confidence
         );
     }
 
@@ -908,14 +879,64 @@ mod tests {
         Ok(())
     }
 
+    /// Phase A validation: preamble OCR block must outrank seal garbage on constitution page 1
+    /// (PDF page index 1 — the preamble scan, not the cover).
+    ///
+    /// Recorded 2026-07-12 spike (Path A / B1): seal `DelheJeoble` conf=0.7316,
+    /// preamble `WethePeopleofthe...` conf=0.9997. See PHASE_A.md.
     #[test]
-    #[ignore = "requires downloaded OCR models and constitution.pdf"]
+    #[ignore = "requires downloaded OCR models and constitution.pdf (set CONSTITUTION_PDF)"]
     fn test_real_model_constitution_discrimination() -> Result<(), Box<dyn std::error::Error>> {
         if !crate::ocr::ocr_models_exist() {
             return Ok(());
         }
-        // Manual validation target: preamble block should rank above seal garbage on page 1.
-        // Run with AMBER_OCR_CONF_DEBUG=1 via ocr_demo when constitution.pdf is available.
+        let Some(pdf_path) = constitution_pdf_path() else {
+            return Ok(());
+        };
+
+        use crate::ocr::pdf::{PdfRasterizer, PdfRasterizerConfig};
+
+        let rasterizer = PdfRasterizer::new().map_err(Box::<dyn std::error::Error>::from)?;
+        let document = rasterizer
+            .load_document_from_file(&pdf_path)
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        let page_img = rasterizer
+            .render_loaded_page(&document, 1, &PdfRasterizerConfig { dpi: 300 })
+            .map_err(Box::<dyn std::error::Error>::from)?;
+
+        let engine = BundledOcrEngine::new().map_err(Box::<dyn std::error::Error>::from)?;
+        let output = engine
+            .recognize(&page_img)
+            .map_err(Box::<dyn std::error::Error>::from)?;
+
+        let seal = output
+            .blocks
+            .iter()
+            .find(|b| b.text.contains("DelheJeoble") || b.text.contains("Jeoble"))
+            .ok_or("expected seal garbage block on constitution page 1")?;
+        let preamble = output
+            .blocks
+            .iter()
+            .find(|b| b.text.contains("WethePeople"))
+            .ok_or("expected preamble block on constitution page 1")?;
+
+        assert!(
+            preamble.confidence > seal.confidence,
+            "preamble conf {} must exceed seal conf {} (Phase A ranking criterion)",
+            preamble.confidence,
+            seal.confidence
+        );
+        assert!(
+            preamble.confidence > 0.9,
+            "preamble should be high-confidence after B1 fix, got {}",
+            preamble.confidence
+        );
+        assert!(
+            seal.confidence < preamble.confidence,
+            "seal should rank below preamble; seal={} preamble={}",
+            seal.confidence,
+            preamble.confidence
+        );
         Ok(())
     }
 }

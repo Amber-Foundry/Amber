@@ -5,6 +5,5 @@
   "vocab": ["A", "B", "C"],
   "logits": [0.0, 10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 10.0, 0.0],
   "expected_text": "AB",
-  "expected_metric": "MeanTokenProbability",
   "min_confidence": 0.9
 }
