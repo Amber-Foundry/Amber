@@ -167,6 +167,23 @@ def _write_fragment_line(pdf: FPDF, parts: list[str], x: float, y: float, line_h
         cursor_x += w
 
 
+def _write_fragment_line_with_gaps(
+    pdf: FPDF,
+    parts: list[str],
+    gaps_mm: list[float],
+    x: float,
+    y: float,
+    line_height: float,
+) -> None:
+    """Emit one text object per fragment with explicit horizontal gaps (mm)."""
+    cursor_x = x
+    for i, part in enumerate(parts):
+        pdf.set_xy(cursor_x, y)
+        w = pdf.get_string_width(part)
+        pdf.cell(w, line_height, part, ln=0)
+        cursor_x += w + (gaps_mm[i] if i < len(gaps_mm) else 0.0)
+
+
 def write_digital_per_glyph_punctuation() -> None:
     """Separate text objects at word/punctuation boundaries (Word/Docs export pattern)."""
     pdf = FPDF()
@@ -216,6 +233,47 @@ def write_digital_word_fragment_line() -> None:
     pdf.set_xy(70, 40)
     pdf.cell(pdf.get_string_width("chosen"), 8, "chosen")
     out = FIXTURES_DIR / "digital_word_fragment_line.pdf"
+    pdf.output(str(out))
+    print(f"wrote {out}")
+
+
+def write_digital_per_glyph_word() -> None:
+    """One text object per letter on a single line (per-glyph word-processor export)."""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    word = "Maximum"
+    kerning_gap = 0.3
+    x = 10.0
+    y = 40.0
+    line_height = 8.0
+    for ch in word:
+        pdf.set_xy(x, y)
+        pdf.write(line_height, ch)
+        x += pdf.get_string_width(ch) + kerning_gap
+    out = FIXTURES_DIR / "digital_per_glyph_word.pdf"
+    pdf.output(str(out))
+    print(f"wrote {out}")
+
+
+def write_digital_tight_word_fragments() -> None:
+    """Multi-letter fragments with gaps above kerning but below quarter-em word space."""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    # ~0.22em ≈ inter-word but above mid-word geometry for 2+ letter fragments.
+    tight_gap = 12 / 72 * 25.4 * 0.22
+    _write_fragment_line_with_gaps(
+        pdf,
+        ["of", "this", "brief", "overview"],
+        [tight_gap, tight_gap, tight_gap],
+        10.0,
+        50.0,
+        8.0,
+    )
+    out = FIXTURES_DIR / "digital_tight_word_fragments.pdf"
     pdf.output(str(out))
     print(f"wrote {out}")
 
@@ -296,4 +354,6 @@ if __name__ == "__main__":
     write_digital_per_glyph_punctuation()
     write_digital_per_glyph_sentence()
     write_digital_word_fragment_line()
+    write_digital_per_glyph_word()
+    write_digital_tight_word_fragments()
     write_scanned_single_page()

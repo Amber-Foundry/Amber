@@ -9,7 +9,9 @@ use amber_lib::ingest::layout::{analyze_layout, BlockType, RawLayoutBlock};
 use amber_lib::ingest::markdown::{assemble_markdown_blocks, join_ingest_blocks};
 use amber_lib::ingest::prompt::wrap_ingestion_payload;
 use amber_lib::ingest::security::scan_prompt_injection;
-use amber_lib::ingest::text::{assert_no_duplicate_spaces, assert_no_space_before_punctuation};
+use amber_lib::ingest::text::{
+    assert_no_duplicate_spaces, assert_no_space_before_punctuation, assert_words_not_run_together,
+};
 use amber_lib::ingest::{
     chunk_ingest_blocks, derive_document_extraction_path, IngestJobConfig, IngestJobEngine,
 };
@@ -592,6 +594,62 @@ fn digital_word_fragment_line_merges_mid_word() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn digital_per_glyph_word_assembles_letters() -> Result<(), Box<dyn Error>> {
+    if skip_if_pdfium_unavailable().is_err() {
+        return Ok(());
+    }
+    let path = require_fixture("digital_per_glyph_word.pdf")?;
+    let bytes = fs::read(&path)?;
+    let rasterizer = PdfRasterizer::new().map_err(|e| -> Box<dyn Error> { e.into() })?;
+    let blocks = rasterizer.extract_digital_blocks(&bytes, 0)?;
+    let combined = blocks
+        .iter()
+        .map(|b| b.text.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        combined.contains("Maximum"),
+        "expected assembled word Maximum in {combined:?}"
+    );
+    assert!(
+        !combined.contains("M a x"),
+        "unexpected letter fragmentation in {combined:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn digital_tight_word_fragments_separates_words() -> Result<(), Box<dyn Error>> {
+    if skip_if_pdfium_unavailable().is_err() {
+        return Ok(());
+    }
+    let path = require_fixture("digital_tight_word_fragments.pdf")?;
+    let bytes = fs::read(&path)?;
+    let rasterizer = PdfRasterizer::new().map_err(|e| -> Box<dyn Error> { e.into() })?;
+    let blocks = rasterizer.extract_digital_blocks(&bytes, 0)?;
+    let combined = blocks
+        .iter()
+        .map(|b| b.text.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        combined.contains("of this") || combined.contains("of  this"),
+        "expected separated of/this in {combined:?}"
+    );
+    assert!(
+        combined.contains("brief overview") || combined.contains("brief  overview"),
+        "expected separated brief/overview in {combined:?}"
+    );
+    assert_words_not_run_together(&combined, "of", "this")
+        .map_err(|e| -> Box<dyn Error> { e.into() })?;
+    assert_words_not_run_together(&combined, "brief", "overview")
+        .map_err(|e| -> Box<dyn Error> { e.into() })?;
+    Ok(())
+}
+
+#[test]
 fn fixtures_are_present_on_disk() -> Result<(), Box<dyn Error>> {
     for name in [
         "digital_two_column.pdf",
@@ -603,6 +661,8 @@ fn fixtures_are_present_on_disk() -> Result<(), Box<dyn Error>> {
         "digital_minimal.pdf",
         "digital_per_glyph_punctuation.pdf",
         "digital_per_glyph_sentence.pdf",
+        "digital_per_glyph_word.pdf",
+        "digital_tight_word_fragments.pdf",
         "digital_word_fragment_line.pdf",
         "scanned_single_page.pdf",
     ] {

@@ -1,3 +1,5 @@
+use crate::ocr::engine::Rect;
+
 /// Collapses horizontal whitespace within a line while preserving word boundaries.
 /// Newlines are handled by [`collapse_internal_whitespace_block`] so paragraph breaks
 /// remain structural. Tabs follow the same single-space policy as ordinary spaces.
@@ -71,15 +73,149 @@ fn requires_following_word_space(prev: &str, next: &str) -> bool {
         && next.chars().next().is_some_and(|c| c.is_alphanumeric())
 }
 
-/// Geometry-first join: insert a word space only when gap exceeds threshold and typography allows.
-pub(crate) fn should_insert_typographic_space(
+fn letter_count(text: &str) -> usize {
+    text.chars().filter(|c| c.is_alphanumeric()).count()
+}
+
+fn boundary_prev_token(prev_text: &str) -> &str {
+    prev_text.split_whitespace().last().unwrap_or(prev_text)
+}
+
+fn boundary_next_token(next_text: &str) -> &str {
+    next_text.split_whitespace().next().unwrap_or(next_text)
+}
+
+fn average_char_width(text: &str, width: f32) -> f32 {
+    let char_count = text.chars().filter(|ch| !ch.is_whitespace()).count().max(1) as f32;
+    (width / char_count).max(0.1)
+}
+
+/// True when `text` is a multi-letter alphanumeric token (word-like fragment).
+fn is_word_like_token(text: &str) -> bool {
+    let trimmed = text.trim();
+    letter_count(trimmed) >= 2 && trimmed.chars().all(|c| c.is_alphanumeric())
+}
+
+/// True when both sides are short single- or two-letter alphanumeric fragments.
+fn is_glyph_like_pair(prev: &str, next: &str) -> bool {
+    let prev_letters = letter_count(prev);
+    let next_letters = letter_count(next);
+    prev_letters <= 2
+        && next_letters <= 2
+        && prev.trim().chars().all(|c| c.is_alphanumeric())
+        && next.trim().chars().all(|c| c.is_alphanumeric())
+}
+
+/// Kerning-scale gap: gaps at or below this are treated as same-word letter spacing.
+pub(crate) fn kerning_gap_threshold(
+    font_size: f32,
+    _prev_bbox: Option<&Rect>,
+    _next_bbox: Option<&Rect>,
+) -> f32 {
+    font_size.mul_add(0.08, 0.0).max(1.0)
+}
+
+/// Word-scale gap: gaps above this normally separate words (~¼ em).
+pub(crate) fn word_gap_threshold(font_size: f32) -> f32 {
+    font_size.mul_add(0.25, 0.0).max(1.0)
+}
+
+/// True when `next` continues the same word as `prev` based on horizontal gap.
+pub(crate) fn is_mid_word_split(
+    prev_bbox: Option<&Rect>,
+    next_bbox: Option<&Rect>,
     prev_text: &str,
     next_text: &str,
-    gap: f32,
-    threshold: f32,
 ) -> bool {
-    let prev = prev_text.trim_end();
-    let next = next_text.trim_start();
+    let (Some(prev), Some(next)) = (prev_bbox, next_bbox) else {
+        return false;
+    };
+
+    let line_height = prev.height.max(next.height).max(1.0);
+    if (next.y - prev.y).abs() > line_height * 0.5 {
+        return false;
+    }
+
+    let gap = next.x - (prev.x + prev.width);
+    let prev_token = boundary_prev_token(prev_text);
+    let next_token = boundary_next_token(next_text);
+    let prev_letters = letter_count(prev_token);
+    let next_letters = letter_count(next_token);
+
+    let prev_char_width = average_char_width(prev_token, prev.width);
+    let next_char_width = average_char_width(next_token, next.width);
+    let space_threshold = prev_char_width
+        .min(next_char_width)
+        .mul_add(0.5, 0.0)
+        .max(1.0);
+
+    if gap <= space_threshold && gap >= -space_threshold * 0.25 {
+        if prev_letters >= 5 && next_letters >= 2 {
+            return false;
+        }
+        if prev_letters >= 3 && next_letters >= 2 {
+            let font_size = line_height;
+            return gap < word_gap_threshold(font_size);
+        }
+        return true;
+    }
+
+    if prev_letters >= 2 && next_letters >= 2 {
+        let font_size = line_height;
+        let word_thr = word_gap_threshold(font_size);
+        let kern_thr = kerning_gap_threshold(font_size, Some(prev), Some(next));
+        if gap > kern_thr && gap < word_thr {
+            if prev_letters >= 3 && next_letters >= 3 {
+                return true;
+            }
+            return false;
+        }
+    }
+
+    false
+}
+
+/// Geometry-first join between pdfium text objects on the same visual line.
+pub(crate) struct InterObjectJoinContext<'a> {
+    pub prev_text: &'a str,
+    pub next_text: &'a str,
+    pub gap: f32,
+    pub font_size: f32,
+    pub prev_bbox: Option<&'a Rect>,
+    pub next_bbox: Option<&'a Rect>,
+}
+
+/// Two-tier word-boundary join: kerning cap vs word cap, with punctuation guards.
+pub(crate) fn should_insert_inter_object_space(ctx: &InterObjectJoinContext<'_>) -> bool {
+    // Word-final marker from per-glyph Word/Docs exports (trailing space in object_text)
+    if ctx
+        .prev_text
+        .chars()
+        .last()
+        .is_some_and(char::is_whitespace)
+    {
+        let next_trim = ctx.next_text.trim_start();
+        if !next_trim.is_empty()
+            && !attaches_to_previous_word(next_trim)
+            && !attaches_to_following_word(ctx.prev_text.trim_end())
+        {
+            let prev_trim = ctx.prev_text.trim_end();
+            let kern_thr = kerning_gap_threshold(ctx.font_size, ctx.prev_bbox, ctx.next_bbox);
+            if letter_count(prev_trim) <= 2
+                && is_glyph_like_pair(prev_trim, next_trim)
+                && ctx.gap <= kern_thr
+            {
+                // Phantom trailing space on same-word glyph pair (e.g. narrow "i " + "s").
+            } else if letter_count(prev_trim) >= 3 && letter_count(next_trim) >= 3 {
+                // Longer fragments (e.g. Mem + bers) — defer to geometry.
+            } else {
+                return true;
+            }
+        }
+    }
+
+    let prev = ctx.prev_text.trim_end();
+    let next = ctx.next_text.trim_start();
     if prev.is_empty() || next.is_empty() {
         return false;
     }
@@ -89,10 +225,63 @@ pub(crate) fn should_insert_typographic_space(
     if requires_following_word_space(prev, next) {
         return true;
     }
-    if (is_punctuation_only(prev) || is_punctuation_only(next)) && gap <= threshold {
+
+    let word_thr = word_gap_threshold(ctx.font_size);
+    let kern_thr = kerning_gap_threshold(ctx.font_size, ctx.prev_bbox, ctx.next_bbox);
+
+    let prev_bbox_ref = ctx.prev_bbox;
+    let next_bbox_ref = ctx.next_bbox;
+    let mid_word = is_mid_word_split(prev_bbox_ref, next_bbox_ref, prev, next);
+
+    if is_glyph_like_pair(prev, next) && ctx.gap > word_thr {
+        return true;
+    }
+
+    if is_word_like_token(prev)
+        && is_word_like_token(next)
+        && !mid_word
+        && ctx.gap > kern_thr
+        && ctx.gap <= word_thr
+    {
+        return true;
+    }
+
+    if mid_word {
         return false;
     }
-    gap > threshold
+
+    if is_glyph_like_pair(prev, next) {
+        if ctx.gap <= kern_thr {
+            return false;
+        }
+        if ctx.gap <= word_thr {
+            if let (Some(pb), Some(nb)) = (prev_bbox_ref, next_bbox_ref) {
+                let prev_cw = average_char_width(prev, pb.width);
+                let next_cw = average_char_width(next, nb.width);
+                let tight = prev_cw.min(next_cw).mul_add(0.5, 0.0).max(1.0);
+                if ctx.gap <= tight {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+    }
+
+    if (is_punctuation_only(prev) || is_punctuation_only(next)) && ctx.gap <= word_thr {
+        return false;
+    }
+
+    ctx.gap > word_thr
+}
+
+/// Fail when `left` and `right` appear glued without a word boundary (fixture assertions).
+pub fn assert_words_not_run_together(text: &str, left: &str, right: &str) -> Result<(), String> {
+    let glued = format!("{left}{right}");
+    if text.contains(&glued) {
+        return Err(format!("found run-together pattern '{glued}'"));
+    }
+    Ok(())
 }
 
 /// True when text contains `word ,` or `( word` style spacing errors.
@@ -136,6 +325,18 @@ pub fn assert_no_duplicate_spaces(text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ocr::engine::Rect;
+
+    fn typographic_join(prev: &str, next: &str, gap: f32, threshold: f32) -> bool {
+        should_insert_inter_object_space(&InterObjectJoinContext {
+            prev_text: prev,
+            next_text: next,
+            gap,
+            font_size: threshold / 0.25,
+            prev_bbox: None,
+            next_bbox: None,
+        })
+    }
 
     #[test]
     fn collapses_pdf_glyph_boundary_spaces() {
@@ -173,13 +374,13 @@ mod tests {
 
     #[test]
     fn typographic_space_before_comma() {
-        assert!(!should_insert_typographic_space("Hello", ",", 5.0, 2.0));
-        assert!(should_insert_typographic_space("Hello,", "world", 1.0, 3.0));
-        assert!(!should_insert_typographic_space("word", ",", 5.0, 2.0));
-        assert!(!should_insert_typographic_space("word", ".", 5.0, 2.0));
-        assert!(should_insert_typographic_space("word", "next", 5.0, 2.0));
-        assert!(!should_insert_typographic_space("(", "word", 5.0, 2.0));
-        assert!(!should_insert_typographic_space("end", ")", 5.0, 2.0));
+        assert!(!typographic_join("Hello", ",", 5.0, 2.0));
+        assert!(typographic_join("Hello,", "world", 1.0, 3.0));
+        assert!(!typographic_join("word", ",", 5.0, 2.0));
+        assert!(!typographic_join("word", ".", 5.0, 2.0));
+        assert!(typographic_join("word", "next", 5.0, 2.0));
+        assert!(!typographic_join("(", "word", 5.0, 2.0));
+        assert!(!typographic_join("end", ")", 5.0, 2.0));
     }
 
     #[test]
@@ -194,5 +395,80 @@ mod tests {
         assert!(assert_no_space_before_punctuation("Hello, world.").is_ok());
         assert!(assert_no_space_before_punctuation("word , next").is_err());
         assert!(assert_no_space_before_punctuation("( word").is_err());
+    }
+
+    #[test]
+    fn intra_word_short_fragments_no_space() {
+        let ctx = InterObjectJoinContext {
+            prev_text: "M",
+            next_text: "a",
+            gap: 3.0,
+            font_size: 12.0,
+            prev_bbox: Some(&Rect::new(10.0, 20.0, 8.0, 12.0)),
+            next_bbox: Some(&Rect::new(19.0, 20.0, 7.0, 12.0)),
+        };
+        assert!(!should_insert_inter_object_space(&ctx));
+    }
+
+    #[test]
+    fn inter_word_tokens_insert_space() {
+        let gap = 12.0_f32 * 0.24;
+        let prev_bbox = Rect::new(10.0, 20.0, 14.0, 12.0);
+        let next_bbox = Rect::new(10.0 + 14.0 + gap, 20.0, 22.0, 12.0);
+        let ctx = InterObjectJoinContext {
+            prev_text: "of",
+            next_text: "this",
+            gap,
+            font_size: 12.0,
+            prev_bbox: Some(&prev_bbox),
+            next_bbox: Some(&next_bbox),
+        };
+        assert!(should_insert_inter_object_space(&ctx));
+    }
+
+    #[test]
+    fn mid_word_split_no_space() {
+        let ctx = InterObjectJoinContext {
+            prev_text: "Mem",
+            next_text: "bers",
+            gap: 0.2,
+            font_size: 8.0,
+            prev_bbox: Some(&Rect::new(10.0, 20.0, 18.0, 8.0)),
+            next_bbox: Some(&Rect::new(28.2, 20.1, 24.0, 8.0)),
+        };
+        assert!(!should_insert_inter_object_space(&ctx));
+    }
+
+    #[test]
+    fn word_gap_threshold_at_quarter_em() {
+        assert_eq!(word_gap_threshold(12.0), 3.0);
+        assert_eq!(word_gap_threshold(4.0), 1.0);
+    }
+
+    #[test]
+    fn word_final_trailing_space_marks_boundary() {
+        let ctx = InterObjectJoinContext {
+            prev_text: "d ",
+            next_text: "w",
+            gap: 2.0,
+            font_size: 12.0,
+            prev_bbox: Some(&Rect::new(10.0, 20.0, 6.0, 12.0)),
+            next_bbox: Some(&Rect::new(18.0, 20.0, 7.0, 12.0)),
+        };
+        assert!(should_insert_inter_object_space(&ctx));
+    }
+
+    #[test]
+    fn single_glyph_pair_large_gap_inserts_space() {
+        let gap = 12.0_f32 * 0.3;
+        let ctx = InterObjectJoinContext {
+            prev_text: "d",
+            next_text: "w",
+            gap,
+            font_size: 12.0,
+            prev_bbox: Some(&Rect::new(10.0, 20.0, 6.0, 12.0)),
+            next_bbox: Some(&Rect::new(10.0 + 6.0 + gap, 20.0, 7.0, 12.0)),
+        };
+        assert!(should_insert_inter_object_space(&ctx));
     }
 }

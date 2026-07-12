@@ -1,6 +1,7 @@
 use crate::ingest::layout::{BlockType, TextBlock};
 use crate::ingest::text::{
     attaches_to_following_word, attaches_to_previous_word, collapse_internal_whitespace_block,
+    is_mid_word_split,
 };
 use crate::ocr::engine::Rect;
 
@@ -221,36 +222,6 @@ fn append_body_line(
     }
 }
 
-/// True when `next` continues the same word as `prev` based on horizontal gap,
-/// matching the threshold used when merging PDF text objects on a visual line.
-fn is_mid_word_split(
-    prev: Option<&Rect>,
-    next: Option<&Rect>,
-    prev_text: &str,
-    next_text: &str,
-) -> bool {
-    let (Some(prev), Some(next)) = (prev, next) else {
-        return false;
-    };
-
-    let line_height = prev.height.max(next.height).max(1.0);
-    // Mid-word splits only occur between fragments on the same visual line.
-    if (next.y - prev.y).abs() > line_height * 0.5 {
-        return false;
-    }
-
-    let gap = next.x - (prev.x + prev.width);
-    let prev_char_width = average_char_width(prev_text, prev.width);
-    let next_char_width = average_char_width(next_text, next.width);
-    let space_threshold = prev_char_width
-        .min(next_char_width)
-        .mul_add(0.5, 0.0)
-        .max(1.0);
-
-    // Allow tiny negative gaps from measurement noise; anything larger is overlap/wrap.
-    gap <= space_threshold && gap >= -space_threshold * 0.25
-}
-
 fn is_line_break_hyphen(prev: Option<&Rect>, next: Option<&Rect>) -> bool {
     let (Some(prev), Some(next)) = (prev, next) else {
         return false;
@@ -265,11 +236,6 @@ fn is_line_break_hyphen(prev: Option<&Rect>, next: Option<&Rect>) -> bool {
     horizontal_overlap_ratio(prev, next) > 0.15
         && vertical_gap >= -line_height * 0.5
         && vertical_gap <= line_height * 1.8
-}
-
-fn average_char_width(text: &str, width: f32) -> f32 {
-    let char_count = text.chars().filter(|ch| !ch.is_whitespace()).count().max(1) as f32;
-    (width / char_count).max(0.1)
 }
 
 fn horizontal_overlap_ratio(a: &Rect, b: &Rect) -> f32 {

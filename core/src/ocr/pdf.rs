@@ -1,6 +1,6 @@
 use crate::ingest::text::{
     attaches_to_previous_word, has_spurious_punctuation_spacing, is_punctuation_only,
-    should_insert_typographic_space,
+    should_insert_inter_object_space, word_gap_threshold, InterObjectJoinContext,
 };
 use crate::ocr::engine::OcrError;
 use crate::ocr::ocr_models_dir;
@@ -452,11 +452,7 @@ fn reconstruct_text_from_char_boxes(char_boxes: &[PdfCharBox], font_size: f32) -
         .map(|b| (b.right - b.left).max(0.1))
         .sum::<f32>()
         / char_boxes.len() as f32;
-    // Inter-word gaps are ~¼ em; intra-letter kerning is much tighter than either heuristic.
-    let space_threshold = font_size
-        .mul_add(0.25, 0.0)
-        .max(avg_char_width.mul_add(0.5, 0.0))
-        .max(1.0);
+    let space_threshold = word_gap_threshold(font_size).max(avg_char_width.mul_add(0.5, 0.0));
 
     let mut result = String::with_capacity(char_boxes.len());
     let mut prev_right: Option<f32> = None;
@@ -503,6 +499,14 @@ fn choose_text_object_reconstruction(
     {
         // Tight character boxes with no measurable inter-word gaps — trust pdfium's object text.
         return object_text.to_string();
+    }
+
+    let letters: String = object_text.chars().filter(|c| !c.is_whitespace()).collect();
+    if letters.chars().count() <= 3
+        && object_text.chars().last().is_some_and(char::is_whitespace)
+        && from_chars.trim() == letters
+    {
+        return format!("{letters} ");
     }
 
     from_chars
@@ -606,19 +610,12 @@ fn bbox_from_char_boxes(char_boxes: &[PdfCharBox], top: f32, height: f32) -> Rec
 }
 
 fn inter_block_space_threshold(prev: &RawLayoutBlock, next: &RawLayoutBlock) -> f32 {
-    let prev_letters = prev.text.chars().filter(|c| !c.is_whitespace()).count();
-    let next_letters = next.text.chars().filter(|c| !c.is_whitespace()).count();
-    // Per-glyph Word exports: kerning gaps ~1pt, word gaps ~3–5pt.
-    if prev_letters <= 2 && next_letters <= 2 {
-        return 2.0;
-    }
-
     let font_size = next.font_size.or(prev.font_size).unwrap_or_else(|| {
         average_char_width(&next.text, next.bbox.width)
             .max(average_char_width(&prev.text, prev.bbox.width))
             * 2.0
     });
-    font_size.mul_add(0.25, 0.0).max(1.0)
+    word_gap_threshold(font_size)
 }
 
 fn sanitize_pdf_text(text: &str) -> String {
@@ -705,7 +702,13 @@ fn merge_object_text_for_line(text: &str) -> Option<&str> {
     } else if text.chars().all(char::is_whitespace) {
         Some(" ")
     } else {
-        Some(text.trim())
+        let trimmed_start = text.trim_start();
+        if trimmed_start.is_empty() {
+            Some(" ")
+        } else {
+            // Keep trailing whitespace — Word/Docs per-glyph exports mark word ends with it.
+            Some(trimmed_start)
+        }
     }
 }
 
@@ -786,8 +789,32 @@ fn merge_nearby_line_run(blocks: Vec<RawLayoutBlock>) -> Option<RawLayoutBlock> 
         if let Some(prev_block) = prev_block.as_ref() {
             if let Some(prev) = prev_right {
                 let gap = block.bbox.x - prev;
-                let threshold = inter_block_space_threshold(prev_block, &block);
-                if should_insert_typographic_space(&prev_block.text, text, gap, threshold)
+                let font_size = block.font_size.or(prev_block.font_size).unwrap_or_else(|| {
+                    average_char_width(&block.text, block.bbox.width)
+                        .max(average_char_width(&prev_block.text, prev_block.bbox.width))
+                        * 2.0
+                });
+                let prev_join_text = merge_object_text_for_line(&prev_block.text).unwrap_or("");
+                let join_ctx = InterObjectJoinContext {
+                    prev_text: prev_join_text,
+                    next_text: text,
+                    gap,
+                    font_size,
+                    prev_bbox: Some(&prev_block.bbox),
+                    next_bbox: Some(&block.bbox),
+                };
+                let insert_space = should_insert_inter_object_space(&join_ctx);
+                if std::env::var("AMBER_EXTRACT_DEBUG")
+                    .ok()
+                    .is_some_and(|v| v == "1")
+                {
+                    eprintln!(
+                        "join {:?}+{:?} gap={gap:.2} font={font_size:.1} insert_space={insert_space}",
+                        prev_block.text.trim(),
+                        text.trim()
+                    );
+                }
+                if insert_space
                     && !merged_text.ends_with(char::is_whitespace)
                     && !text.starts_with(char::is_whitespace)
                 {
@@ -816,6 +843,7 @@ fn merge_nearby_line_run(blocks: Vec<RawLayoutBlock>) -> Option<RawLayoutBlock> 
         return None;
     }
 
+    let merged_text = merged_text.trim_end().to_string();
     let bbox = Rect::new(min_x, min_y, max_right - min_x, max_bottom - min_y);
     let mut merged = RawLayoutBlock::new(merged_text, bbox);
     if font_count > 0 {
@@ -1124,6 +1152,61 @@ mod tests {
     }
 
     #[test]
+    fn test_choose_text_preserves_word_final_trailing_space() {
+        let font_size = 12.0;
+        let boxes = vec![PdfCharBox {
+            left: 0.0,
+            right: 6.0,
+            ch: 'd',
+        }];
+        assert_eq!(
+            choose_text_object_reconstruction("d ", &boxes, font_size),
+            "d "
+        );
+        assert_eq!(
+            normalize_short_text_object(&choose_text_object_reconstruction(
+                "d ", &boxes, font_size
+            )),
+            "d "
+        );
+    }
+
+    #[test]
+    fn test_merge_joins_per_glyph_letters_without_spaces() {
+        let font_size = 12.0;
+        let char_w = 8.0;
+        let gap = 3.0;
+        let mut blocks = Vec::new();
+        let word = "Maximum";
+        let mut x = 10.0;
+        for ch in word.chars() {
+            blocks.push(
+                RawLayoutBlock::new(ch.to_string(), Rect::new(x, 20.0, char_w, font_size))
+                    .with_font_size(font_size),
+            );
+            x += char_w + gap;
+        }
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "Maximum");
+    }
+
+    #[test]
+    fn test_merge_separates_tight_word_fragments() {
+        let font_size = 12.0;
+        let gap = font_size * 0.24;
+        let blocks = vec![
+            RawLayoutBlock::new("of", Rect::new(10.0, 20.0, 14.0, font_size))
+                .with_font_size(font_size),
+            RawLayoutBlock::new("this", Rect::new(10.0 + 14.0 + gap, 20.0, 22.0, font_size))
+                .with_font_size(font_size),
+        ];
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "of this");
+    }
+
+    #[test]
     fn test_merge_text_objects_on_visual_lines_joins_word_fragments() {
         let blocks = vec![
             RawLayoutBlock::new("Mem", Rect::new(10.0, 20.0, 18.0, 8.0)).with_font_size(8.0),
@@ -1151,6 +1234,34 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].text, "Left column");
         assert_eq!(merged[1].text, "Right column");
+    }
+
+    #[test]
+    fn test_merge_per_glyph_word_boundaries_via_trailing_space() {
+        let font_size = 12.0;
+        let char_w = 6.0;
+        let kerning = 2.0;
+        let word_gap = 5.0;
+        let mut blocks = Vec::new();
+        let mut x = 10.0;
+        for word in ["We", "have"] {
+            for (i, ch) in word.chars().enumerate() {
+                let is_final = i == word.len() - 1;
+                let text = if is_final {
+                    format!("{ch} ")
+                } else {
+                    ch.to_string()
+                };
+                blocks.push(
+                    RawLayoutBlock::new(text, Rect::new(x, 20.0, char_w, font_size))
+                        .with_font_size(font_size),
+                );
+                x += char_w + if is_final { word_gap } else { kerning };
+            }
+        }
+        let merged = merge_text_objects_on_visual_lines(blocks, 612.0);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "We have");
     }
 
     #[test]

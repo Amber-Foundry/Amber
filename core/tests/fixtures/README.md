@@ -43,6 +43,8 @@ For an unseen PDF, run the demo with `AMBER_INGEST_DEBUG=1` and verify:
 | `digital_minimal.pdf` | Single-column fallback routing (`no_llm_configured`, unsupported provider) |
 | `digital_per_glyph_punctuation.pdf` | Punctuation-adjacent fragments: `Hello, world.` without spurious spaces |
 | `digital_per_glyph_sentence.pdf` | Longer fragmented sentence with commas, semicolons, period |
+| `digital_per_glyph_word.pdf` | One text object per letter; expects assembled word `Maximum` |
+| `digital_tight_word_fragments.pdf` | Multi-letter fragments with sub-word-space gaps (`of this`, `brief overview`) |
 | `digital_word_fragment_line.pdf` | Mid-word fragment merge (`Members chosen`) |
 | `scanned_single_page.pdf` | Image-only page for rasterization / `Ocr` classification |
 
