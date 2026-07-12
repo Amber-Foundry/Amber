@@ -15,7 +15,8 @@ use std::path::Path;
 const FORM_SCAN_MAX_DEPTH: usize = 8;
 
 /// Ignore nested images smaller than this fraction of page area (logos / tracking pixels).
-/// Calibrated from US Traffic confusion-matrix bounds; floor prevents over-filtering.
+/// No raster figure found in US Traffic to calibrate against; using documented floor
+/// pending a real calibration source.
 const MIN_SIGNIFICANT_IMAGE_AREA_RATIO: f32 = 0.0005;
 
 /// Best-effort identity for cycle detection on the current DFS ancestor path.
@@ -49,6 +50,8 @@ struct PageContentScan {
     has_significant_images: bool,
     qualifying_image_count: usize,
     ignored_image_count: usize,
+    smallest_ignored_image_area_ratio: f32,
+    largest_ignored_image_area_ratio: f32,
     largest_image_area_pts2: f32,
     largest_image_area_ratio: f32,
     max_depth_reached: bool,
@@ -91,6 +94,15 @@ fn record_image_area(
         }
     } else {
         scan.ignored_image_count += 1;
+        if scan.ignored_image_count == 1 {
+            scan.smallest_ignored_image_area_ratio = ratio;
+            scan.largest_ignored_image_area_ratio = ratio;
+        } else {
+            scan.smallest_ignored_image_area_ratio =
+                scan.smallest_ignored_image_area_ratio.min(ratio);
+            scan.largest_ignored_image_area_ratio =
+                scan.largest_ignored_image_area_ratio.max(ratio);
+        }
     }
 }
 
@@ -207,9 +219,11 @@ fn log_page_scan_debug(
 
     if scan.ignored_image_count > 0 && page_area_pts2 > 0.0 {
         eprintln!(
-            "[page-scan] page={page_index} ignored_images={} below_min_area={:.4}%",
+            "[page-scan] page={page_index} ignored_images={} threshold={:.4}% largest_ignored={:.4}% smallest_ignored={:.4}%",
             scan.ignored_image_count,
             MIN_SIGNIFICANT_IMAGE_AREA_RATIO * 100.0,
+            scan.largest_ignored_image_area_ratio * 100.0,
+            scan.smallest_ignored_image_area_ratio * 100.0,
         );
     }
 }
@@ -315,6 +329,21 @@ mod form_scan_logic {
         assert_eq!(scan.qualifying_image_count, 1);
         assert_eq!(scan.ignored_image_count, 1);
         assert_eq!(scan.largest_image_area_pts2, 500.0);
+        assert!((scan.smallest_ignored_image_area_ratio - 0.0005).abs() < f32::EPSILON);
+        assert!((scan.largest_ignored_image_area_ratio - 0.0005).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn ignored_image_area_ratio_tracks_min_and_max() {
+        let mut scan = PageContentScan::default();
+        let page_area = 100_000.0;
+        let min_area = 100.0;
+        record_image_area(&mut scan, 10.0, page_area, min_area);
+        record_image_area(&mut scan, 80.0, page_area, min_area);
+        record_image_area(&mut scan, 40.0, page_area, min_area);
+        assert_eq!(scan.ignored_image_count, 3);
+        assert!((scan.smallest_ignored_image_area_ratio - 0.0001).abs() < f32::EPSILON);
+        assert!((scan.largest_ignored_image_area_ratio - 0.0008).abs() < f32::EPSILON);
     }
 
     #[test]
