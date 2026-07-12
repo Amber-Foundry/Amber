@@ -50,6 +50,67 @@ impl OcrTextBlock {
 ///
 /// Each entry is weighted by `max(text.chars().count(), 1)`. Returns `None` when there
 /// are no entries.
+fn ocr_confidence_debug_enabled() -> bool {
+    std::env::var("AMBER_OCR_CONF_DEBUG")
+        .ok()
+        .is_some_and(|v| v == "1")
+}
+
+/// stderr diagnostics for OCR confidence investigations (`AMBER_OCR_CONF_DEBUG=1`).
+pub fn log_ocr_confidence_debug(label: &str, blocks: &[OcrTextBlock], avg_char_weighted: f32) {
+    if !ocr_confidence_debug_enabled() {
+        return;
+    }
+
+    let block_count = blocks.len();
+    let empty_text = blocks.iter().filter(|b| b.text.trim().is_empty()).count();
+    let total_chars: usize = blocks.iter().map(|b| b.text.chars().count().max(1)).sum();
+    let equal_weighted = if block_count > 0 {
+        blocks.iter().map(|b| b.confidence).sum::<f32>() / block_count as f32
+    } else {
+        1.0
+    };
+    let min_conf = blocks
+        .iter()
+        .map(|b| b.confidence)
+        .fold(f32::INFINITY, f32::min);
+    let max_conf = blocks
+        .iter()
+        .map(|b| b.confidence)
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    eprintln!(
+        "[ocr-conf] {label} blocks={block_count} empty_text={empty_text} total_chars={total_chars} \
+         avg_char_weighted={avg_char_weighted:.8} avg_equal_per_block={equal_weighted:.8} \
+         min_block={} max_block={}",
+        if block_count == 0 {
+            "n/a".to_string()
+        } else {
+            format!("{min_conf:.8}")
+        },
+        if block_count == 0 {
+            "n/a".to_string()
+        } else {
+            format!("{max_conf:.8}")
+        }
+    );
+
+    for (index, block) in blocks.iter().take(8).enumerate() {
+        let preview: String = block.text.chars().take(48).collect();
+        eprintln!(
+            "[ocr-conf] {label} block={index} chars={} conf={:.8} text={preview:?}",
+            block.text.chars().count().max(1),
+            block.confidence,
+        );
+    }
+    if block_count > 8 {
+        eprintln!(
+            "[ocr-conf] {label} ... {} more blocks omitted",
+            block_count - 8
+        );
+    }
+}
+
 pub fn char_weighted_confidence<'a>(
     entries: impl IntoIterator<Item = (&'a str, f32)>,
 ) -> Option<f32> {

@@ -6,7 +6,7 @@ use crate::ingest::layout::{
 use crate::ingest::markdown::{assemble_markdown_blocks, join_ingest_blocks, IngestBlock};
 use crate::memory_agent::parser::{CandidateAction, CandidateNode};
 use crate::ocr::bundled::BundledOcrEngine;
-use crate::ocr::engine::{OcrEngine, OcrError};
+use crate::ocr::engine::{log_ocr_confidence_debug, OcrEngine, OcrError};
 use crate::ocr::pdf::{LoadedPdf, PdfPageType, PdfRasterizer, PdfRasterizerConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -393,6 +393,7 @@ impl IngestJobEngine {
 
         let ocr_engine = BundledOcrEngine::new()?;
         let ocr_output = ocr_engine.recognize(&img)?;
+        log_ocr_confidence_debug("image", &ocr_output.blocks, ocr_output.avg_confidence);
 
         let (width_pts, height_pts) = (img.width() as f32, img.height() as f32);
         let raw_blocks: Vec<RawLayoutBlock> = ocr_output
@@ -470,6 +471,11 @@ impl IngestJobEngine {
         let (image_width, image_height) = (page_img.width() as f32, page_img.height() as f32);
         let ocr_output = ocr_engine.recognize(&page_img)?;
         let confidence = ocr_output.avg_confidence;
+        log_ocr_confidence_debug(
+            &format!("page={page_index}"),
+            &ocr_output.blocks,
+            confidence,
+        );
         let raw_blocks = ocr_output
             .blocks
             .into_iter()
