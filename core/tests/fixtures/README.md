@@ -46,7 +46,12 @@ For an unseen PDF, run the demo with `AMBER_INGEST_DEBUG=1` and verify:
 | `digital_per_glyph_word.pdf` | One text object per letter; expects assembled word `Maximum` |
 | `digital_tight_word_fragments.pdf` | Multi-letter fragments with sub-word-space gaps (`of this`, `brief overview`) |
 | `digital_word_fragment_line.pdf` | Mid-word fragment merge (`Members chosen`) |
+| `digital_form_nested_image.pdf` | Hybrid: top-level text + large image nested in Form XObject |
+| `digital_form_nested_text_and_image.pdf` | Hybrid: text and image nested in form only (not Ocr-only) |
+| `digital_vector_form_border.pdf` | Digital: vector path inside form, no nested images |
 | `scanned_single_page.pdf` | Image-only page for rasterization / `Ocr` classification |
+
+Regenerate form fixtures with `py -3.13 core/tests/fixtures/write_form_fixtures.py` (requires `pikepdf` + `Pillow`).
 
 Extraction-hygiene fixtures (`digital_per_glyph_*`, `digital_word_fragment_line`) validate
 [`core/src/ocr/pdf.rs`](../../src/ocr/pdf.rs) typographic join rules in CI — not real TestDocuments.

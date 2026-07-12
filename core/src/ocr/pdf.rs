@@ -8,7 +8,323 @@ use crate::ocr::ocr_models_dir;
 use crate::{ingest::layout::RawLayoutBlock, ocr::engine::Rect};
 use image::DynamicImage;
 use pdfium_render::prelude::*;
+use std::collections::HashSet;
 use std::path::Path;
+
+/// Maximum nesting depth when walking Form XObject trees during page classification.
+const FORM_SCAN_MAX_DEPTH: usize = 8;
+
+/// Ignore nested images smaller than this fraction of page area (logos / tracking pixels).
+/// Calibrated from US Traffic confusion-matrix bounds; floor prevents over-filtering.
+const MIN_SIGNIFICANT_IMAGE_AREA_RATIO: f32 = 0.0005;
+
+/// Best-effort identity for cycle detection on the current DFS ancestor path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct FormSig {
+    len: u16,
+    matrix_a: u32,
+    matrix_b: u32,
+    matrix_c: u32,
+    matrix_d: u32,
+    matrix_e: u32,
+    matrix_f: u32,
+}
+
+fn form_signature(form: &PdfPageXObjectFormObject<'_>) -> FormSig {
+    let matrix = form.matrix().unwrap_or(PdfMatrix::IDENTITY);
+    FormSig {
+        len: form.len().min(u16::MAX as usize) as u16,
+        matrix_a: matrix.a().to_bits(),
+        matrix_b: matrix.b().to_bits(),
+        matrix_c: matrix.c().to_bits(),
+        matrix_d: matrix.d().to_bits(),
+        matrix_e: matrix.e().to_bits(),
+        matrix_f: matrix.f().to_bits(),
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct PageContentScan {
+    has_text: bool,
+    has_significant_images: bool,
+    qualifying_image_count: usize,
+    ignored_image_count: usize,
+    largest_image_area_pts2: f32,
+    largest_image_area_ratio: f32,
+    max_depth_reached: bool,
+    forms_skipped_cycle: usize,
+}
+
+enum ScanStackItem<'a> {
+    Object {
+        object: PdfPageObject<'a>,
+        depth: usize,
+    },
+    ExitForm(FormSig),
+}
+
+fn image_bounds_area_pts2(object: &PdfPageObject<'_>) -> f32 {
+    object
+        .bounds()
+        .ok()
+        .map(|bounds| bounds.width().value * bounds.height().value)
+        .unwrap_or(0.0)
+        .max(0.0)
+}
+
+fn record_image_area(
+    scan: &mut PageContentScan,
+    area_pts2: f32,
+    page_area_pts2: f32,
+    min_area_pts2: f32,
+) {
+    if area_pts2 <= 0.0 || page_area_pts2 <= 0.0 {
+        return;
+    }
+    let ratio = area_pts2 / page_area_pts2;
+    if area_pts2 >= min_area_pts2 {
+        scan.has_significant_images = true;
+        scan.qualifying_image_count += 1;
+        if area_pts2 > scan.largest_image_area_pts2 {
+            scan.largest_image_area_pts2 = area_pts2;
+            scan.largest_image_area_ratio = ratio;
+        }
+    } else {
+        scan.ignored_image_count += 1;
+    }
+}
+
+fn enter_xobject_form<'a>(
+    stack: &mut Vec<ScanStackItem<'a>>,
+    path_forms: &mut HashSet<FormSig>,
+    scan: &mut PageContentScan,
+    object: PdfPageObject<'a>,
+    depth: usize,
+) {
+    if depth >= FORM_SCAN_MAX_DEPTH {
+        scan.max_depth_reached = true;
+        return;
+    }
+
+    let PdfPageObject::XObjectForm(ref form) = object else {
+        return;
+    };
+
+    let sig = form_signature(form);
+    if path_forms.contains(&sig) {
+        scan.forms_skipped_cycle += 1;
+        return;
+    }
+    path_forms.insert(sig);
+
+    let len = form.len();
+    // INVARIANT: ExitForm(sig) before children; each child at depth + 1.
+    stack.push(ScanStackItem::ExitForm(sig));
+    for index in (0..len).rev() {
+        if let Ok(child) = PdfPageObjectsCommon::get(form, index) {
+            stack.push(ScanStackItem::Object {
+                object: child,
+                depth: depth + 1,
+            });
+        }
+    }
+}
+
+fn scan_page_content(page: &PdfPage<'_>, page_area_pts2: f32) -> PageContentScan {
+    let min_area_pts2 = page_area_pts2 * MIN_SIGNIFICANT_IMAGE_AREA_RATIO;
+    let mut scan = PageContentScan::default();
+    let mut stack: Vec<ScanStackItem<'_>> = Vec::new();
+    let mut path_forms: HashSet<FormSig> = HashSet::new();
+
+    let top_level: Vec<PdfPageObject<'_>> = page.objects().iter().collect();
+    for object in top_level.into_iter().rev() {
+        stack.push(ScanStackItem::Object { object, depth: 0 });
+    }
+
+    while let Some(item) = stack.pop() {
+        match item {
+            ScanStackItem::ExitForm(sig) => {
+                path_forms.remove(&sig);
+            }
+            ScanStackItem::Object { object, depth } => match object.object_type() {
+                PdfPageObjectType::Text => {
+                    scan.has_text = true;
+                }
+                PdfPageObjectType::Image => {
+                    record_image_area(
+                        &mut scan,
+                        image_bounds_area_pts2(&object),
+                        page_area_pts2,
+                        min_area_pts2,
+                    );
+                }
+                PdfPageObjectType::XObjectForm => {
+                    enter_xobject_form(&mut stack, &mut path_forms, &mut scan, object, depth);
+                }
+                PdfPageObjectType::Path
+                | PdfPageObjectType::Shading
+                | PdfPageObjectType::Unsupported => {}
+            },
+        }
+    }
+
+    scan
+}
+
+fn classify_page_type(has_text: bool, has_images: bool) -> PdfPageType {
+    match (has_text, has_images) {
+        (true, true) => PdfPageType::Hybrid,
+        (true, false) => PdfPageType::Digital,
+        (false, true) => PdfPageType::Ocr,
+        (false, false) => PdfPageType::Digital,
+    }
+}
+
+fn page_scan_debug_enabled() -> bool {
+    std::env::var("AMBER_PAGE_SCAN_DEBUG")
+        .ok()
+        .is_some_and(|v| v == "1")
+}
+
+fn log_page_scan_debug(
+    page_index: usize,
+    page_type: PdfPageType,
+    scan: &PageContentScan,
+    page_area_pts2: f32,
+) {
+    if !page_scan_debug_enabled() {
+        return;
+    }
+
+    eprintln!(
+        "[page-scan] page={page_index} type={page_type} text={} images={} largest_area={:.2}% depth_cap={} cycles_skipped={}",
+        scan.has_text,
+        scan.qualifying_image_count,
+        scan.largest_image_area_ratio * 100.0,
+        scan.max_depth_reached,
+        scan.forms_skipped_cycle,
+    );
+
+    if scan.ignored_image_count > 0 && page_area_pts2 > 0.0 {
+        eprintln!(
+            "[page-scan] page={page_index} ignored_images={} below_min_area={:.4}%",
+            scan.ignored_image_count,
+            MIN_SIGNIFICANT_IMAGE_AREA_RATIO * 100.0,
+        );
+    }
+}
+
+#[cfg(test)]
+mod form_scan_logic {
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    struct TestSig(u8);
+
+    #[derive(Debug, Clone, Copy)]
+    enum TestItem {
+        Enter(TestSig),
+        Child,
+        Exit(TestSig),
+    }
+
+    fn simulate_path_guard(items: &[TestItem]) -> (usize, usize, bool) {
+        let mut path: HashSet<TestSig> = HashSet::new();
+        let mut stack: Vec<TestItem> = items.iter().copied().rev().collect();
+        let mut visited_children = 0usize;
+        let mut skipped_cycles = 0usize;
+
+        while let Some(item) = stack.pop() {
+            match item {
+                TestItem::Exit(sig) => {
+                    path.remove(&sig);
+                }
+                TestItem::Enter(sig) => {
+                    if path.contains(&sig) {
+                        skipped_cycles += 1;
+                        continue;
+                    }
+                    path.insert(sig);
+                    stack.push(TestItem::Exit(sig));
+                }
+                TestItem::Child => {
+                    visited_children += 1;
+                }
+            }
+        }
+
+        (visited_children, skipped_cycles, path.is_empty())
+    }
+
+    #[test]
+    fn exit_marker_pops_path_only_after_subtree() {
+        let sig = TestSig(1);
+        let (visited, skipped, empty) = simulate_path_guard(&[
+            TestItem::Enter(sig),
+            TestItem::Child,
+            TestItem::Child,
+            TestItem::Exit(sig),
+        ]);
+        assert_eq!(visited, 2);
+        assert_eq!(skipped, 0);
+        assert!(empty);
+    }
+
+    #[test]
+    fn identical_sibling_forms_both_visited() {
+        let sig = TestSig(7);
+        let (visited, skipped, empty) = simulate_path_guard(&[
+            TestItem::Enter(sig),
+            TestItem::Child,
+            TestItem::Exit(sig),
+            TestItem::Enter(sig),
+            TestItem::Child,
+            TestItem::Exit(sig),
+        ]);
+        assert_eq!(visited, 2);
+        assert_eq!(skipped, 0);
+        assert!(empty);
+    }
+
+    #[test]
+    fn cycle_on_active_path_is_skipped() {
+        let sig = FormSig {
+            len: 1,
+            matrix_a: 0,
+            matrix_b: 0,
+            matrix_c: 0,
+            matrix_d: 0,
+            matrix_e: 0,
+            matrix_f: 0,
+        };
+        let mut path = HashSet::new();
+        path.insert(sig);
+        assert!(path.contains(&sig));
+        let skipped = if path.contains(&sig) { 1 } else { 0 };
+        path.remove(&sig);
+        assert_eq!(skipped, 1);
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn image_area_threshold_counts_qualifying_only() {
+        let mut scan = PageContentScan::default();
+        record_image_area(&mut scan, 50.0, 100_000.0, 100.0);
+        record_image_area(&mut scan, 500.0, 100_000.0, 100.0);
+        assert!(scan.has_significant_images);
+        assert_eq!(scan.qualifying_image_count, 1);
+        assert_eq!(scan.ignored_image_count, 1);
+        assert_eq!(scan.largest_image_area_pts2, 500.0);
+    }
+
+    #[test]
+    fn classify_routing_table() {
+        assert_eq!(classify_page_type(true, true), PdfPageType::Hybrid);
+        assert_eq!(classify_page_type(true, false), PdfPageType::Digital);
+        assert_eq!(classify_page_type(false, true), PdfPageType::Ocr);
+        assert_eq!(classify_page_type(false, false), PdfPageType::Digital);
+    }
+}
 
 /// Classification of a PDF page's content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -152,28 +468,11 @@ impl PdfRasterizer {
         for (idx, page) in document.pages().iter().enumerate() {
             let width_pts = page.width().value;
             let height_pts = page.height().value;
+            let page_area_pts2 = width_pts * height_pts;
 
-            let mut has_text = false;
-            let mut has_images = false;
-
-            for object in page.objects().iter() {
-                match object.object_type() {
-                    PdfPageObjectType::Text => {
-                        has_text = true;
-                    }
-                    PdfPageObjectType::Image => {
-                        has_images = true;
-                    }
-                    _ => {}
-                }
-            }
-
-            let page_type = match (has_text, has_images) {
-                (true, true) => PdfPageType::Hybrid,
-                (true, false) => PdfPageType::Digital,
-                (false, true) => PdfPageType::Ocr,
-                (false, false) => PdfPageType::Digital,
-            };
+            let scan = scan_page_content(&page, page_area_pts2);
+            let page_type = classify_page_type(scan.has_text, scan.has_significant_images);
+            log_page_scan_debug(idx, page_type, &scan, page_area_pts2);
 
             page_infos.push(PdfPageInfo {
                 page_index: idx,
@@ -1364,5 +1663,32 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].text, "Dr");
         assert_eq!(merged[1].text, "Smith");
+    }
+
+    /// Phase 0 calibration probe — run with `cargo test us_traffic_form_spike -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual US Traffic calibration spike"]
+    fn us_traffic_form_spike() -> Result<(), OcrError> {
+        let path = std::path::Path::new(
+            r"C:\Users\aashi\Desktop\MSU\Masters\CSE802\US_Traffic_Sign_Classification_Report.pdf",
+        );
+        if !path.is_file() {
+            eprintln!("skip: US Traffic PDF not found at {}", path.display());
+            return Ok(());
+        }
+        let rasterizer = PdfRasterizer::new()?;
+        let document = rasterizer.load_document_from_file(path)?;
+        for (idx, page) in document.pages().iter().enumerate() {
+            let page_area = page.width().value * page.height().value;
+            let scan = scan_page_content(&page, page_area);
+            eprintln!(
+                "page={idx} type={} text={} images={} largest={:.3}%",
+                classify_page_type(scan.has_text, scan.has_significant_images),
+                scan.has_text,
+                scan.qualifying_image_count,
+                scan.largest_image_area_ratio * 100.0,
+            );
+        }
+        Ok(())
     }
 }

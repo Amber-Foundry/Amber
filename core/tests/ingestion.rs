@@ -649,6 +649,60 @@ fn digital_tight_word_fragments_separates_words() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+// --- Form XObject nested image classification ---
+
+fn scan_first_page_type(fixture: &str) -> Result<PdfPageType, Box<dyn Error>> {
+    let path = require_fixture(fixture)?;
+    let rasterizer = PdfRasterizer::new().map_err(|err| format!("pdfium init failed: {err}"))?;
+    let document = rasterizer
+        .load_document_from_file(path.as_path())
+        .map_err(|err| format!("load pdf failed: {err}"))?;
+    let pages = PdfRasterizer::scan_loaded_document(&document)
+        .map_err(|err| format!("scan failed: {err}"))?;
+    pages
+        .first()
+        .map(|p| p.page_type)
+        .ok_or_else(|| "expected at least one page".into())
+}
+
+#[test]
+fn hybrid_form_nested_image_is_classified_hybrid() -> Result<(), Box<dyn Error>> {
+    if skip_if_pdfium_unavailable().is_err() {
+        return Ok(());
+    }
+    assert_eq!(
+        scan_first_page_type("digital_form_nested_image.pdf")?,
+        PdfPageType::Hybrid
+    );
+    Ok(())
+}
+
+#[test]
+fn hybrid_form_nested_text_and_image_not_ocr_only() -> Result<(), Box<dyn Error>> {
+    if skip_if_pdfium_unavailable().is_err() {
+        return Ok(());
+    }
+    let page_type = scan_first_page_type("digital_form_nested_text_and_image.pdf")?;
+    assert_eq!(
+        page_type,
+        PdfPageType::Hybrid,
+        "nested text+image in form must route to Hybrid, not Ocr-only"
+    );
+    Ok(())
+}
+
+#[test]
+fn digital_vector_form_border_stays_digital() -> Result<(), Box<dyn Error>> {
+    if skip_if_pdfium_unavailable().is_err() {
+        return Ok(());
+    }
+    assert_eq!(
+        scan_first_page_type("digital_vector_form_border.pdf")?,
+        PdfPageType::Digital
+    );
+    Ok(())
+}
+
 #[test]
 fn fixtures_are_present_on_disk() -> Result<(), Box<dyn Error>> {
     for name in [
@@ -664,6 +718,9 @@ fn fixtures_are_present_on_disk() -> Result<(), Box<dyn Error>> {
         "digital_per_glyph_word.pdf",
         "digital_tight_word_fragments.pdf",
         "digital_word_fragment_line.pdf",
+        "digital_form_nested_image.pdf",
+        "digital_form_nested_text_and_image.pdf",
+        "digital_vector_form_border.pdf",
         "scanned_single_page.pdf",
     ] {
         let path = fixture_path(name);

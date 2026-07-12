@@ -357,3 +357,9 @@ if __name__ == "__main__":
     write_digital_per_glyph_word()
     write_digital_tight_word_fragments()
     write_scanned_single_page()
+    try:
+        from write_form_fixtures import main as write_form_fixtures_main
+
+        write_form_fixtures_main()
+    except ImportError as exc:
+        print(f"skip form fixtures (install pikepdf): {exc}")
