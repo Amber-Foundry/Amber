@@ -996,7 +996,7 @@ fn merge_text_objects_on_visual_lines(
     for block in blocks {
         let center_y = block.bbox.y + (block.bbox.height / 2.0);
         let punct_fragment = is_punctuation_only(block.text.trim());
-        if let Some(line) = lines.iter_mut().find(|line| {
+        if let Some(line) = lines.iter_mut().rev().find(|line| {
             let mut tolerance = (line.max_height.min(block.bbox.height) * 0.6).max(2.0);
             if punct_fragment {
                 tolerance = tolerance.max(8.0);
