@@ -1,7 +1,7 @@
 use crate::ingest::text::{
-    attaches_to_previous_char, has_spurious_punctuation_spacing, is_decimal_continuation,
-    is_decimal_continuation_char, is_punctuation_only, should_insert_inter_object_space,
-    word_gap_threshold, InterObjectJoinContext,
+    attaches_to_previous_char, average_char_width, has_spurious_punctuation_spacing,
+    is_decimal_continuation, is_decimal_continuation_char, is_punctuation_only,
+    should_insert_inter_object_space, word_gap_threshold, InterObjectJoinContext,
 };
 use crate::ocr::engine::OcrError;
 use crate::ocr::ocr_models_dir;

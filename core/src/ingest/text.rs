@@ -139,7 +139,7 @@ fn boundary_next_token(next_text: &str) -> &str {
     next_text.split_whitespace().next().unwrap_or(next_text)
 }
 
-fn average_char_width(text: &str, width: f32) -> f32 {
+pub(crate) fn average_char_width(text: &str, width: f32) -> f32 {
     let char_count = text.chars().filter(|ch| !ch.is_whitespace()).count().max(1) as f32;
     (width / char_count).max(0.1)
 }
