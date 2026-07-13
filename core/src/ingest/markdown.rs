@@ -305,11 +305,12 @@ fn coalesce_consecutive_headings(blocks: &[TextBlock]) -> Vec<TextBlock> {
             if should_merge_headings(previous, block, median_line_height) {
                 previous.text = format!("{} {}", previous.text.trim(), block.text.trim());
                 previous.bbox = union_optional_rects(previous.bbox.take(), block.bbox.clone());
-                if let (Some(previous_confidence), Some(next_confidence)) =
-                    (previous.confidence, block.confidence)
-                {
-                    previous.confidence = Some((previous_confidence + next_confidence) / 2.0);
-                }
+                previous.confidence = match (previous.confidence, block.confidence) {
+                    (Some(p), Some(n)) => Some((p + n) / 2.0),
+                    (Some(p), None) => Some(p),
+                    (None, Some(n)) => Some(n),
+                    (None, None) => None,
+                };
                 continue;
             }
         }
