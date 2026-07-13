@@ -339,23 +339,18 @@ fn timestep_peak_and_margin(values: &[f32], kind: RecOutputKind) -> (f32, f32, f
         }
         RecOutputKind::LogProbabilities => {
             let mut max_log = f32::NEG_INFINITY;
-            for &val in values {
+            let mut max_idx = 0usize;
+            for (idx, &val) in values.iter().enumerate() {
                 if val > max_log {
                     max_log = val;
+                    max_idx = idx;
                 }
             }
             let mut exp_sum = 0.0f32;
             for &val in values {
                 exp_sum += (val - max_log).exp();
             }
-            let mut max_idx = 0usize;
-            let mut max_val = f32::NEG_INFINITY;
-            for (idx, &val) in values.iter().enumerate() {
-                if val > max_val {
-                    max_val = val;
-                    max_idx = idx;
-                }
-            }
+            let max_val = max_log;
             let peak = if exp_sum > 0.0 {
                 ((max_val - max_log).exp() / exp_sum).clamp(0.0, 1.0)
             } else {
