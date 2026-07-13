@@ -111,6 +111,22 @@ export function setLlmMode(mode: "local" | "cloud" | "hybrid"): void {
   window.dispatchEvent(new CustomEvent("mindvault:llm-settings-changed"));
 }
 
+const IMPORT_EXTRACTION_MODE_KEY = "amber.import.extractionMode";
+export type ImportExtractionMode = "ai" | "fast";
+
+export function getImportExtractionMode(): ImportExtractionMode {
+  const value = window.localStorage.getItem(IMPORT_EXTRACTION_MODE_KEY);
+  return value === "ai" ? "ai" : "fast";
+}
+
+export function setImportExtractionMode(mode: ImportExtractionMode): void {
+  const next = mode === "ai" ? "ai" : "fast";
+  window.localStorage.setItem(IMPORT_EXTRACTION_MODE_KEY, next);
+  void settingsSet(IMPORT_EXTRACTION_MODE_KEY, next).catch((err) => {
+    console.error("Failed to persist import extraction mode in SQLite:", err);
+  });
+}
+
 export async function getApiKey(provider: string): Promise<string> {
   const value = await unwrapIpcResult(settingsGet(`mindvault.llm.${provider}.apikey`));
   return value || "";
@@ -244,6 +260,7 @@ void (async () => {
   const keys = [
     LLM_PROVIDER_KEY,
     LLM_MODE_KEY,
+    IMPORT_EXTRACTION_MODE_KEY,
     OLLAMA_ENDPOINT_KEY,
     LMSTUDIO_ENDPOINT_KEY,
     CHARTS_ENABLED_KEY,

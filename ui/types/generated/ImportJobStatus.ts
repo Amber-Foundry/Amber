@@ -4,9 +4,11 @@ export type ImportJobStatus = {
   id: string;
   status: string;
   sourceName: string;
+  targetVaultId: string | null;
   changesetId: string | null;
   nodeCount: number;
   totalPages: number;
+  currentPage: number;
   digitalPages: number;
   ocrPages: number;
   hybridPages: number;

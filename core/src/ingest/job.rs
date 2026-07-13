@@ -404,6 +404,8 @@ impl IngestJobEngine {
             config.include_margin_blocks_in_chunks,
         );
 
+        // Stay on "extracting" through LLM / candidate build so the Job Log does not
+        // look finished (and Cancel stays available) before proposals are staged.
         if let Some(ref tx) = progress_tx {
             let _ = tx.send(ImportJobProgress {
                 job_id: job_id.clone(),
@@ -413,7 +415,7 @@ impl IngestJobEngine {
                 ocr_pages,
                 hybrid_pages,
                 avg_ocr_confidence,
-                status: "staged".to_string(),
+                status: "extracting".to_string(),
             });
         }
 

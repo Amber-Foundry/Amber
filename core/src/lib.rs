@@ -2943,8 +2943,10 @@ fn import_start_job(
                 let mut last_emit = Instant::now() - Duration::from_millis(250);
                 let mut pending_progress: Option<ingest::ImportJobProgress> = None;
                 while let Ok(progress) = progress_rx.recv() {
-                    let is_final = progress.current_page == progress.total_pages
-                        || progress.status == "staged";
+                    // Flush immediately when a page completes or pages are done (LLM phase).
+                    // Do not treat mid-job ticks as staged — only finalize sets staged.
+                    let is_final =
+                        progress.current_page == progress.total_pages && progress.total_pages > 0;
                     pending_progress = Some(progress);
                     if is_final || last_write.elapsed() >= Duration::from_millis(250) {
                         if let Some(ref pending) = pending_progress {

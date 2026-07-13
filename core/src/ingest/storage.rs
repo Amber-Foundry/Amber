@@ -15,6 +15,7 @@ pub struct ImportJobRow {
     pub created_at: String,
     pub completed_at: Option<String>,
     pub total_pages: i32,
+    pub current_page: i32,
     pub digital_pages: i32,
     pub ocr_pages: i32,
     pub hybrid_pages: i32,
@@ -44,11 +45,18 @@ impl Default for CreateImportJobParams {
 }
 
 const IMPORT_JOB_SELECT: &str = "SELECT
-    id, import_type, source_name, target_vault_id, status, changeset_id, COALESCE(node_count, 0),
-    error, created_at, completed_at, COALESCE(total_pages, 0), COALESCE(digital_pages, 0),
-    COALESCE(ocr_pages, 0), COALESCE(hybrid_pages, 0), COALESCE(avg_ocr_confidence, 0.0),
-    COALESCE(rasterization_dpi, 300), COALESCE(tables_detected_unpreserved, 0), extraction_path
-    FROM import_jobs";
+    j.id, j.import_type, j.source_name, j.target_vault_id,
+    CASE
+      WHEN j.status = 'committed' AND c.status = 'dismissed' THEN 'dismissed'
+      ELSE j.status
+    END,
+    j.changeset_id, COALESCE(j.node_count, 0),
+    j.error, j.created_at, j.completed_at, COALESCE(j.total_pages, 0), COALESCE(j.current_page, 0),
+    COALESCE(j.digital_pages, 0), COALESCE(j.ocr_pages, 0), COALESCE(j.hybrid_pages, 0),
+    COALESCE(j.avg_ocr_confidence, 0.0), COALESCE(j.rasterization_dpi, 300),
+    COALESCE(j.tables_detected_unpreserved, 0), j.extraction_path
+    FROM import_jobs j
+    LEFT JOIN changesets c ON c.id = j.changeset_id";
 
 fn map_import_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ImportJobRow> {
     Ok(ImportJobRow {
@@ -63,13 +71,14 @@ fn map_import_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ImportJobRow>
         created_at: row.get(8)?,
         completed_at: row.get(9)?,
         total_pages: row.get(10)?,
-        digital_pages: row.get(11)?,
-        ocr_pages: row.get(12)?,
-        hybrid_pages: row.get(13)?,
-        avg_ocr_confidence: row.get::<_, f64>(14)? as f32,
-        rasterization_dpi: row.get(15)?,
-        tables_detected_unpreserved: row.get(16)?,
-        extraction_path: row.get(17)?,
+        current_page: row.get(11)?,
+        digital_pages: row.get(12)?,
+        ocr_pages: row.get(13)?,
+        hybrid_pages: row.get(14)?,
+        avg_ocr_confidence: row.get::<_, f64>(15)? as f32,
+        rasterization_dpi: row.get(16)?,
+        tables_detected_unpreserved: row.get(17)?,
+        extraction_path: row.get(18)?,
     })
 }
 
@@ -134,18 +143,26 @@ pub fn update_import_job_from_progress(
     id: &str,
     progress: &ImportJobProgress,
 ) -> Result<(), String> {
+    // Only finalize (`update_import_job_staged_metadata`) may mark a job staged.
+    let status = if progress.status == "staged" {
+        "extracting"
+    } else {
+        progress.status.as_str()
+    };
     conn.execute(
         "UPDATE import_jobs
          SET status = ?1,
              total_pages = ?2,
-             digital_pages = ?3,
-             ocr_pages = ?4,
-             hybrid_pages = ?5,
-             avg_ocr_confidence = ?6
-         WHERE id = ?7;",
+             current_page = ?3,
+             digital_pages = ?4,
+             ocr_pages = ?5,
+             hybrid_pages = ?6,
+             avg_ocr_confidence = ?7
+         WHERE id = ?8;",
         params![
-            progress.status,
+            status,
             progress.total_pages as i32,
+            progress.current_page as i32,
             progress.digital_pages as i32,
             progress.ocr_pages as i32,
             progress.hybrid_pages as i32,
@@ -169,6 +186,7 @@ pub fn update_import_job_staged_metadata(
          SET status = 'staged',
              source_name = ?1,
              total_pages = ?2,
+             current_page = ?2,
              digital_pages = ?3,
              ocr_pages = ?4,
              hybrid_pages = ?5,
@@ -244,7 +262,7 @@ pub fn link_import_job_changeset(
 
 pub fn get_import_job(conn: &Connection, id: &str) -> Result<Option<ImportJobRow>, String> {
     let mut stmt = conn
-        .prepare(&format!("{IMPORT_JOB_SELECT} WHERE id = ?1 LIMIT 1;"))
+        .prepare(&format!("{IMPORT_JOB_SELECT} WHERE j.id = ?1 LIMIT 1;"))
         .map_err(|err| format!("Failed to prepare import job select: {err}"))?;
 
     stmt.query_row(params![id], map_import_job_row)
@@ -255,7 +273,7 @@ pub fn get_import_job(conn: &Connection, id: &str) -> Result<Option<ImportJobRow
 pub fn list_import_jobs(conn: &Connection, limit: i32) -> Result<Vec<ImportJobRow>, String> {
     let mut stmt = conn
         .prepare(&format!(
-            "{IMPORT_JOB_SELECT} ORDER BY created_at DESC LIMIT ?1;"
+            "{IMPORT_JOB_SELECT} ORDER BY j.created_at DESC LIMIT ?1;"
         ))
         .map_err(|err| format!("Failed to prepare import job list: {err}"))?;
 
@@ -275,9 +293,11 @@ pub fn import_job_row_to_status(row: ImportJobRow) -> ImportJobStatus {
         id: row.id,
         status: row.status,
         source_name: row.source_name.unwrap_or_default(),
+        target_vault_id: row.target_vault_id,
         changeset_id: row.changeset_id,
         node_count: row.node_count,
         total_pages: row.total_pages,
+        current_page: row.current_page,
         digital_pages: row.digital_pages,
         ocr_pages: row.ocr_pages,
         hybrid_pages: row.hybrid_pages,
@@ -328,6 +348,7 @@ mod tests {
             created_at: "2026-01-01".to_string(),
             completed_at: None,
             total_pages: 1,
+            current_page: 1,
             digital_pages: 1,
             ocr_pages: 0,
             hybrid_pages: 0,
@@ -338,6 +359,8 @@ mod tests {
         };
         let status = import_job_row_to_status(row);
         assert_eq!(status.tables_detected_unpreserved, 1);
+        assert_eq!(status.current_page, 1);
+        assert!(status.target_vault_id.is_none());
 
         let row_zero = ImportJobRow {
             tables_detected_unpreserved: 0,
@@ -354,7 +377,7 @@ mod tests {
             id: status.id,
             import_type: "pdf".to_string(),
             source_name: Some(status.source_name),
-            target_vault_id: None,
+            target_vault_id: status.target_vault_id,
             status: status.status,
             changeset_id: status.changeset_id,
             node_count: status.node_count,
@@ -362,6 +385,7 @@ mod tests {
             created_at: "2026-01-01".to_string(),
             completed_at: None,
             total_pages: status.total_pages,
+            current_page: status.current_page,
             digital_pages: status.digital_pages,
             ocr_pages: status.ocr_pages,
             hybrid_pages: status.hybrid_pages,
@@ -407,10 +431,39 @@ mod tests {
         let row = require_job(&conn, "job-002")?;
         assert_eq!(row.status, "extracting");
         assert_eq!(row.total_pages, 10);
+        assert_eq!(row.current_page, 3);
         assert_eq!(row.digital_pages, 7);
         assert_eq!(row.ocr_pages, 2);
         assert_eq!(row.hybrid_pages, 1);
         assert!((row.avg_ocr_confidence - 0.92).abs() < f32::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn test_progress_does_not_set_staged() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+        create_import_job(&conn, "job-002b", &sample_params())?;
+
+        let progress = ImportJobProgress {
+            job_id: "job-002b".to_string(),
+            current_page: 10,
+            total_pages: 10,
+            digital_pages: 10,
+            ocr_pages: 0,
+            hybrid_pages: 0,
+            avg_ocr_confidence: 1.0,
+            status: "staged".to_string(),
+        };
+        update_import_job_from_progress(&conn, "job-002b", &progress)?;
+
+        let row = require_job(&conn, "job-002b")?;
+        assert_eq!(row.status, "extracting");
+        assert_eq!(row.current_page, 10);
+        assert_eq!(row.total_pages, 10);
+
+        let status = import_job_row_to_status(row);
+        assert_eq!(status.current_page, 10);
+        assert_eq!(status.target_vault_id.as_deref(), Some("vault_test"));
         Ok(())
     }
 
@@ -439,6 +492,7 @@ mod tests {
         assert_eq!(row.status, "staged");
         assert_eq!(row.source_name.as_deref(), Some("staged.pdf"));
         assert_eq!(row.total_pages, 12);
+        assert_eq!(row.current_page, 12);
         assert_eq!(row.digital_pages, 9);
         assert_eq!(row.ocr_pages, 2);
         assert_eq!(row.hybrid_pages, 1);
@@ -586,6 +640,31 @@ mod tests {
         assert_eq!(row.status, "extracting");
         assert!(row.error.is_none());
         assert!(row.completed_at.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_committed_job_with_dismissed_changeset_surfaces_dismissed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+        create_import_job(&conn, "job-dismiss", &sample_params())?;
+        conn.execute(
+            "INSERT INTO changesets (id, status, item_count, accepted_count, dismissed_count)
+             VALUES ('cs-dismiss', 'dismissed', 3, 0, 3);",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE import_jobs
+             SET status = 'committed',
+                 changeset_id = 'cs-dismiss',
+                 completed_at = datetime('now')
+             WHERE id = 'job-dismiss';",
+            [],
+        )?;
+
+        let row = require_job(&conn, "job-dismiss")?;
+        assert_eq!(row.status, "dismissed");
+        assert_eq!(import_job_row_to_status(row).status.as_str(), "dismissed");
         Ok(())
     }
 }

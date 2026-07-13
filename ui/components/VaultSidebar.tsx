@@ -839,6 +839,11 @@ function VaultSidebar({
                 <span className="list-title-text">
                   {getPrivacyDisplayLabel(vault.name, effectiveTier, isRedactedUnlocked)}
                 </span>
+                {vault.id === "vault_root_graph" && (
+                  <span className="vault-global-tag" title="Global context vault">
+                    Global
+                  </span>
+                )}
                 {effectiveTier === "locked" && <span className="privacy-lock-icon">🔒</span>}
               </span>
               {isRedactedLocked ? (

@@ -140,3 +140,14 @@
   line-height: 1.4;
   color: rgba(40, 30, 20, 0.65);
 }
+
+.importBusyBanner {
+  margin: 0 14px 8px;
+  padding: 8px 10px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  border-radius: 8px;
+  background: rgba(188, 108, 37, 0.1);
+  color: var(--primary-color);
+  border: 1px solid rgba(188, 108, 37, 0.2);
+}

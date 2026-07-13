@@ -1165,7 +1165,12 @@ pub fn commit_changeset_transaction(
             )
             .unwrap_or(false);
         if import_jobs_table_exists {
-            create_import_document_spine(&tx, &input.changeset_id, session_key.as_ref())?;
+            // Spine only when something was accepted; all-dismissed leaves no chunks.
+            if resolved_status != "dismissed" {
+                create_import_document_spine(&tx, &input.changeset_id, session_key.as_ref())?;
+            }
+            // DB CHECK still only allows committed (not dismissed). List/get map
+            // committed+changeset.dismissed → status "dismissed" for the Job Log.
             tx.execute(
                 "UPDATE import_jobs
                  SET status = 'committed',

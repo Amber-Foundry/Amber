@@ -7,58 +7,38 @@ import {
   type ImportExtractionPreview,
   type ImportJobStatus,
 } from "../services/import";
+import { listVaults } from "../services/vaults";
 import { toAppError } from "../services/ipcResult";
 import ImportJobLogStyles from "../style/components/ImportJobLog.module.css";
+import {
+  formatImportDestinationLabel,
+  formatImportJobPhaseSummary,
+  formatImportJobStatusLabel,
+  importJobProgressPercent,
+  isImportJobActive,
+  isImportJobFailed,
+  isImportJobResolved,
+} from "../utils/importJobStatus";
 
 const POLL_INTERVAL_MS = 2000;
 
-const TERMINAL_SUCCESS = new Set(["staged", "committed"]);
-const TERMINAL_FAILURE = new Set(["failed"]);
-const ACTIVE = new Set(["pending", "extracting"]);
-
-function isJobComplete(job: ImportJobStatus): boolean {
-  return TERMINAL_SUCCESS.has(job.status);
-}
-
-function isJobFailed(job: ImportJobStatus): boolean {
-  return TERMINAL_FAILURE.has(job.status);
-}
-
-function isJobActive(job: ImportJobStatus): boolean {
-  return ACTIVE.has(job.status);
-}
-
-function formatPageSummary(job: ImportJobStatus): string {
-  if (job.totalPages === 0) {
-    return "Waiting for page analysis…";
-  }
-  const parts: string[] = [];
-  if (job.digitalPages > 0) parts.push(`${job.digitalPages} digital`);
-  if (job.hybridPages > 0) {
-    parts.push(`${job.hybridPages} hybrid (embedded images extracted via OCR)`);
-  }
-  if (job.ocrPages > 0) parts.push(`${job.ocrPages} scanned`);
-  return `${job.totalPages} pages — ${parts.join(", ") || "no page breakdown yet"}`;
-}
-
-function jobProgressPercent(job: ImportJobStatus): number {
-  if (isJobComplete(job)) return 100;
-  if (isJobFailed(job) || job.totalPages === 0) return 0;
-  const processed = job.digitalPages + job.ocrPages + job.hybridPages;
-  return Math.min(100, Math.round((processed / job.totalPages) * 100));
-}
-
 function isModelNotFoundError(job: ImportJobStatus): boolean {
-  return isJobFailed(job) && (job.error?.includes("OCR model not found") ?? false);
+  return isImportJobFailed(job) && (job.error?.includes("OCR model not found") ?? false);
 }
 
 type ImportJobLogProps = {
   refreshKey?: number;
   onOpenChangeset?: (changesetId: string) => void;
+  onActiveJobsChange?: (hasActive: boolean) => void;
 };
 
-export default function ImportJobLog({ refreshKey = 0, onOpenChangeset }: ImportJobLogProps) {
+export default function ImportJobLog({
+  refreshKey = 0,
+  onOpenChangeset,
+  onActiveJobsChange,
+}: ImportJobLogProps) {
   const [jobs, setJobs] = useState<ImportJobStatus[]>([]);
+  const [vaultNameById, setVaultNameById] = useState<Map<string, string>>(() => new Map());
   const [isDownloadingModels, setIsDownloadingModels] = useState(false);
   const [hasAttemptedDownload, setHasAttemptedDownload] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -97,6 +77,28 @@ export default function ImportJobLog({ refreshKey = 0, onOpenChangeset }: Import
     }, 0);
     return () => clearTimeout(timer);
   }, [refreshKey, refreshJobs]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void listVaults()
+        .then((vaults) => {
+          if (cancelled || !mountedRef.current) return;
+          setVaultNameById(new Map(vaults.map((v) => [v.id, v.name])));
+        })
+        .catch(() => {
+          // Destination falls back to id / Root Graph hardcode.
+        });
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    onActiveJobsChange?.(jobs.some(isImportJobActive));
+  }, [jobs, onActiveJobsChange]);
 
   useEffect(() => {
     if (downloadStartedRef.current || hasAttemptedDownload) return;
@@ -181,13 +183,14 @@ export default function ImportJobLog({ refreshKey = 0, onOpenChangeset }: Import
     <div className={ImportJobLogStyles.jobLogPanel}>
       {jobs.map((job) => {
         const modelMissing = isModelNotFoundError(job);
-        const canReview = isJobComplete(job);
+        const canReview = isImportJobResolved(job);
+        const destination = formatImportDestinationLabel(job.targetVaultId, vaultNameById);
         return (
           <div key={job.id} className={ImportJobLogStyles.jobCard}>
             <div className={ImportJobLogStyles.jobHeader}>
               <span className={ImportJobLogStyles.jobSourceName}>{job.sourceName}</span>
               <div className={ImportJobLogStyles.jobHeaderActions}>
-                {isJobActive(job) && (
+                {isImportJobActive(job) && (
                   <button
                     type="button"
                     className={ImportJobLogStyles.cancelBtn}
@@ -198,14 +201,16 @@ export default function ImportJobLog({ refreshKey = 0, onOpenChangeset }: Import
                   </button>
                 )}
                 <span className={ImportJobLogStyles.jobStatusBadge} data-status={job.status}>
-                  {job.status}
+                  {formatImportJobStatusLabel(job.status)}
                 </span>
               </div>
             </div>
 
+            <p className={ImportJobLogStyles.jobDestination}>Destination: {destination}</p>
+
             {isDownloadingModels && modelMissing ? (
               <p className={ImportJobLogStyles.jobNotice}>Downloading OCR models, please wait...</p>
-            ) : isJobFailed(job) ? (
+            ) : isImportJobFailed(job) ? (
               <p className={ImportJobLogStyles.jobError}>
                 {hasAttemptedDownload && modelMissing
                   ? "Models downloaded — retry import."
@@ -216,10 +221,15 @@ export default function ImportJobLog({ refreshKey = 0, onOpenChangeset }: Import
                 <div className={ImportJobLogStyles.progressTrack}>
                   <div
                     className={ImportJobLogStyles.progressFill}
-                    style={{ width: `${jobProgressPercent(job)}%` }}
+                    style={{ width: `${importJobProgressPercent(job)}%` }}
                   />
                 </div>
-                <p className={ImportJobLogStyles.jobSummary}>{formatPageSummary(job)}</p>
+                <p className={ImportJobLogStyles.jobSummary}>{formatImportJobPhaseSummary(job)}</p>
+                {job.status === "staged" && (
+                  <p className={ImportJobLogStyles.jobHint}>
+                    Not in the vault yet — open proposals to accept.
+                  </p>
+                )}
                 <div className={ImportJobLogStyles.jobBadges}>
                   <span className={ImportJobLogStyles.confidenceBadge}>
                     OCR confidence: {Math.round(job.avgOcrConfidence * 100)}%

@@ -4,6 +4,12 @@ import { browseImportPdf, buildImportStartInput, startImportJob } from "../servi
 import { toAppError } from "../services/ipcResult";
 import { listVaults } from "../services/vaults";
 import ImportHubStyles from "../style/components/ImportHub.module.css";
+import {
+  getImportExtractionMode,
+  setImportExtractionMode,
+  type ImportExtractionMode,
+} from "../utils/settings";
+import { ROOT_GRAPH_VAULT_ID } from "../utils/importJobStatus";
 import ImportJobLog from "./ImportJobLog";
 
 export interface ExtractionModeOption {
@@ -15,6 +21,7 @@ interface ExtractionDropdownProps {
   selectedValue: string | number | null;
   placeholder?: string;
   onChange: (value: string | number) => void;
+  disabled?: boolean;
 }
 
 export const ExtractionDropdown: React.FC<ExtractionDropdownProps> = ({
@@ -22,6 +29,7 @@ export const ExtractionDropdown: React.FC<ExtractionDropdownProps> = ({
   selectedValue,
   placeholder = "Select an option",
   onChange,
+  disabled = false,
 }) => {
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -49,12 +57,15 @@ export const ExtractionDropdown: React.FC<ExtractionDropdownProps> = ({
       <button
         className={ImportHubStyles.extractionDropdownHeader}
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        disabled={disabled}
+        onClick={() => {
+          if (!disabled) setIsOpen(!isOpen);
+        }}
       >
         {selectedOption ? selectedOption.label : placeholder}
       </button>
 
-      {isOpen && (
+      {isOpen && !disabled && (
         <ul className={ImportHubStyles.extractionDropdownMenu}>
           {options.map((option) => (
             <li
@@ -76,8 +87,27 @@ const ExtractionModeOptions: ExtractionModeOption[] = [
   { label: "Fast Import", value: "fast" },
 ];
 
+const BUSY_IMPORT_MESSAGE =
+  "An import is already in progress. Cancel it in the Job Log or wait for it to finish.";
+
 function isPdfPath(path: string): boolean {
   return path.toLowerCase().endsWith(".pdf");
+}
+
+function vaultOptionLabel(name: string, id: string): string {
+  if (id === ROOT_GRAPH_VAULT_ID) {
+    return "Root Graph";
+  }
+  return name;
+}
+
+function sortVaultOptions(options: ExtractionModeOption[]): ExtractionModeOption[] {
+  return [...options].sort((a, b) => {
+    const aRoot = String(a.value) === ROOT_GRAPH_VAULT_ID ? 0 : 1;
+    const bRoot = String(b.value) === ROOT_GRAPH_VAULT_ID ? 0 : 1;
+    if (aRoot !== bRoot) return aRoot - bRoot;
+    return String(a.label).localeCompare(String(b.label));
+  });
 }
 
 export default function ImportHub({
@@ -85,19 +115,40 @@ export default function ImportHub({
 }: {
   onOpenImportChangeset?: (changesetId: string) => void;
 }) {
-  const [selectedFramework, setSelectedFramework] = useState<string | number | null>(null);
+  const [selectedFramework, setSelectedFramework] = useState<string | number | null>(() =>
+    getImportExtractionMode()
+  );
   const [selectedVault, setSelectedVault] = useState<string | number | null>(null);
   const [vaultOptions, setVaultOptions] = useState<ExtractionModeOption[]>([]);
   const [vaultsLoading, setVaultsLoading] = useState(true);
   const [startError, setStartError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [jobLogRefreshKey, setJobLogRefreshKey] = useState(0);
+  const [importBusy, setImportBusy] = useState(false);
 
-  const isReady = Boolean(selectedFramework && selectedVault) && !starting;
+  const isReady = Boolean(selectedFramework && selectedVault) && !starting && !importBusy;
+
+  const handleFrameworkChange = useCallback((value: string | number) => {
+    const mode: ImportExtractionMode = value === "ai" ? "ai" : "fast";
+    setSelectedFramework(mode);
+    setImportExtractionMode(mode);
+  }, []);
+
+  const handleActiveJobsChange = useCallback((hasActive: boolean) => {
+    setImportBusy(hasActive);
+    if (!hasActive) {
+      setStartError((prev) => (prev === BUSY_IMPORT_MESSAGE ? null : prev));
+    }
+  }, []);
 
   const refreshVaultOptions = useCallback(async (): Promise<ExtractionModeOption[]> => {
     const vaults = await listVaults();
-    const options = vaults.map((vault) => ({ label: vault.name, value: vault.id }));
+    const options = sortVaultOptions(
+      vaults.map((vault) => ({
+        label: vaultOptionLabel(vault.name, vault.id),
+        value: vault.id,
+      }))
+    );
     setVaultOptions(options);
     setVaultsLoading(false);
     return options;
@@ -146,7 +197,12 @@ export default function ImportHub({
 
   const beginImport = useCallback(
     async (filePath: string) => {
-      if (!selectedFramework || !selectedVault || starting) return;
+      if (!selectedFramework || !selectedVault || starting || importBusy) {
+        if (importBusy) {
+          setStartError(BUSY_IMPORT_MESSAGE);
+        }
+        return;
+      }
       if (!isPdfPath(filePath)) {
         setStartError("Only PDF files are supported for import.");
         return;
@@ -168,18 +224,28 @@ export default function ImportHub({
           useLlmExtraction: selectedFramework === "ai",
         });
         await startImportJob(input);
+        setImportBusy(true);
         setJobLogRefreshKey((key) => key + 1);
       } catch (error) {
-        setStartError(toAppError(error).message);
+        const message = toAppError(error).message;
+        if (message.toLowerCase().includes("already active")) {
+          setStartError(BUSY_IMPORT_MESSAGE);
+          setImportBusy(true);
+        } else {
+          setStartError(message);
+        }
       } finally {
         setStarting(false);
       }
     },
-    [refreshVaultOptions, selectedFramework, selectedVault, starting]
+    [importBusy, refreshVaultOptions, selectedFramework, selectedVault, starting]
   );
 
   const handleBrowse = useCallback(async () => {
-    if (!isReady) return;
+    if (!isReady) {
+      if (importBusy) setStartError(BUSY_IMPORT_MESSAGE);
+      return;
+    }
     try {
       const path = await browseImportPdf();
       if (!path) return;
@@ -187,7 +253,7 @@ export default function ImportHub({
     } catch (error) {
       setStartError(toAppError(error).message);
     }
-  }, [beginImport, isReady]);
+  }, [beginImport, importBusy, isReady]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -196,7 +262,10 @@ export default function ImportHub({
     void getCurrentWindow()
       .onDragDropEvent((event) => {
         if (event.payload.type !== "drop") return;
-        if (!selectedFramework || !selectedVault) return;
+        if (!selectedFramework || !selectedVault || importBusy || starting) {
+          if (importBusy) setStartError(BUSY_IMPORT_MESSAGE);
+          return;
+        }
         const pdfPath = event.payload.paths.find(isPdfPath);
         if (!pdfPath) {
           setStartError("Only PDF files are supported for import.");
@@ -219,7 +288,7 @@ export default function ImportHub({
       cancelled = true;
       unlisten?.();
     };
-  }, [beginImport, selectedFramework, selectedVault]);
+  }, [beginImport, importBusy, selectedFramework, selectedVault, starting]);
 
   return (
     <div className="pane pane-left">
@@ -231,7 +300,7 @@ export default function ImportHub({
           options={ExtractionModeOptions}
           selectedValue={selectedFramework}
           placeholder="Select Extraction Mode"
-          onChange={setSelectedFramework}
+          onChange={handleFrameworkChange}
         />
         <ExtractionDropdown
           options={vaultOptions}
@@ -246,6 +315,11 @@ export default function ImportHub({
           staging, use View Extraction in the Job Log for the full extracted text.
         </p>
       )}
+      {importBusy && (
+        <p className={ImportHubStyles.importBusyBanner} role="status">
+          {BUSY_IMPORT_MESSAGE}
+        </p>
+      )}
       <div
         className={`${ImportHubStyles.importDropZone} ${!isReady ? ImportHubStyles.importDropZoneDisabled : ""}`}
         aria-disabled={!isReady}
@@ -253,6 +327,8 @@ export default function ImportHub({
         <p>
           {starting ? (
             "Starting import…"
+          ) : importBusy ? (
+            "Import in progress — cancel from the Job Log to start another"
           ) : isReady ? (
             <>
               Drag & drop files here or{" "}
@@ -276,7 +352,11 @@ export default function ImportHub({
         <span className="sidebar-subtitle">Job Log</span>
       </div>
 
-      <ImportJobLog refreshKey={jobLogRefreshKey} onOpenChangeset={onOpenImportChangeset} />
+      <ImportJobLog
+        refreshKey={jobLogRefreshKey}
+        onOpenChangeset={onOpenImportChangeset}
+        onActiveJobsChange={handleActiveJobsChange}
+      />
     </div>
   );
 }

@@ -219,6 +219,17 @@
   flex-shrink: 0;
 }
 
+.vault-global-tag {
+  flex-shrink: 0;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(188, 108, 37, 0.12);
+  color: #b56a37;
+}
+
 .list-item small {
   font-size: 0.74rem;
   color: #a3a09a;
