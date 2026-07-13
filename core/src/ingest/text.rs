@@ -241,12 +241,7 @@ pub(crate) struct InterObjectJoinContext<'a> {
 /// Two-tier word-boundary join: kerning cap vs word cap, with punctuation guards.
 pub(crate) fn should_insert_inter_object_space(ctx: &InterObjectJoinContext<'_>) -> bool {
     // Word-final marker from per-glyph Word/Docs exports (trailing space in object_text)
-    if ctx
-        .prev_text
-        .chars()
-        .last()
-        .is_some_and(char::is_whitespace)
-    {
+    if ctx.prev_text.ends_with(char::is_whitespace) {
         let next_trim = ctx.next_text.trim_start();
         if !next_trim.is_empty()
             && !attaches_to_previous_word(next_trim)
