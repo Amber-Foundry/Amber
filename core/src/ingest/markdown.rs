@@ -122,9 +122,15 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
             BlockType::Table | BlockType::Body => text.to_string(),
         };
 
+        let collapsed_text = if block.block_type == BlockType::Table {
+            formatted
+        } else {
+            collapse_internal_whitespace_block(&formatted)
+        };
+
         out.push(IngestBlock::from_layout_block(
             text,
-            collapse_internal_whitespace_block(&formatted),
+            collapsed_text,
             block.block_type,
             block.confidence,
             page_index,
@@ -699,6 +705,20 @@ mod tests {
         assert_eq!(markdown, "Density Preserving");
         crate::ingest::text::assert_no_duplicate_spaces(&markdown)
             .unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    #[test]
+    fn table_blocks_preserve_internal_whitespace_alignment() {
+        let blocks = vec![TextBlock {
+            text: "Col1\tCol2\tCol3".to_string(),
+            block_type: BlockType::Table,
+            bbox: None,
+            confidence: None,
+            fragment: false,
+        }];
+        let assembled = assemble_markdown_blocks(&blocks, 0);
+        assert_eq!(assembled.len(), 1);
+        assert_eq!(assembled[0].formatted_text, "Col1\tCol2\tCol3");
     }
 
     #[test]
