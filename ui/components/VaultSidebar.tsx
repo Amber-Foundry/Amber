@@ -12,6 +12,7 @@ import {
   getPrivacyRank,
   getVaultEffectivePrivacy as getRecursiveVaultEffectivePrivacy,
 } from "../utils/privacy";
+import { getImportDocumentId, isImportChunkNode } from "../utils/importDocument";
 
 const VAULT_ICON_CHOICES = [
   "💳",
@@ -695,6 +696,9 @@ function VaultSidebar({
     // (sub-vault id if present, otherwise top-level vault id)
     const nodeMap = new Map<string, Node[]>();
     for (const node of allNodes) {
+      if (isImportChunkNode(node)) {
+        continue;
+      }
       const parentKey = node.subVaultId ?? node.vaultId;
       const existing = nodeMap.get(parentKey) ?? [];
       existing.push(node);
@@ -720,24 +724,34 @@ function VaultSidebar({
     const matchNodes = new Set<string>();
     let count = 0;
 
-    // Find matching nodes
+    // Find matching nodes (chunks are hidden — promote their parent document when a chunk matches)
     for (const node of allNodes) {
       const titleMatch = node.title.toLowerCase().includes(normalizedQuery);
       const summaryMatch = node.summary.toLowerCase().includes(normalizedQuery);
-      if (titleMatch || summaryMatch) {
-        matchNodes.add(node.id);
-        count++;
-        // Mark parent vault/sub-vault as containing a match
-        if (node.subVaultId) {
-          matchSubVaults.add(node.subVaultId);
-          // Also find the root vault for this sub-vault
-          const subVault = vaults.find((v) => v.id === node.subVaultId);
-          if (subVault?.parentVaultId) {
-            matchVaults.add(subVault.parentVaultId);
-          }
-        }
-        matchVaults.add(node.vaultId);
+      if (!titleMatch && !summaryMatch) {
+        continue;
       }
+
+      let listed = node;
+      if (isImportChunkNode(node)) {
+        const documentId = getImportDocumentId(node);
+        const parent = documentId ? allNodes.find((n) => n.id === documentId) : undefined;
+        if (!parent || matchNodes.has(parent.id)) {
+          continue;
+        }
+        listed = parent;
+      }
+
+      matchNodes.add(listed.id);
+      count++;
+      if (listed.subVaultId) {
+        matchSubVaults.add(listed.subVaultId);
+        const subVault = vaults.find((v) => v.id === listed.subVaultId);
+        if (subVault?.parentVaultId) {
+          matchVaults.add(subVault.parentVaultId);
+        }
+      }
+      matchVaults.add(listed.vaultId);
     }
 
     // Find matching vaults by name

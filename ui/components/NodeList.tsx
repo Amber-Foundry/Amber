@@ -11,6 +11,7 @@ import {
   getVaultDisplayLabel,
   getVaultEffectivePrivacy,
 } from "../utils/privacy";
+import { isImportChunkNode } from "../utils/importDocument";
 import { PrivacyBadge } from "./PrivacyBadge";
 
 const VAULT_ICON_CHOICES = [
@@ -165,6 +166,9 @@ function NodeList({
   const nodesByContainer = useMemo(() => {
     const map = new Map<string, Node[]>();
     for (const node of nodes) {
+      if (isImportChunkNode(node)) {
+        continue;
+      }
       const containerId = node.subVaultId ?? node.vaultId;
       const list = map.get(containerId) ?? [];
       list.push(node);

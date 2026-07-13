@@ -43,6 +43,8 @@ import { PrivacyBadge } from "./PrivacyBadge";
 import PriorityBar from "./PriorityBar";
 import NodeLinkAutocomplete from "./NodeLinkAutocomplete";
 import { useUIStore } from "../utils/store";
+import ImportDocumentSpine from "./ImportDocumentSpine";
+import { isImportDocumentNode } from "../utils/importDocument";
 
 type NodeEditorExpandedProps = {
   nodeId: string;
@@ -1072,48 +1074,56 @@ export default function NodeEditorExpanded({
             )}
 
             <div className="door-list">
-              {outgoingDoors.map((door) => {
-                const targetNode = door.targetNodeId ? allNodesMap[door.targetNodeId] : undefined;
-                const targetTitle = targetNode
-                  ? getNodeDisplayLabel(targetNode)
-                  : "Missing node link";
-                return (
-                  <div
-                    key={door.id}
-                    className={`door-item ${door.status === "orphaned" ? "orphaned" : ""}`}
-                  >
-                    <div className="door-main">
-                      {door.status !== "orphaned" && door.targetNodeId ? (
+              {node && isImportDocumentNode(node) && (
+                <p className="document-sections-summary">
+                  {outgoingDoors.filter((d) => d.label === "section").length} sections — navigate
+                  via Document sections in the preview
+                </p>
+              )}
+              {outgoingDoors
+                .filter((door) => !(node && isImportDocumentNode(node) && door.label === "section"))
+                .map((door) => {
+                  const targetNode = door.targetNodeId ? allNodesMap[door.targetNodeId] : undefined;
+                  const targetTitle = targetNode
+                    ? getNodeDisplayLabel(targetNode)
+                    : "Missing node link";
+                  return (
+                    <div
+                      key={door.id}
+                      className={`door-item ${door.status === "orphaned" ? "orphaned" : ""}`}
+                    >
+                      <div className="door-main">
+                        {door.status !== "orphaned" && door.targetNodeId ? (
+                          <button
+                            type="button"
+                            className="door-link-btn"
+                            onClick={() => onSelectNode(door.targetNodeId!)}
+                            title={`Navigate to: ${targetTitle}`}
+                          >
+                            <strong>{targetTitle} ↗</strong>
+                          </button>
+                        ) : (
+                          <strong>{targetTitle}</strong>
+                        )}
+                        {door.status === "orphaned" && (
+                          <span className="door-orphan-badge">[Orphaned]</span>
+                        )}
+                        {door.label && <span className="door-label">{door.label}</span>}
+                      </div>
+                      {!isAnyLocked && (
                         <button
                           type="button"
-                          className="door-link-btn"
-                          onClick={() => onSelectNode(door.targetNodeId!)}
-                          title={`Navigate to: ${targetTitle}`}
+                          className="door-delete-btn"
+                          onClick={() => void onDoorDelete(door.id)}
+                          title="Delete door link"
+                          aria-label={`Delete door link to ${targetTitle}`}
                         >
-                          <strong>{targetTitle} ↗</strong>
+                          ×
                         </button>
-                      ) : (
-                        <strong>{targetTitle}</strong>
                       )}
-                      {door.status === "orphaned" && (
-                        <span className="door-orphan-badge">[Orphaned]</span>
-                      )}
-                      {door.label && <span className="door-label">{door.label}</span>}
                     </div>
-                    {!isAnyLocked && (
-                      <button
-                        type="button"
-                        className="door-delete-btn"
-                        onClick={() => void onDoorDelete(door.id)}
-                        title="Delete door link"
-                        aria-label={`Delete door link to ${targetTitle}`}
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
             </div>
 
             <div className="door-list incoming">
@@ -1283,6 +1293,13 @@ export default function NodeEditorExpanded({
                 <>
                   <h1 className="preview-node-title">{editTitle || "Untitled Node"}</h1>
                   {editSummary && <p className="preview-node-summary">{editSummary}</p>}
+                  {node && isImportDocumentNode(node) && (
+                    <ImportDocumentSpine
+                      documentNode={node}
+                      allNodes={allNodes}
+                      onSelectSection={onSelectNode}
+                    />
+                  )}
                   <hr className="preview-divider" />
                   <ExistingNodesContext.Provider value={existingNodeIds}>
                     <ReactMarkdown

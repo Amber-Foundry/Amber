@@ -18,6 +18,7 @@ import {
   getVaultEffectivePrivacy,
   shouldOmitSpatialConnector,
 } from "../utils/privacy";
+import { isImportChunkNode } from "../utils/importDocument";
 import type { Vault, Node, Door } from "../types/generated";
 import "../style/components/SpatialWorkspace.css";
 
@@ -964,7 +965,10 @@ export default function SpatialWorkspace({
   // Compute nodes list for a specific vault and optional subvault
   const getNodesFor = (vaultId: string, subvaultId: string | null) => {
     return nodes.filter(
-      (n) => n.vaultId === vaultId && (subvaultId ? n.subVaultId === subvaultId : !n.subVaultId)
+      (n) =>
+        !isImportChunkNode(n) &&
+        n.vaultId === vaultId &&
+        (subvaultId ? n.subVaultId === subvaultId : !n.subVaultId)
     );
   };
 
@@ -1002,7 +1006,9 @@ export default function SpatialWorkspace({
       const containerGap = 10;
       const subvaultHeaderHeight = 28;
 
-      const vaultNodes = nodes.filter((n) => n.vaultId === vaultId && !n.subVaultId);
+      const vaultNodes = nodes.filter(
+        (n) => n.vaultId === vaultId && !n.subVaultId && !isImportChunkNode(n)
+      );
       const subVaultsList = vaults.filter((sv) => sv.parentVaultId === vaultId);
 
       if (!nodeId) {
@@ -1027,7 +1033,7 @@ export default function SpatialWorkspace({
       let currentOffset = paddingTop + headerHeight + vaultNodes.length * rowHeight;
       for (const sv of subVaultsList) {
         currentOffset += containerGap; // Margin inside subvault card
-        const svNodes = nodes.filter((n) => n.subVaultId === sv.id);
+        const svNodes = nodes.filter((n) => n.subVaultId === sv.id && !isImportChunkNode(n));
 
         if (sv.id === subvaultId) {
           const svNodeIndex = svNodes.findIndex((n) => n.id === nodeId);
@@ -1056,6 +1062,8 @@ export default function SpatialWorkspace({
       // Source node
       const srcNode = nodes.find((n) => n.id === door.sourceNodeId);
       if (!srcNode) return;
+      // Hide import-spine edges (section/next involving chunk nodes) — they clutter vault cards
+      if (isImportChunkNode(srcNode)) return;
 
       const srcContainerId = srcNode.subVaultId ?? srcNode.vaultId;
       const srcContainerTier =
@@ -1077,6 +1085,7 @@ export default function SpatialWorkspace({
       if (door.targetNodeId) {
         const tgtNode = nodes.find((n) => n.id === door.targetNodeId);
         if (tgtNode) {
+          if (isImportChunkNode(tgtNode)) return;
           tgtCardPos = cardPositions[tgtNode.vaultId];
           const tgtContainerId = tgtNode.subVaultId ?? tgtNode.vaultId;
           const tgtContainerTier =
