@@ -39,17 +39,17 @@ pub fn finalize_import_changeset(
         return Ok(None);
     }
 
-    let session_id = ensure_import_session(conn, job_id, target_vault_id)?;
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("Failed to start import changeset transaction: {err}"))?;
+    let session_id = ensure_import_session(&tx, job_id, target_vault_id)?;
     let pending = crate::memory_agent::changeset::build_changeset(
-        conn,
+        &tx,
         candidates,
         &session_id,
         embed_engine,
     )?;
     let item_count = pending.items.len() as i32;
-    let tx = conn
-        .transaction()
-        .map_err(|err| format!("Failed to start import changeset transaction: {err}"))?;
     let changeset_id =
         crate::memory_agent::persistence::persist_changeset(&tx, &pending, model_used)?;
     tx.commit()
