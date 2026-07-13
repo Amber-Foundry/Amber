@@ -69,8 +69,7 @@ pub(crate) fn attaches_to_previous_word(text: &str) -> bool {
 
 /// True when `text` should join without a trailing space (e.g. `(` fragments).
 pub(crate) fn attaches_to_following_word(text: &str) -> bool {
-    let trimmed = text.trim();
-    trimmed
+    text.trim_end()
         .chars()
         .last()
         .is_some_and(|c| ATTACHES_FOLLOWING.contains(c))
