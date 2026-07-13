@@ -664,11 +664,7 @@ impl IngestJobEngine {
     }
 }
 
-/// Verifies that fallback output remains traceable to the exact chunk it represents.
-fn validate_fallback_candidate(chunk: &ImportChunkSpec, candidate: &CandidateNode) -> Vec<String> {
-    validate_candidate_integrity(chunk, candidate, &[])
-}
-
+/// Verifies candidate output remains traceable to the exact chunk it represents.
 fn validate_candidate_integrity(
     chunk: &ImportChunkSpec,
     candidate: &CandidateNode,
@@ -1450,7 +1446,7 @@ mod tests {
         let mut candidate =
             IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
         candidate.detail = Some("invented detail".to_string());
-        let warnings = validate_fallback_candidate(&chunk, &candidate);
+        let warnings = validate_candidate_integrity(&chunk, &candidate, &[]);
         assert!(warnings
             .iter()
             .any(|warning| warning.contains("not contained")));
