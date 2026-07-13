@@ -715,8 +715,7 @@ fn attach_integrity_trace(
     candidate: &mut CandidateNode,
     all_chunks: &[ImportChunkSpec],
 ) {
-    let mut warnings = validate_fallback_candidate(chunk, candidate);
-    warnings.extend(validate_candidate_integrity(chunk, candidate, all_chunks));
+    let mut warnings = validate_candidate_integrity(chunk, candidate, all_chunks);
     warnings.sort();
     warnings.dedup();
     if !warnings.is_empty() {
