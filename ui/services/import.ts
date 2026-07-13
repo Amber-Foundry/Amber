@@ -1,3 +1,4 @@
+import type { ImportExtractionPreview } from "../types/generated/ImportExtractionPreview";
 import type { ImportJobStatus } from "../types/generated/ImportJobStatus";
 import type { ImportStartJobInput } from "../types/generated/ImportStartJobInput";
 import { invokeTyped } from "../ipc";
@@ -10,6 +11,7 @@ import {
 } from "../utils/settings";
 import { unwrapIpcResult } from "./ipcResult.ts";
 
+export type { ImportExtractionPreview } from "../types/generated/ImportExtractionPreview";
 export type { ImportJobStatus } from "../types/generated/ImportJobStatus";
 export type { ImportStartJobInput } from "../types/generated/ImportStartJobInput";
 
@@ -129,4 +131,23 @@ export async function startOcrModelDownload(): Promise<void> {
     return;
   }
   await unwrapIpcResult(invokeTyped<void>("ocr_download_models"));
+}
+
+export async function getImportExtractionPreview(jobId: string): Promise<ImportExtractionPreview> {
+  if (USE_MOCK) {
+    return {
+      jobId,
+      sourceName: MOCK_STATUS.sourceName,
+      markdown: "# Mock extraction\n\nSample markdown from Fast Import.",
+      status: MOCK_STATUS.status,
+      totalPages: MOCK_STATUS.totalPages,
+      digitalPages: MOCK_STATUS.digitalPages,
+      ocrPages: MOCK_STATUS.ocrPages,
+      hybridPages: MOCK_STATUS.hybridPages,
+      changesetId: MOCK_STATUS.changesetId,
+    };
+  }
+  return unwrapIpcResult(
+    invokeTyped<ImportExtractionPreview>("import_get_extraction_preview", { jobId })
+  );
 }

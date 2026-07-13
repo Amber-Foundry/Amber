@@ -660,7 +660,12 @@ function App() {
                       setActiveSessionId={setActiveSessionId}
                     />
                   ) : leftPanelView === "import" ? (
-                    <ImportHub />
+                    <ImportHub
+                      onOpenImportChangeset={(changesetId) => {
+                        setSelectedChangesetId(changesetId);
+                        setIsDiffPanelOpen(true);
+                      }}
+                    />
                   ) : !selectedVaultId ? (
                     <VaultSidebar
                       selectedVaultId={selectedVaultId}

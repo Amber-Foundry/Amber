@@ -94,6 +94,7 @@ pub fn finalize_import_changeset(
         &session_id,
         write_target.as_deref(),
         embed_engine,
+        true, // import always ADD — never UPDATE/MERGE against existing nodes
     )?;
     let item_count = pending.items.len() as i32;
     let changeset_id =
@@ -331,5 +332,39 @@ mod tests {
         let proposed: ProposedNodeData = serde_json::from_str(&proposed_data)
             .unwrap_or_else(|err| panic!("expected proposed JSON: {err}"));
         assert_eq!(proposed.vault_id.as_deref(), Some("vault_custom_user"));
+    }
+
+    #[test]
+    fn finalize_import_changeset_force_add_despite_similar_existing_node() {
+        let mut conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, sub_vault_id, node_type, title, summary, detail, version, is_archived, deleted_at)
+             VALUES ('node_existing', 'vault_learning', NULL, 'fact', 'Imported fact', 'From PDF extraction', 'old detail', 1, 0, NULL);",
+            [],
+        )
+        .unwrap_or_else(|err| panic!("failed to insert existing node: {err}"));
+
+        let candidates = vec![sample_candidate(None)];
+        let (changeset_id, item_count) = finalize_import_changeset(
+            &mut conn,
+            "job-force-add",
+            Some("vault_learning"),
+            &candidates,
+            None,
+            None,
+        )
+        .unwrap_or_else(|err| panic!("expected finalize to succeed: {err}"))
+        .unwrap_or_else(|| panic!("expected changeset id"));
+
+        assert_eq!(item_count, 1);
+        let (item_type, target_node_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT item_type, target_node_id FROM changeset_items WHERE changeset_id = ?1 LIMIT 1;",
+                [&changeset_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|err| panic!("expected changeset item: {err}"));
+        assert_eq!(item_type, "add");
+        assert!(target_node_id.is_none());
     }
 }

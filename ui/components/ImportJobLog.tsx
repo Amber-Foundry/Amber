@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelImportJob,
+  getImportExtractionPreview,
   listImportJobs,
   startOcrModelDownload,
+  type ImportExtractionPreview,
   type ImportJobStatus,
 } from "../services/import";
+import { toAppError } from "../services/ipcResult";
 import ImportJobLogStyles from "../style/components/ImportJobLog.module.css";
 
 const POLL_INTERVAL_MS = 2000;
@@ -51,13 +54,17 @@ function isModelNotFoundError(job: ImportJobStatus): boolean {
 
 type ImportJobLogProps = {
   refreshKey?: number;
+  onOpenChangeset?: (changesetId: string) => void;
 };
 
-export default function ImportJobLog({ refreshKey = 0 }: ImportJobLogProps) {
+export default function ImportJobLog({ refreshKey = 0, onOpenChangeset }: ImportJobLogProps) {
   const [jobs, setJobs] = useState<ImportJobStatus[]>([]);
   const [isDownloadingModels, setIsDownloadingModels] = useState(false);
   const [hasAttemptedDownload, setHasAttemptedDownload] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [preview, setPreview] = useState<ImportExtractionPreview | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewLoadingJobId, setPreviewLoadingJobId] = useState<string | null>(null);
   const mountedRef = useRef(false);
   const downloadStartedRef = useRef(false);
 
@@ -126,10 +133,46 @@ export default function ImportJobLog({ refreshKey = 0 }: ImportJobLogProps) {
     }
   }, [cancelling, refreshJobs]);
 
+  const handleViewExtraction = useCallback(async (jobId: string) => {
+    setPreviewLoadingJobId(jobId);
+    setPreviewError(null);
+    try {
+      const result = await getImportExtractionPreview(jobId);
+      if (mountedRef.current) {
+        setPreview(result);
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        setPreviewError(toAppError(error).message || "Failed to load extraction");
+      }
+    } finally {
+      if (mountedRef.current) {
+        setPreviewLoadingJobId(null);
+      }
+    }
+  }, []);
+
+  const closePreview = useCallback(() => {
+    setPreview(null);
+    setPreviewError(null);
+  }, []);
+
+  const openProposals = useCallback(
+    (changesetId: string) => {
+      onOpenChangeset?.(changesetId);
+      closePreview();
+    },
+    [closePreview, onOpenChangeset]
+  );
+
   if (jobs.length === 0) {
     return (
       <div className={ImportJobLogStyles.jobLogPanel}>
         <p>No Current Jobs</p>
+        <p className={ImportJobLogStyles.jobHint}>
+          Fast Import creates chunked memory adds from extracted text — use View Extraction after a
+          job stages to read the full document text.
+        </p>
       </div>
     );
   }
@@ -138,6 +181,7 @@ export default function ImportJobLog({ refreshKey = 0 }: ImportJobLogProps) {
     <div className={ImportJobLogStyles.jobLogPanel}>
       {jobs.map((job) => {
         const modelMissing = isModelNotFoundError(job);
+        const canReview = isJobComplete(job);
         return (
           <div key={job.id} className={ImportJobLogStyles.jobCard}>
             <div className={ImportJobLogStyles.jobHeader}>
@@ -187,11 +231,79 @@ export default function ImportJobLog({ refreshKey = 0 }: ImportJobLogProps) {
                     </span>
                   )}
                 </div>
+                {canReview && (
+                  <div className={ImportJobLogStyles.jobActions}>
+                    <button
+                      type="button"
+                      className={ImportJobLogStyles.actionBtn}
+                      onClick={() => void handleViewExtraction(job.id)}
+                      disabled={previewLoadingJobId === job.id}
+                    >
+                      {previewLoadingJobId === job.id ? "Loading…" : "View Extraction"}
+                    </button>
+                    {job.changesetId && onOpenChangeset && (
+                      <button
+                        type="button"
+                        className={ImportJobLogStyles.actionBtn}
+                        onClick={() => openProposals(job.changesetId!)}
+                      >
+                        Open proposals
+                      </button>
+                    )}
+                  </div>
+                )}
               </>
             )}
           </div>
         );
       })}
+
+      {(preview || previewError) && (
+        <div
+          className={ImportJobLogStyles.previewOverlay}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Extraction preview"
+        >
+          <div className={ImportJobLogStyles.previewModal}>
+            <div className={ImportJobLogStyles.previewHeader}>
+              <div>
+                <h3 className={ImportJobLogStyles.previewTitle}>
+                  {preview?.sourceName ?? "Extraction"}
+                </h3>
+                {preview && (
+                  <p className={ImportJobLogStyles.previewMeta}>
+                    {preview.totalPages} pages · full extracted text (not a document archive)
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                className={ImportJobLogStyles.previewClose}
+                onClick={closePreview}
+              >
+                Close
+              </button>
+            </div>
+            {previewError ? (
+              <p className={ImportJobLogStyles.jobError}>{previewError}</p>
+            ) : (
+              <pre className={ImportJobLogStyles.previewBody}>{preview?.markdown}</pre>
+            )}
+            <div className={ImportJobLogStyles.previewFooter}>
+              {preview?.changesetId && onOpenChangeset && (
+                <button
+                  type="button"
+                  className={ImportJobLogStyles.actionBtn}
+                  onClick={() => openProposals(preview.changesetId!)}
+                >
+                  Review in Diff
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

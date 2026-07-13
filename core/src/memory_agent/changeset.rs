@@ -156,17 +156,21 @@ pub fn build_changeset(
     session_id: &str,
     engine: Option<&dyn EmbedEngine>,
 ) -> Result<PendingChangeset, String> {
-    build_changeset_with_write_vault(conn, candidates, session_id, None, engine)
+    build_changeset_with_write_vault(conn, candidates, session_id, None, engine, false)
 }
 
 /// Like [`build_changeset`], but prefers `write_vault_id` when assigning proposed node vaults
 /// (used when import targets a subvault while the session FK row stores the parent vault).
+///
+/// When `force_add` is true, Add/Update candidates always become ADD items (no similarity
+/// matching). Used by PDF import so extraction cannot overwrite unrelated existing nodes.
 pub fn build_changeset_with_write_vault(
     conn: &Connection,
     candidates: &[CandidateNode],
     session_id: &str,
     write_vault_id: Option<&str>,
     engine: Option<&dyn EmbedEngine>,
+    force_add: bool,
 ) -> Result<PendingChangeset, String> {
     // 1. Resolve active vault ID from session
     let active_vault_id: Option<String> = conn
@@ -177,6 +181,50 @@ pub fn build_changeset_with_write_vault(
         )
         .ok()
         .flatten();
+
+    if force_add {
+        let mut items = Vec::new();
+        for candidate in candidates {
+            if candidate.confidence < 0.3 {
+                continue;
+            }
+            if candidate.action == CandidateAction::Delete {
+                continue;
+            }
+            let resolved_vault_id =
+                resolve_proposed_vault_id(candidate, write_vault_id, active_vault_id.as_deref());
+            let proposed = ProposedNodeData {
+                title: candidate.title.clone(),
+                summary: candidate.summary.clone(),
+                detail: candidate.detail.clone(),
+                node_type: candidate.node_type.clone(),
+                target_vault_key: candidate.target_vault_key.clone(),
+                vault_id: Some(resolved_vault_id),
+                tags: candidate.tags.clone(),
+                confidence: candidate.confidence,
+                action: candidate.action,
+                substantial_change: None,
+                source: candidate.source.clone(),
+                source_type: candidate.source_type.clone(),
+                meta: candidate.meta.clone(),
+            };
+            let proposed_str = serde_json::to_string(&proposed)
+                .map_err(|err| format!("Failed to serialize proposed new data: {err}"))?;
+            items.push(PendingChangesetItem {
+                item_type: ChangesetItemType::Add,
+                target_node_id: None,
+                proposed_data: proposed_str,
+                existing_data: None,
+                similarity: None,
+                merge_with_id: None,
+            });
+        }
+        return Ok(PendingChangeset {
+            session_id: session_id.to_string(),
+            model_used: None,
+            items,
+        });
+    }
 
     // 2. Collect all relevant vaults (session vault + sub-vaults + candidate target vaults + default root)
     let mut relevant_vaults = HashSet::new();

@@ -132,3 +132,11 @@
   font-size: 0.82rem;
   color: #c83c3c;
 }
+
+.importHint {
+  margin: 0 14px 8px;
+  padding: 0 4px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: rgba(40, 30, 20, 0.65);
+}

@@ -178,7 +178,16 @@ fn digital_pdf_layout_pipeline() -> Result<(), Box<dyn Error>> {
     assert_eq!(meta_fallback_reason(candidate)?, "no_llm_configured");
     assert_eq!(candidate.confidence, 0.5);
     assert_eq!(candidate.node_type.as_deref(), Some("fact"));
-    assert_eq!(candidate.title, FIXTURE_TITLE);
+    assert!(
+        candidate.title.contains(FIXTURE_TITLE),
+        "expected title to include fixture heading, got {}",
+        candidate.title
+    );
+    assert!(
+        candidate.title.starts_with("digital_two_column"),
+        "expected Fast Import title to use source stem, got {}",
+        candidate.title
+    );
 
     Ok(())
 }

@@ -28,7 +28,10 @@ use ipc_types::{
     NodeUpdateInput, OnboardingNodeCommitInput, OnboardingProposedNode, Tag, TagCreateInput, Vault,
     VaultCreateInput, VaultUpdateInput,
 };
-pub use ipc_types::{EmbeddingReembedInput, EmbeddingStatus, ImportJobStatus, ImportStartJobInput};
+pub use ipc_types::{
+    EmbeddingReembedInput, EmbeddingStatus, ImportExtractionPreview, ImportJobStatus,
+    ImportStartJobInput,
+};
 
 // MARK: Internal Types and Constants
 
@@ -1794,6 +1797,7 @@ pub fn run() {
             import_start_job,
             import_get_status,
             import_list_jobs,
+            import_get_extraction_preview,
             import_cancel_job,
             import_browse_pdf,
             ocr_download_models,
@@ -3086,6 +3090,22 @@ fn import_list_jobs(
             .into_iter()
             .map(ingest::import_job_row_to_status)
             .collect())
+    })())
+}
+
+#[tauri::command]
+fn import_get_extraction_preview(
+    state: tauri::State<'_, AppState>,
+    job_id: String,
+) -> IpcResponse<ImportExtractionPreview> {
+    into_ipc((|| {
+        let conn = open_connection(&state.db_path)?;
+        let preview = ingest::get_import_extraction_preview(&conn, &job_id)?
+            .ok_or_else(|| format!("Import job not found: {job_id}"))?;
+        if preview.markdown.trim().is_empty() {
+            return Err("Extraction preview not available for this job".to_string());
+        }
+        Ok(preview)
     })())
 }
 

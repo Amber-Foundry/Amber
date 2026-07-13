@@ -130,3 +130,106 @@
   background: rgba(200, 140, 40, 0.15);
   color: #a06a1a;
 }
+
+.jobHint {
+  font-size: 0.78rem;
+  color: rgba(40, 30, 20, 0.65);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.jobActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.actionBtn {
+  font-size: 0.75rem;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(188, 108, 37, 0.35);
+  background: rgba(188, 108, 37, 0.08);
+  color: var(--primary-color);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.actionBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.previewOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 16, 12, 0.45);
+  padding: 24px;
+}
+
+.previewModal {
+  width: min(720px, 100%);
+  max-height: min(80vh, 800px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 14px;
+  background: #f7f4f1;
+  border: 1px solid rgba(188, 108, 37, 0.2);
+  box-shadow: 0 12px 40px rgba(20, 16, 12, 0.25);
+}
+
+.previewHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.previewTitle {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-black);
+}
+
+.previewMeta {
+  margin: 4px 0 0;
+  font-size: 0.75rem;
+  color: rgba(40, 30, 20, 0.65);
+}
+
+.previewClose {
+  font-size: 0.75rem;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(40, 30, 20, 0.2);
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.previewBody {
+  margin: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(188, 108, 37, 0.12);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  color: var(--text-black);
+}
+
+.previewFooter {
+  display: flex;
+  justify-content: flex-end;
+}

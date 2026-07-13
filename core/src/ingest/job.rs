@@ -16,6 +16,75 @@ use std::sync::mpsc;
 use std::sync::Arc;
 
 const MAX_SUMMARY_LEN: usize = 120;
+const MAX_TITLE_DISAMBIGUATOR_CHARS: usize = 80;
+
+/// File stem for Fast Import titles (`homework.pdf` → `homework`).
+fn source_stem(source_name: &str) -> &str {
+    Path::new(source_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(source_name)
+}
+
+/// Lines that are too short or look like repeating PDF headers (name / due date / page #).
+fn looks_like_boilerplate_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.chars().count() < 4 {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("due:")
+        || lower.starts_with("due date")
+        || lower.contains("due date")
+        || lower.starts_with("name:")
+        || lower.starts_with("student:")
+        || lower.starts_with("page ")
+    {
+        return true;
+    }
+    let alnum: String = trimmed.chars().filter(|c| c.is_alphanumeric()).collect();
+    !alnum.is_empty() && alnum.chars().all(|c| c.is_ascii_digit())
+}
+
+fn first_content_line(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !looks_like_boilerplate_line(line))
+        .map(|line| {
+            if line.chars().count() > MAX_TITLE_DISAMBIGUATOR_CHARS {
+                line.chars()
+                    .take(MAX_TITLE_DISAMBIGUATOR_CHARS.saturating_sub(3))
+                    .collect::<String>()
+                    + "..."
+            } else {
+                line.to_string()
+            }
+        })
+}
+
+fn fallback_chunk_title(chunk: &ImportChunkSpec, source_name: &str, total_chunks: usize) -> String {
+    let stem = source_stem(source_name);
+    let chunk_n = chunk.chunk_index.saturating_add(1);
+    let disambiguator = first_content_line(&chunk.text)
+        .or_else(|| {
+            chunk.heading_context.as_ref().and_then(|heading| {
+                if looks_like_boilerplate_line(heading) {
+                    None
+                } else {
+                    Some(heading.clone())
+                }
+            })
+        })
+        .unwrap_or_else(|| format!("Chunk {chunk_n}"));
+
+    let suffix = if total_chunks > 1 {
+        format!(" ({chunk_n}/{total_chunks})")
+    } else {
+        format!(" ({chunk_n})")
+    };
+    format!("{stem} · {disambiguator}{suffix}")
+}
 
 /// Which extraction pipeline a page should be routed through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,6 +429,7 @@ impl IngestJobEngine {
                 &source_name,
                 &config,
                 &runtime_handle,
+                chunks.len(),
             );
             for candidate in &mut chunk_candidates {
                 attach_integrity_trace(chunk, candidate, &chunks);
@@ -438,6 +508,7 @@ impl IngestJobEngine {
                 &source_name,
                 &config,
                 &runtime_handle,
+                chunks.len(),
             );
             for candidate in &mut chunk_candidates {
                 attach_integrity_trace(chunk, candidate, &chunks);
@@ -498,11 +569,9 @@ impl IngestJobEngine {
         source_name: &str,
         reason: Option<&str>,
         target_vault_key: Option<String>,
+        total_chunks: usize,
     ) -> CandidateNode {
-        let title = chunk
-            .heading_context
-            .clone()
-            .unwrap_or_else(|| format!("Imported Chunk {}", chunk.chunk_index));
+        let title = fallback_chunk_title(chunk, source_name, total_chunks.max(1));
         let detail = Some(chunk.text.clone());
         const MIN_SUMMARY_LEN: usize = 20;
         let mut summary = if let Some(end) = first_summary_boundary(&chunk.text, MIN_SUMMARY_LEN) {
@@ -526,6 +595,8 @@ impl IngestJobEngine {
         let mut meta_obj = serde_json::json!({
             "ocr_confidence": chunk.ocr_confidence,
             "tables_unstructured": chunk.tables_unstructured,
+            "chunk_index": chunk.chunk_index,
+            "token_estimate": chunk.token_count,
         });
         if let Some(r) = reason {
             if let Some(map) = meta_obj.as_object_mut() {
@@ -553,6 +624,7 @@ impl IngestJobEngine {
         source_name: &str,
         config: &IngestJobConfig,
         runtime: &tokio::runtime::Handle,
+        total_chunks: usize,
     ) -> Vec<CandidateNode> {
         let resolved_vault = match &config.allowed_vault_keys {
             None => Some("learning".to_string()),
@@ -566,6 +638,7 @@ impl IngestJobEngine {
                 source_name,
                 Some("injection_flagged"),
                 resolved_vault,
+                total_chunks,
             )];
         }
 
@@ -577,6 +650,7 @@ impl IngestJobEngine {
                     source_name,
                     Some("no_llm_configured"),
                     resolved_vault,
+                    total_chunks,
                 )]
             }
         };
@@ -598,6 +672,7 @@ impl IngestJobEngine {
                     source_name,
                     Some("unsupported_provider"),
                     resolved_vault.clone(),
+                    total_chunks,
                 )];
             }
         };
@@ -631,6 +706,7 @@ impl IngestJobEngine {
                     source_name,
                     Some("llm_call_failed"),
                     resolved_vault,
+                    total_chunks,
                 )];
             }
         };
@@ -646,6 +722,8 @@ impl IngestJobEngine {
                     node.meta = Some(serde_json::json!({
                         "ocr_confidence": chunk.ocr_confidence,
                         "tables_unstructured": chunk.tables_unstructured,
+                        "chunk_index": chunk.chunk_index,
+                        "token_estimate": chunk.token_count,
                     }));
                 }
                 candidates
@@ -659,6 +737,7 @@ impl IngestJobEngine {
                     source_name,
                     Some("llm_parse_failed"),
                     resolved_vault,
+                    total_chunks,
                 )]
             }
         }
@@ -1141,6 +1220,7 @@ mod tests {
             "test.pdf",
             Some("no_llm_configured"),
             Some("finance".to_string()),
+            1,
         );
         assert_eq!(node.target_vault_key, Some("finance".to_string()));
     }
@@ -1157,7 +1237,7 @@ mod tests {
             tables_unstructured: false,
             source_page_indices: vec![0],
         };
-        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None, 1);
         assert_eq!(node.target_vault_key, None);
     }
 
@@ -1173,7 +1253,7 @@ mod tests {
             tables_unstructured: false,
             source_page_indices: vec![0],
         };
-        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None, 1);
         assert_eq!(node.summary, "Is this a question? Yes it is!");
     }
 
@@ -1189,7 +1269,7 @@ mod tests {
             tables_unstructured: false,
             source_page_indices: vec![0],
         };
-        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None, 1);
         assert_eq!(node.summary, "Mr. Smith met Dr. Jones at the clinic");
     }
 
@@ -1206,7 +1286,7 @@ mod tests {
             tables_unstructured: false,
             source_page_indices: vec![0],
         };
-        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None, 1);
         assert_eq!(
             node.summary,
             "Meet\tMr. Smith went to the store and bought many things for the party"
@@ -1226,7 +1306,7 @@ mod tests {
             tables_unstructured: false,
             source_page_indices: vec![0],
         };
-        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+        let node = IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None, 1);
         assert_eq!(
             node.summary,
             ". This sentence starts with a period and is long enough to summarize"
@@ -1253,8 +1333,13 @@ mod tests {
 
         let (runtime_handle, _owned_runtime) = prepare_job_runtime()
             .unwrap_or_else(|err| panic!("expected job runtime in test: {err}"));
-        let nodes =
-            IngestJobEngine::extract_chunk_candidates(&chunk, "test.pdf", &config, &runtime_handle);
+        let nodes = IngestJobEngine::extract_chunk_candidates(
+            &chunk,
+            "test.pdf",
+            &config,
+            &runtime_handle,
+            1,
+        );
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].target_vault_key, None);
     }
@@ -1279,8 +1364,13 @@ mod tests {
 
         let (runtime_handle, _owned_runtime) = prepare_job_runtime()
             .unwrap_or_else(|err| panic!("expected job runtime in test: {err}"));
-        let nodes =
-            IngestJobEngine::extract_chunk_candidates(&chunk, "test.pdf", &config, &runtime_handle);
+        let nodes = IngestJobEngine::extract_chunk_candidates(
+            &chunk,
+            "test.pdf",
+            &config,
+            &runtime_handle,
+            1,
+        );
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].target_vault_key, Some("learning".to_string()));
     }
@@ -1447,11 +1537,68 @@ mod tests {
             source_page_indices: vec![0],
         };
         let mut candidate =
-            IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None);
+            IngestJobEngine::run_fallback_extraction(&chunk, "test.pdf", None, None, 1);
         candidate.detail = Some("invented detail".to_string());
         let warnings = validate_candidate_integrity(&chunk, &candidate, &[]);
         assert!(warnings
             .iter()
             .any(|warning| warning.contains("not contained")));
+    }
+
+    #[test]
+    fn fallback_title_uses_source_stem_and_skips_boilerplate_heading() {
+        let chunk = ImportChunkSpec {
+            chunk_index: 2,
+            text:
+                "Name: Ada Lovelace\nDue Date: Friday\nMatrix multiplication is associative when..."
+                    .to_string(),
+            token_count: 20,
+            heading_context: Some("Name: Ada Lovelace".to_string()),
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+            source_page_indices: vec![0],
+        };
+        let node = IngestJobEngine::run_fallback_extraction(&chunk, "cse824_hw.pdf", None, None, 5);
+        assert_eq!(
+            node.title,
+            "cse824_hw · Matrix multiplication is associative when... (3/5)"
+        );
+        assert_eq!(
+            node.meta
+                .as_ref()
+                .and_then(|m| m.get("chunk_index"))
+                .and_then(|v| v.as_u64()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn fallback_titles_differ_across_chunks() {
+        let chunk_a = ImportChunkSpec {
+            chunk_index: 0,
+            text: "Introduction to linear algebra over finite fields.".to_string(),
+            token_count: 8,
+            heading_context: Some("Due Date: Monday".to_string()),
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+            source_page_indices: vec![0],
+        };
+        let chunk_b = ImportChunkSpec {
+            chunk_index: 1,
+            text: "Eigenvalues appear when solving Ax = λx for square A.".to_string(),
+            token_count: 10,
+            heading_context: Some("Due Date: Monday".to_string()),
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+            source_page_indices: vec![1],
+        };
+        let a = IngestJobEngine::run_fallback_extraction(&chunk_a, "notes.pdf", None, None, 2);
+        let b = IngestJobEngine::run_fallback_extraction(&chunk_b, "notes.pdf", None, None, 2);
+        assert_ne!(a.title, b.title);
+        assert!(a.title.contains("(1/2)"));
+        assert!(b.title.contains("(2/2)"));
     }
 }

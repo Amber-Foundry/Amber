@@ -1,5 +1,5 @@
 use crate::ingest::job::{ImportJobProgress, IngestJobResult};
-use crate::ipc_types::ImportJobStatus;
+use crate::ipc_types::{ImportExtractionPreview, ImportJobStatus};
 use rusqlite::{params, Connection, OptionalExtension};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,8 +175,9 @@ pub fn update_import_job_staged_metadata(
              avg_ocr_confidence = ?6,
              rasterization_dpi = ?7,
              tables_detected_unpreserved = ?8,
-             extraction_path = ?9
-         WHERE id = ?10;",
+             extraction_path = ?9,
+             assembled_markdown = ?10
+         WHERE id = ?11;",
         params![
             result.source_name,
             result.total_pages as i32,
@@ -187,11 +188,41 @@ pub fn update_import_job_staged_metadata(
             rasterization_dpi,
             result.tables_detected_unpreserved,
             extraction_path,
+            result.assembled_markdown,
             id,
         ],
     )
     .map_err(|err| format!("Failed to update import job staged metadata: {err}"))?;
     Ok(())
+}
+
+/// Load a staged (or committed) job's literal extraction markdown for View Extraction.
+pub fn get_import_extraction_preview(
+    conn: &Connection,
+    job_id: &str,
+) -> Result<Option<ImportExtractionPreview>, String> {
+    conn.query_row(
+        "SELECT id, COALESCE(source_name, ''), COALESCE(assembled_markdown, ''), status,
+                COALESCE(total_pages, 0), COALESCE(digital_pages, 0), COALESCE(ocr_pages, 0),
+                COALESCE(hybrid_pages, 0), changeset_id
+         FROM import_jobs WHERE id = ?1 LIMIT 1;",
+        params![job_id],
+        |row| {
+            Ok(ImportExtractionPreview {
+                job_id: row.get(0)?,
+                source_name: row.get(1)?,
+                markdown: row.get(2)?,
+                status: row.get(3)?,
+                total_pages: row.get(4)?,
+                digital_pages: row.get(5)?,
+                ocr_pages: row.get(6)?,
+                hybrid_pages: row.get(7)?,
+                changeset_id: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|err| format!("Failed to fetch import extraction preview: {err}"))
 }
 
 pub fn link_import_job_changeset(
@@ -415,6 +446,12 @@ mod tests {
         assert_eq!(row.rasterization_dpi, 300);
         assert_eq!(row.tables_detected_unpreserved, 2);
         assert_eq!(row.extraction_path.as_deref(), Some("hybrid"));
+
+        let preview = get_import_extraction_preview(&conn, "job-003")?
+            .ok_or_else(|| "preview should exist".to_string())?;
+        assert_eq!(preview.markdown, "# Doc");
+        assert_eq!(preview.source_name, "staged.pdf");
+        assert_eq!(preview.status, "staged");
         Ok(())
     }
 

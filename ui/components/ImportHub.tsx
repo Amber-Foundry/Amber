@@ -80,7 +80,11 @@ function isPdfPath(path: string): boolean {
   return path.toLowerCase().endsWith(".pdf");
 }
 
-export default function ImportHub() {
+export default function ImportHub({
+  onOpenImportChangeset,
+}: {
+  onOpenImportChangeset?: (changesetId: string) => void;
+}) {
   const [selectedFramework, setSelectedFramework] = useState<string | number | null>(null);
   const [selectedVault, setSelectedVault] = useState<string | number | null>(null);
   const [vaultOptions, setVaultOptions] = useState<ExtractionModeOption[]>([]);
@@ -91,27 +95,54 @@ export default function ImportHub() {
 
   const isReady = Boolean(selectedFramework && selectedVault) && !starting;
 
+  const refreshVaultOptions = useCallback(async (): Promise<ExtractionModeOption[]> => {
+    const vaults = await listVaults();
+    const options = vaults.map((vault) => ({ label: vault.name, value: vault.id }));
+    setVaultOptions(options);
+    setVaultsLoading(false);
+    return options;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const timer = setTimeout(() => {
-      void listVaults()
-        .then((vaults) => {
+      void refreshVaultOptions()
+        .then((options) => {
           if (cancelled) return;
-          setVaultOptions(vaults.map((vault) => ({ label: vault.name, value: vault.id })));
+          setSelectedVault((prev) => {
+            if (prev == null) return prev;
+            return options.some((opt) => opt.value === prev) ? prev : null;
+          });
         })
         .catch((error) => {
           if (cancelled) return;
           setStartError(toAppError(error).message || "Failed to load vaults");
-        })
-        .finally(() => {
-          if (!cancelled) setVaultsLoading(false);
+          setVaultsLoading(false);
         });
     }, 0);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, []);
+  }, [refreshVaultOptions]);
+
+  // Re-fetch when the window regains focus so soft-deleted vaults drop out of the list.
+  useEffect(() => {
+    const onFocus = () => {
+      void refreshVaultOptions()
+        .then((options) => {
+          setSelectedVault((prev) => {
+            if (prev == null) return prev;
+            return options.some((opt) => opt.value === prev) ? prev : null;
+          });
+        })
+        .catch(() => {
+          // Keep existing options on focus refresh failure.
+        });
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshVaultOptions]);
 
   const beginImport = useCallback(
     async (filePath: string) => {
@@ -124,9 +155,16 @@ export default function ImportHub() {
       setStarting(true);
       setStartError(null);
       try {
+        const options = await refreshVaultOptions();
+        const vaultId = String(selectedVault);
+        if (!options.some((opt) => String(opt.value) === vaultId)) {
+          setSelectedVault(null);
+          setStartError("Vault no longer available — pick another");
+          return;
+        }
         const input = await buildImportStartInput({
           filePath,
-          targetVaultId: String(selectedVault),
+          targetVaultId: vaultId,
           useLlmExtraction: selectedFramework === "ai",
         });
         await startImportJob(input);
@@ -137,7 +175,7 @@ export default function ImportHub() {
         setStarting(false);
       }
     },
-    [selectedFramework, selectedVault, starting]
+    [refreshVaultOptions, selectedFramework, selectedVault, starting]
   );
 
   const handleBrowse = useCallback(async () => {
@@ -202,6 +240,12 @@ export default function ImportHub() {
           onChange={setSelectedVault}
         />
       </div>
+      {selectedFramework === "fast" && (
+        <p className={ImportHubStyles.importHint}>
+          Fast Import stages chunked memory adds from text — not a full document archive. After
+          staging, use View Extraction in the Job Log for the full extracted text.
+        </p>
+      )}
       <div
         className={`${ImportHubStyles.importDropZone} ${!isReady ? ImportHubStyles.importDropZoneDisabled : ""}`}
         aria-disabled={!isReady}
@@ -232,7 +276,7 @@ export default function ImportHub() {
         <span className="sidebar-subtitle">Job Log</span>
       </div>
 
-      <ImportJobLog refreshKey={jobLogRefreshKey} />
+      <ImportJobLog refreshKey={jobLogRefreshKey} onOpenChangeset={onOpenImportChangeset} />
     </div>
   );
 }
