@@ -237,8 +237,8 @@ fn group_into_vertical_bands(
     for block in blocks {
         let gap_threshold = band_line_height.max(1.0) * 1.5;
         if !current_band.is_empty() && block.bbox.y > current_bottom + gap_threshold {
-            band_line_height = compute_median_line_height(&current_band).max(initial_line_height);
             bands.push(std::mem::take(&mut current_band));
+            band_line_height = initial_line_height;
             current_bottom = f32::NEG_INFINITY;
         }
         current_bottom = current_bottom.max(block.bbox.y + block.bbox.height);
