@@ -1,36 +1,65 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listImportJobs, startOcrModelDownload, type ImportJobStatus } from "../services/import";
+import {
+  cancelImportJob,
+  listImportJobs,
+  startOcrModelDownload,
+  type ImportJobStatus,
+} from "../services/import";
 import ImportJobLogStyles from "../style/components/ImportJobLog.module.css";
 
 const POLL_INTERVAL_MS = 2000;
 
+const TERMINAL_SUCCESS = new Set(["staged", "committed"]);
+const TERMINAL_FAILURE = new Set(["failed"]);
+const ACTIVE = new Set(["pending", "extracting"]);
+
+function isJobComplete(job: ImportJobStatus): boolean {
+  return TERMINAL_SUCCESS.has(job.status);
+}
+
+function isJobFailed(job: ImportJobStatus): boolean {
+  return TERMINAL_FAILURE.has(job.status);
+}
+
+function isJobActive(job: ImportJobStatus): boolean {
+  return ACTIVE.has(job.status);
+}
+
 function formatPageSummary(job: ImportJobStatus): string {
+  if (job.totalPages === 0) {
+    return "Waiting for page analysis…";
+  }
   const parts: string[] = [];
   if (job.digitalPages > 0) parts.push(`${job.digitalPages} digital`);
   if (job.hybridPages > 0) {
     parts.push(`${job.hybridPages} hybrid (embedded images extracted via OCR)`);
   }
   if (job.ocrPages > 0) parts.push(`${job.ocrPages} scanned`);
-  return `${job.totalPages} pages — ${parts.join(", ")}`;
+  return `${job.totalPages} pages — ${parts.join(", ") || "no page breakdown yet"}`;
 }
 
 function jobProgressPercent(job: ImportJobStatus): number {
-  if (job.status === "completed") return 100;
-  if (job.status === "error" || job.totalPages === 0) return 0;
+  if (isJobComplete(job)) return 100;
+  if (isJobFailed(job) || job.totalPages === 0) return 0;
   const processed = job.digitalPages + job.ocrPages + job.hybridPages;
   return Math.min(100, Math.round((processed / job.totalPages) * 100));
 }
 
-// Stringly-typed sentinel match until the 2.4 backend gives us a real
-// OcrError enum on the wire.
 function isModelNotFoundError(job: ImportJobStatus): boolean {
-  return job.status === "error" && job.error.includes("OcrError::ModelNotFound");
+  return isJobFailed(job) && (job.error?.includes("OCR model not found") ?? false);
 }
 
-export default function ImportJobLog() {
+type ImportJobLogProps = {
+  refreshKey?: number;
+};
+
+export default function ImportJobLog({ refreshKey = 0 }: ImportJobLogProps) {
   const [jobs, setJobs] = useState<ImportJobStatus[]>([]);
-  const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
+  const [isDownloadingModels, setIsDownloadingModels] = useState(false);
+  const [hasAttemptedDownload, setHasAttemptedDownload] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const mountedRef = useRef(false);
+  const downloadStartedRef = useRef(false);
 
   const refreshJobs = useCallback(async () => {
     try {
@@ -43,7 +72,6 @@ export default function ImportJobLog() {
     }
   }, []);
 
-  // Poll on mount, keep polling on an interval.
   useEffect(() => {
     mountedRef.current = true;
     const intervalId = setInterval(refreshJobs, POLL_INTERVAL_MS);
@@ -55,25 +83,48 @@ export default function ImportJobLog() {
     };
   }, [refreshJobs]);
 
-  // Watch for ModelNotFound errors and kick off the bootstrap download once
-  // per job, guarded by downloadingIds so it can't loop.
   useEffect(() => {
-    jobs.forEach((job) => {
-      if (!isModelNotFoundError(job) || downloadingIds.has(job.id)) return;
+    if (refreshKey <= 0) return;
+    const timer = setTimeout(() => {
+      void refreshJobs();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [refreshKey, refreshJobs]);
 
-      setDownloadingIds((prev) => new Set(prev).add(job.id));
-      startOcrModelDownload(job.id)
+  useEffect(() => {
+    if (downloadStartedRef.current || hasAttemptedDownload) return;
+    if (!jobs.some(isModelNotFoundError)) return;
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled || downloadStartedRef.current || hasAttemptedDownload) return;
+      downloadStartedRef.current = true;
+      setIsDownloadingModels(true);
+      startOcrModelDownload()
         .then(() => refreshJobs())
         .finally(() => {
-          if (!mountedRef.current) return;
-          setDownloadingIds((prev) => {
-            const next = new Set(prev);
-            next.delete(job.id);
-            return next;
-          });
+          if (mountedRef.current) {
+            setIsDownloadingModels(false);
+            setHasAttemptedDownload(true);
+          }
         });
-    });
-  }, [jobs, downloadingIds, refreshJobs]);
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [jobs, hasAttemptedDownload, refreshJobs]);
+
+  const handleCancel = useCallback(async () => {
+    if (cancelling) return;
+    setCancelling(true);
+    try {
+      await cancelImportJob();
+      await refreshJobs();
+    } finally {
+      if (mountedRef.current) setCancelling(false);
+    }
+  }, [cancelling, refreshJobs]);
 
   if (jobs.length === 0) {
     return (
@@ -85,43 +136,62 @@ export default function ImportJobLog() {
 
   return (
     <div className={ImportJobLogStyles.jobLogPanel}>
-      {jobs.map((job) => (
-        <div key={job.id} className={ImportJobLogStyles.jobCard}>
-          <div className={ImportJobLogStyles.jobHeader}>
-            <span className={ImportJobLogStyles.jobSourceName}>{job.sourceName}</span>
-            <span className={ImportJobLogStyles.jobStatusBadge} data-status={job.status}>
-              {job.status}
-            </span>
-          </div>
-
-          {downloadingIds.has(job.id) ? (
-            <p className={ImportJobLogStyles.jobNotice}>Downloading OCR models, please wait...</p>
-          ) : job.status === "error" ? (
-            <p className={ImportJobLogStyles.jobError}>{job.error}</p>
-          ) : (
-            <>
-              <div className={ImportJobLogStyles.progressTrack}>
-                <div
-                  className={ImportJobLogStyles.progressFill}
-                  style={{ width: `${jobProgressPercent(job)}%` }}
-                />
-              </div>
-              <p className={ImportJobLogStyles.jobSummary}>{formatPageSummary(job)}</p>
-              <div className={ImportJobLogStyles.jobBadges}>
-                <span className={ImportJobLogStyles.confidenceBadge}>
-                  OCR confidence: {Math.round(job.avgOcrConfidence * 100)}%
-                </span>
-                {job.tablesDetectedUnpreserved > 0 && (
-                  <span className={ImportJobLogStyles.warningBadge}>
-                    {job.tablesDetectedUnpreserved} unstructured table
-                    {job.tablesDetectedUnpreserved > 1 ? "s" : ""}
-                  </span>
+      {jobs.map((job) => {
+        const modelMissing = isModelNotFoundError(job);
+        return (
+          <div key={job.id} className={ImportJobLogStyles.jobCard}>
+            <div className={ImportJobLogStyles.jobHeader}>
+              <span className={ImportJobLogStyles.jobSourceName}>{job.sourceName}</span>
+              <div className={ImportJobLogStyles.jobHeaderActions}>
+                {isJobActive(job) && (
+                  <button
+                    type="button"
+                    className={ImportJobLogStyles.cancelBtn}
+                    onClick={() => void handleCancel()}
+                    disabled={cancelling}
+                  >
+                    {cancelling ? "Cancelling…" : "Cancel"}
+                  </button>
                 )}
+                <span className={ImportJobLogStyles.jobStatusBadge} data-status={job.status}>
+                  {job.status}
+                </span>
               </div>
-            </>
-          )}
-        </div>
-      ))}
+            </div>
+
+            {isDownloadingModels && modelMissing ? (
+              <p className={ImportJobLogStyles.jobNotice}>Downloading OCR models, please wait...</p>
+            ) : isJobFailed(job) ? (
+              <p className={ImportJobLogStyles.jobError}>
+                {hasAttemptedDownload && modelMissing
+                  ? "Models downloaded — retry import."
+                  : (job.error ?? "Import failed")}
+              </p>
+            ) : (
+              <>
+                <div className={ImportJobLogStyles.progressTrack}>
+                  <div
+                    className={ImportJobLogStyles.progressFill}
+                    style={{ width: `${jobProgressPercent(job)}%` }}
+                  />
+                </div>
+                <p className={ImportJobLogStyles.jobSummary}>{formatPageSummary(job)}</p>
+                <div className={ImportJobLogStyles.jobBadges}>
+                  <span className={ImportJobLogStyles.confidenceBadge}>
+                    OCR confidence: {Math.round(job.avgOcrConfidence * 100)}%
+                  </span>
+                  {job.tablesDetectedUnpreserved > 0 && (
+                    <span className={ImportJobLogStyles.warningBadge}>
+                      {job.tablesDetectedUnpreserved} unstructured table
+                      {job.tablesDetectedUnpreserved > 1 ? "s" : ""}
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

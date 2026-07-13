@@ -36,14 +36,45 @@
   color: var(--primary-color);
 }
 
+.jobStatusBadge[data-status="failed"],
 .jobStatusBadge[data-status="error"] {
   background: rgba(200, 60, 60, 0.12);
   color: #c83c3c;
 }
 
+.jobStatusBadge[data-status="staged"],
+.jobStatusBadge[data-status="committed"],
 .jobStatusBadge[data-status="completed"] {
   background: rgba(60, 150, 90, 0.12);
   color: #3c964f;
+}
+
+.jobStatusBadge[data-status="extracting"],
+.jobStatusBadge[data-status="pending"] {
+  background: rgba(188, 108, 37, 0.14);
+  color: var(--primary-color);
+}
+
+.jobHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cancelBtn {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(200, 60, 60, 0.35);
+  background: rgba(200, 60, 60, 0.08);
+  color: #c83c3c;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.cancelBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .progressTrack {

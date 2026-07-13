@@ -1773,6 +1773,8 @@ pub fn run() {
             import_get_status,
             import_list_jobs,
             import_cancel_job,
+            import_browse_pdf,
+            ocr_download_models,
             chat_get_history,
             chat_append_message,
             chat_clear_history,
@@ -3059,6 +3061,37 @@ fn import_cancel_job(state: tauri::State<'_, AppState>) -> IpcResponse<()> {
             handle.cancel.store(true, Ordering::Relaxed);
         }
     }))
+}
+
+#[tauri::command]
+async fn import_browse_pdf() -> IpcResponse<Option<String>> {
+    let path = rfd::AsyncFileDialog::new()
+        .add_filter("PDF", &["pdf"])
+        .pick_file()
+        .await;
+
+    match path {
+        Some(handle) => IpcResponse::Ok {
+            ok: Some(handle.path().to_string_lossy().into_owned()),
+        },
+        None => IpcResponse::Ok { ok: None },
+    }
+}
+
+#[tauri::command]
+async fn ocr_download_models() -> IpcResponse<()> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        ocr::download_ocr_models_if_needed().map_err(|err| err.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => IpcResponse::Ok { ok: () },
+        Ok(Err(err)) => IpcResponse::Err { err },
+        Err(join_err) => IpcResponse::Err {
+            err: format!("Failed to spawn OCR download task: {join_err}"),
+        },
+    }
 }
 
 #[tauri::command]

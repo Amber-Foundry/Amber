@@ -1,84 +1,132 @@
+import type { ImportJobStatus } from "../types/generated/ImportJobStatus";
+import type { ImportStartJobInput } from "../types/generated/ImportStartJobInput";
+import { invokeTyped } from "../ipc";
+import {
+  getApiKey,
+  getLmStudioEndpoint,
+  getLlmModel,
+  getLlmProvider,
+  getOllamaEndpoint,
+} from "../utils/settings";
+import { unwrapIpcResult } from "./ipcResult.ts";
+
+export type { ImportJobStatus } from "../types/generated/ImportJobStatus";
+export type { ImportStartJobInput } from "../types/generated/ImportStartJobInput";
+
 const USE_MOCK = import.meta.env.VITE_USE_IMPORT_MOCK !== "false";
-
-//TEMP TYPES TO BE REPLACED ON MERGE WITH 2.4 BACKEND
-
-export type ImportJobStatus = {
-  id: string;
-  status: string;
-  sourceName: string;
-  totalPages: number;
-  digitalPages: number;
-  ocrPages: number;
-  hybridPages: number;
-  avgOcrConfidence: number;
-  tablesDetectedUnpreserved: number;
-  extractionPath: string;
-  rasterizationDPI: number;
-  error: string;
-};
 
 const MOCK_STATUS: ImportJobStatus = {
   id: "mock-job-id",
-  status: "completed",
-  sourceName: "mock-source",
+  status: "staged",
+  sourceName: "mock-source.pdf",
+  changesetId: null,
+  nodeCount: 0,
   totalPages: 100,
   digitalPages: 80,
   ocrPages: 15,
   hybridPages: 5,
   avgOcrConfidence: 0.95,
   tablesDetectedUnpreserved: 2,
-  extractionPath: "mock-extraction-path",
-  rasterizationDPI: 300,
-  error: "",
+  extractionPath: "hybrid",
+  rasterizationDpi: 300,
+  error: null,
 };
 
-export async function startImportJob(
-  sourceName: string,
-  sourcePath: string,
-  extractionPath: string,
-  rasterizationDPI: number
-): Promise<ImportJobStatus> {
-  if (USE_MOCK) {
-    MOCK_STATUS.sourceName = sourceName;
-    MOCK_STATUS.extractionPath = extractionPath;
-    MOCK_STATUS.rasterizationDPI = rasterizationDPI;
-    return MOCK_STATUS;
-  } else {
-    // Implement the actual API call to start the import job here
-    throw new Error("startImportJob not implemented for non-mock mode" + sourcePath);
+async function resolveLlmConfig(): Promise<{
+  provider: string;
+  endpoint: string;
+  model: string;
+}> {
+  const provider = getLlmProvider();
+  let endpoint = "";
+  if (provider === "lmstudio") {
+    endpoint = getLmStudioEndpoint();
+  } else if (provider === "ollama") {
+    endpoint = getOllamaEndpoint();
+  } else if (["openai", "anthropic", "google", "xai"].includes(provider)) {
+    endpoint = await getApiKey(provider);
   }
+  const model = getLlmModel();
+  return { provider, endpoint, model };
 }
 
-export async function getImportJobStatus(jobId: string): Promise<ImportJobStatus> {
-  if (USE_MOCK) {
-    return MOCK_STATUS;
-  } else {
-    // Implement the actual API call to get the import job status here
-    throw new Error("getImportJobStatus not implemented for non-mock mode" + jobId);
+export async function buildImportStartInput(opts: {
+  filePath: string;
+  targetVaultId: string;
+  useLlmExtraction: boolean;
+  rasterizationDpi?: number;
+}): Promise<ImportStartJobInput> {
+  const rasterizationDpi = opts.rasterizationDpi ?? 300;
+  if (!opts.useLlmExtraction) {
+    return {
+      filePath: opts.filePath,
+      targetVaultId: opts.targetVaultId,
+      rasterizationDpi,
+      useLlmExtraction: false,
+      provider: null,
+      endpoint: null,
+      model: null,
+    };
   }
-}
-export async function listImportJobs(): Promise<ImportJobStatus[]> {
-  if (USE_MOCK) {
-    return [MOCK_STATUS, MOCK_STATUS, MOCK_STATUS];
-  } else {
-    // Implement the actual API call to list the import jobs here
-    throw new Error("listImportJobs not implemented for non-mock mode");
-  }
+
+  const { provider, endpoint, model } = await resolveLlmConfig();
+  return {
+    filePath: opts.filePath,
+    targetVaultId: opts.targetVaultId,
+    rasterizationDpi,
+    useLlmExtraction: true,
+    provider,
+    endpoint: endpoint || null,
+    model: model || null,
+  };
 }
 
-export async function cancelImportJob(jobId: string): Promise<void> {
-  if (!USE_MOCK) {
-    // Implement the actual API call to cancel the import job here
-    throw new Error("cancelImportJob not implemented for non-mock mode" + jobId);
+export async function browseImportPdf(): Promise<string | null> {
+  if (USE_MOCK) {
+    return "C:\\mock\\sample.pdf";
   }
+  return unwrapIpcResult(invokeTyped<string | null>("import_browse_pdf"));
 }
 
-export async function startOcrModelDownload(jobId: string): Promise<void> {
+export async function startImportJob(input: ImportStartJobInput): Promise<ImportJobStatus> {
   if (USE_MOCK) {
-    MOCK_STATUS.status = "completed";
-    MOCK_STATUS.error = "";
+    MOCK_STATUS.sourceName = input.filePath.split(/[/\\]/).pop() || "mock-source.pdf";
+    MOCK_STATUS.rasterizationDpi = input.rasterizationDpi;
+    MOCK_STATUS.status = "staged";
+    MOCK_STATUS.error = null;
+    return { ...MOCK_STATUS };
+  }
+  return unwrapIpcResult(invokeTyped<ImportJobStatus>("import_start_job", { input }));
+}
+
+export async function getImportJobStatus(jobId: string): Promise<ImportJobStatus | null> {
+  if (USE_MOCK) {
+    return { ...MOCK_STATUS, id: jobId };
+  }
+  return unwrapIpcResult(invokeTyped<ImportJobStatus | null>("import_get_status", { jobId }));
+}
+
+export async function listImportJobs(limit = 20): Promise<ImportJobStatus[]> {
+  if (USE_MOCK) {
+    return [{ ...MOCK_STATUS }];
+  }
+  return unwrapIpcResult(invokeTyped<ImportJobStatus[]>("import_list_jobs", { limit }));
+}
+
+export async function cancelImportJob(): Promise<void> {
+  if (USE_MOCK) {
+    MOCK_STATUS.status = "failed";
+    MOCK_STATUS.error = "Cancelled by user";
     return;
-  } else {
-    throw new Error("startOcrModelDownload not implemented for non-mock mode" + jobId);
   }
+  await unwrapIpcResult(invokeTyped<void>("import_cancel_job"));
+}
+
+export async function startOcrModelDownload(): Promise<void> {
+  if (USE_MOCK) {
+    MOCK_STATUS.status = "failed";
+    MOCK_STATUS.error = "OCR models ready — retry import.";
+    return;
+  }
+  await unwrapIpcResult(invokeTyped<void>("ocr_download_models"));
 }

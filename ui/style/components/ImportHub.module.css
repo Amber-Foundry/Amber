@@ -125,3 +125,10 @@
   cursor: not-allowed;
   pointer-events: none;
 }
+
+.importError {
+  margin: 8px 10px 0;
+  padding: 0 4px;
+  font-size: 0.82rem;
+  color: #c83c3c;
+}

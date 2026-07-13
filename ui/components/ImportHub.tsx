@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { browseImportPdf, buildImportStartInput, startImportJob } from "../services/import";
+import { toAppError } from "../services/ipcResult";
+import { listVaults } from "../services/vaults";
 import ImportHubStyles from "../style/components/ImportHub.module.css";
 import ImportJobLog from "./ImportJobLog";
-//TEMP IMPORT, REPLACE WITH GENERATED TYPES ON MERGE WITH 2.4 BACKEND
-//import { ImportJobStatus } from "../services/import";
 
 export interface ExtractionModeOption {
   label: string;
@@ -24,10 +26,8 @@ export const ExtractionDropdown: React.FC<ExtractionDropdownProps> = ({
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Find the label of the currently selected option
   const selectedOption = options.find((opt) => opt.value === selectedValue);
 
-  // Close dropdown if user clicks outside of the element
   useEffect(() => {
     const handleOutsideClick = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -46,7 +46,6 @@ export const ExtractionDropdown: React.FC<ExtractionDropdownProps> = ({
 
   return (
     <div className={ImportHubStyles.extractionDropdown} ref={dropdownRef}>
-      {/* Dropdown Header/Trigger */}
       <button
         className={ImportHubStyles.extractionDropdownHeader}
         type="button"
@@ -55,7 +54,6 @@ export const ExtractionDropdown: React.FC<ExtractionDropdownProps> = ({
         {selectedOption ? selectedOption.label : placeholder}
       </button>
 
-      {/* Dropdown Menu Options */}
       {isOpen && (
         <ul className={ImportHubStyles.extractionDropdownMenu}>
           {options.map((option) => (
@@ -73,19 +71,118 @@ export const ExtractionDropdown: React.FC<ExtractionDropdownProps> = ({
   );
 };
 
+const ExtractionModeOptions: ExtractionModeOption[] = [
+  { label: "AI Extraction", value: "ai" },
+  { label: "Fast Import", value: "fast" },
+];
+
+function isPdfPath(path: string): boolean {
+  return path.toLowerCase().endsWith(".pdf");
+}
+
 export default function ImportHub() {
-  const ExtractionModeOptions: ExtractionModeOption[] = [
-    { label: "AI Extraction", value: "ai" },
-    { label: "Fast Import", value: "fast" },
-  ];
-  // Mock vault options for demonstration purposes. Replace with actual vault options as needed.
-  const VaultOptions: ExtractionModeOption[] = [
-    { label: "Vault A", value: "vault_a" },
-    { label: "Vault B", value: "vault_b" },
-  ];
   const [selectedFramework, setSelectedFramework] = useState<string | number | null>(null);
   const [selectedVault, setSelectedVault] = useState<string | number | null>(null);
-  const isReady = Boolean(selectedFramework && selectedVault);
+  const [vaultOptions, setVaultOptions] = useState<ExtractionModeOption[]>([]);
+  const [vaultsLoading, setVaultsLoading] = useState(true);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [jobLogRefreshKey, setJobLogRefreshKey] = useState(0);
+
+  const isReady = Boolean(selectedFramework && selectedVault) && !starting;
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void listVaults()
+        .then((vaults) => {
+          if (cancelled) return;
+          setVaultOptions(vaults.map((vault) => ({ label: vault.name, value: vault.id })));
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          setStartError(toAppError(error).message || "Failed to load vaults");
+        })
+        .finally(() => {
+          if (!cancelled) setVaultsLoading(false);
+        });
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  const beginImport = useCallback(
+    async (filePath: string) => {
+      if (!selectedFramework || !selectedVault || starting) return;
+      if (!isPdfPath(filePath)) {
+        setStartError("Only PDF files are supported for import.");
+        return;
+      }
+
+      setStarting(true);
+      setStartError(null);
+      try {
+        const input = await buildImportStartInput({
+          filePath,
+          targetVaultId: String(selectedVault),
+          useLlmExtraction: selectedFramework === "ai",
+        });
+        await startImportJob(input);
+        setJobLogRefreshKey((key) => key + 1);
+      } catch (error) {
+        setStartError(toAppError(error).message);
+      } finally {
+        setStarting(false);
+      }
+    },
+    [selectedFramework, selectedVault, starting]
+  );
+
+  const handleBrowse = useCallback(async () => {
+    if (!isReady) return;
+    try {
+      const path = await browseImportPdf();
+      if (!path) return;
+      await beginImport(path);
+    } catch (error) {
+      setStartError(toAppError(error).message);
+    }
+  }, [beginImport, isReady]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    void getCurrentWindow()
+      .onDragDropEvent((event) => {
+        if (event.payload.type !== "drop") return;
+        if (!selectedFramework || !selectedVault) return;
+        const pdfPath = event.payload.paths.find(isPdfPath);
+        if (!pdfPath) {
+          setStartError("Only PDF files are supported for import.");
+          return;
+        }
+        void beginImport(pdfPath);
+      })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => {
+        // Non-Tauri / browser preview — drag-drop stays unavailable.
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [beginImport, selectedFramework, selectedVault]);
+
   return (
     <div className="pane pane-left">
       <div className="pane-header">
@@ -99,9 +196,9 @@ export default function ImportHub() {
           onChange={setSelectedFramework}
         />
         <ExtractionDropdown
-          options={VaultOptions}
+          options={vaultOptions}
           selectedValue={selectedVault}
-          placeholder="Select Vault"
+          placeholder={vaultsLoading ? "Loading vaults…" : "Select Vault"}
           onChange={setSelectedVault}
         />
       </div>
@@ -110,34 +207,32 @@ export default function ImportHub() {
         aria-disabled={!isReady}
       >
         <p>
-          {isReady ? (
+          {starting ? (
+            "Starting import…"
+          ) : isReady ? (
             <>
               Drag & drop files here or{" "}
-              <span
-                className={ImportHubStyles.browseBtn}
-                onClick={() => document.getElementById("file-input")?.click()}
-              >
+              <span className={ImportHubStyles.browseBtn} onClick={() => void handleBrowse()}>
                 browse
               </span>
             </>
+          ) : vaultsLoading ? (
+            "Loading vaults…"
+          ) : vaultOptions.length === 0 ? (
+            "Create a vault before importing"
           ) : (
             "Select an extraction mode and vault to enable import"
           )}
         </p>
-        <input
-          type="file"
-          id="file-input"
-          multiple
-          disabled={!isReady}
-          style={{ display: "none" }}
-        />
       </div>
+
+      {startError && <p className={ImportHubStyles.importError}>{startError}</p>}
 
       <div className="pane-header">
         <span className="sidebar-subtitle">Job Log</span>
       </div>
 
-      <ImportJobLog />
+      <ImportJobLog refreshKey={jobLogRefreshKey} />
     </div>
   );
 }

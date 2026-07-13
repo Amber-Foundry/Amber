@@ -16,4 +16,6 @@ export type { VaultUpdateInput } from "./VaultUpdateInput";
 export type { ChangesetCommitInput } from "./ChangesetCommitInput";
 export type { EmbeddingReembedInput } from "./EmbeddingReembedInput";
 export type { EmbeddingStatus } from "./EmbeddingStatus";
+export type { ImportJobStatus } from "./ImportJobStatus";
+export type { ImportStartJobInput } from "./ImportStartJobInput";
 export type { ItemReviewAction } from "./ItemReviewAction";
