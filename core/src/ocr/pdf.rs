@@ -1,7 +1,7 @@
 use crate::ingest::text::{
-    attaches_to_previous_word, has_spurious_punctuation_spacing, is_decimal_continuation,
-    is_punctuation_only, should_insert_inter_object_space, word_gap_threshold,
-    InterObjectJoinContext,
+    attaches_to_previous_char, has_spurious_punctuation_spacing, is_decimal_continuation,
+    is_decimal_continuation_char, is_punctuation_only, should_insert_inter_object_space,
+    word_gap_threshold, InterObjectJoinContext,
 };
 use crate::ocr::engine::OcrError;
 use crate::ocr::ocr_models_dir;
@@ -788,11 +788,11 @@ fn reconstruct_text_from_char_boxes(char_boxes: &[PdfCharBox], font_size: f32) -
     for b in char_boxes {
         if let Some(prev) = prev_right {
             let gap = b.left - prev;
-            if gap > space_threshold && !attaches_to_previous_word(&b.ch.to_string()) {
-                let next = b.ch.to_string();
-                if !is_decimal_continuation(&result, &next) {
-                    result.push(' ');
-                }
+            if gap > space_threshold
+                && !attaches_to_previous_char(b.ch)
+                && !is_decimal_continuation_char(&result, b.ch)
+            {
+                result.push(' ');
             }
         }
         result.push(b.ch);

@@ -15,8 +15,9 @@ fn ensure_import_session(
     let session_id = import_session_id(job_id);
     let vault_id = target_vault_id.unwrap_or("vault_learning");
     conn.execute(
-        "INSERT OR IGNORE INTO sessions (id, vault_id, scope_json)
-         VALUES (?1, ?2, '[]');",
+        "INSERT INTO sessions (id, vault_id, scope_json)
+         VALUES (?1, ?2, '[]')
+         ON CONFLICT(id) DO UPDATE SET vault_id = excluded.vault_id;",
         params![session_id, vault_id],
     )
     .map_err(|err| format!("Failed to ensure import session: {err}"))?;

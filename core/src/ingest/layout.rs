@@ -451,9 +451,8 @@ fn find_largest_gap_in_left_edges(blocks: &[RawLayoutBlock], page_width: f32) ->
     let mut edges: Vec<f32> = blocks.iter().map(|block| block.bbox.x).collect();
     edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median_char_width = median_character_width(blocks);
-    let min_gutter = (median_char_width * 2.0)
-        .max(page_width * 0.03)
-        .min(median_block_width(blocks) * 0.5);
+    let min_gutter =
+        (median_char_width * 2.0).max((page_width * 0.03).min(median_block_width(blocks) * 0.5));
     edges
         .windows(2)
         .filter_map(|pair| {
@@ -547,9 +546,7 @@ fn find_largest_horizontal_gap(
     // A two-column PDF can have line objects hundreds of points wide while the gutter is
     // only a few character widths. Cap the width-derived floor with text metrics so those
     // legitimate narrow gutters are retained without mistaking normal word gaps for columns.
-    let min_gutter = (median_char_width * 2.0)
-        .max(page_width * 0.03)
-        .min(median_width * 0.5);
+    let min_gutter = (median_char_width * 2.0).max((page_width * 0.03).min(median_width * 0.5));
     merged
         .windows(2)
         .filter_map(|pair| {

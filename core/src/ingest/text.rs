@@ -76,6 +76,25 @@ pub(crate) fn attaches_to_following_word(text: &str) -> bool {
         .is_some_and(|c| ATTACHES_FOLLOWING.contains(c))
 }
 
+/// True when `ch` should join without a leading space (e.g. `,` or `.`).
+pub(crate) fn attaches_to_previous_char(ch: char) -> bool {
+    if ch == '"' || ch == '\'' {
+        return false;
+    }
+    ATTACHES_PREVIOUS.contains(ch)
+}
+
+/// True when `next` continues a decimal numeral after `prev` (e.g. `2.` + `5` → `2.5`).
+pub(crate) fn is_decimal_continuation_char(prev: &str, next: char) -> bool {
+    let prev = prev.trim_end();
+    prev.ends_with('.')
+        && prev
+            .strip_suffix('.')
+            .and_then(|s| s.chars().last())
+            .is_some_and(|c| c.is_ascii_digit())
+        && next.is_ascii_digit()
+}
+
 /// True when `next` continues a decimal numeral after `prev` (e.g. `2.` + `5` → `2.5`).
 pub(crate) fn is_decimal_continuation(prev: &str, next: &str) -> bool {
     let prev = prev.trim_end();
