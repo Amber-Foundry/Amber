@@ -885,6 +885,14 @@ fn split_text_object_at_column_gutter(
         return Vec::new();
     }
 
+    let mut sorted_boxes = char_boxes.to_vec();
+    sorted_boxes.sort_by(|a, b| {
+        a.left
+            .partial_cmp(&b.left)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let char_boxes = &sorted_boxes;
+
     let avg_char_width = char_boxes
         .iter()
         .map(|b| (b.right - b.left).max(0.1))
@@ -1189,11 +1197,6 @@ fn merge_nearby_line_run(blocks: Vec<RawLayoutBlock>) -> Option<RawLayoutBlock> 
         merged.font_size = Some(font_sum / font_count as f32);
     }
     Some(merged)
-}
-
-fn average_char_width(text: &str, width: f32) -> f32 {
-    let char_count = text.chars().filter(|ch| !ch.is_whitespace()).count().max(1) as f32;
-    (width / char_count).max(0.1)
 }
 
 #[cfg(test)]
