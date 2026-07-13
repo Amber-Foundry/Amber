@@ -1783,6 +1783,8 @@ pub fn run() {
                 }
             });
             chat::purge_temporary_session(&conn)?;
+            chat::purge_empty_sessions(&conn)
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
             // Clean up any stale active import jobs on startup
             let _ = conn.execute(
                 "UPDATE import_jobs 

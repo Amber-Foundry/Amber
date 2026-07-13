@@ -30,7 +30,7 @@ export default function ImportProvenanceBadges({
         Imported: {sourceLabel}
       </span>
       {ocrConfidence != null && (
-        <span className={styles.ocrBadge}>OCR {Math.round(ocrConfidence * 100)}%</span>
+        <span className={styles.ocrBadge}>OCR {(ocrConfidence * 100).toFixed(2)}%</span>
       )}
       {tablesWarn && <span className={styles.tablesBadge}>tables unstructured</span>}
     </div>

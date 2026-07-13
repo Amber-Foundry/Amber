@@ -92,6 +92,7 @@ export default function EmbeddingSettings({
   }
 
   const coverageClamped = Math.min(100, Math.max(0, embeddingStatus.coveragePercent));
+  const coverageFormatted = coverageClamped.toFixed(2);
   const modelChanged = embeddingStatus.model !== model;
 
   return (
@@ -133,7 +134,7 @@ export default function EmbeddingSettings({
           <span id={coverageLabelId} className={styles["embedding-settings-label"]}>
             Coverage
           </span>
-          <span className={styles["embedding-coverage-pct"]}>{coverageClamped}%</span>
+          <span className={styles["embedding-coverage-pct"]}>{coverageFormatted}%</span>
         </div>
         <div
           className={styles["embedding-progress-track"]}

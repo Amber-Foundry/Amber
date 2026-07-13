@@ -412,6 +412,25 @@ pub fn update_session_summary(
     Ok(())
 }
 
+/// Purges all empty sessions (0 messages) from the database except the most recent one.
+pub fn purge_empty_sessions(db: &Connection) -> Result<(), String> {
+    db.execute(
+        "DELETE FROM sessions
+         WHERE id != 'temporary-session'
+           AND id NOT IN (SELECT DISTINCT session_id FROM session_messages)
+           AND id NOT IN (
+               SELECT id FROM sessions
+               WHERE id NOT IN (SELECT DISTINCT session_id FROM session_messages)
+                 AND id != 'temporary-session'
+               ORDER BY started_at DESC, rowid DESC
+               LIMIT 1
+           );",
+        [],
+    )
+    .map_err(|err| format!("Failed to purge empty sessions: {err}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,6 +532,72 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(temp_message_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_purge_empty_sessions() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+
+        create_session(
+            &conn,
+            "sess_with_msgs".to_string(),
+            Some("Has Messages".to_string()),
+        )?;
+        append_message(
+            &conn,
+            "m1".to_string(),
+            "user".to_string(),
+            "hello".to_string(),
+            "sess_with_msgs",
+        )?;
+
+        create_session(
+            &conn,
+            "sess_empty_old".to_string(),
+            Some("Empty Old".to_string()),
+        )?;
+        conn.execute(
+            "UPDATE sessions SET started_at = '2026-07-13 10:00:00' WHERE id = 'sess_empty_old';",
+            [],
+        )?;
+
+        create_session(
+            &conn,
+            "sess_empty_new".to_string(),
+            Some("Empty New".to_string()),
+        )?;
+        conn.execute(
+            "UPDATE sessions SET started_at = '2026-07-13 12:00:00' WHERE id = 'sess_empty_new';",
+            [],
+        )?;
+
+        purge_empty_sessions(&conn)?;
+
+        // "sess_with_msgs" still exists
+        let has_msgs_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = 'sess_with_msgs';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(has_msgs_exists, 1);
+
+        // "sess_empty_old" was purged
+        let empty_old_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = 'sess_empty_old';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(empty_old_exists, 0);
+
+        // "sess_empty_new" still exists (most recent empty session)
+        let empty_new_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = 'sess_empty_new';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(empty_new_exists, 1);
+
         Ok(())
     }
 }

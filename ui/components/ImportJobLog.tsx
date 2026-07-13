@@ -282,7 +282,7 @@ export default function ImportJobLog({
                 )}
                 <div className={ImportJobLogStyles.jobBadges}>
                   <span className={ImportJobLogStyles.confidenceBadge}>
-                    OCR confidence: {Math.round(job.avgOcrConfidence * 100)}%
+                    OCR confidence: {(job.avgOcrConfidence * 100).toFixed(2)}%
                   </span>
                   {job.tablesDetectedUnpreserved > 0 && (
                     <span className={ImportJobLogStyles.warningBadge}>
