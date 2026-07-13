@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 
+const MAX_SUMMARY_LEN: usize = 120;
+
 /// Which extraction pipeline a page should be routed through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtractionPath {
@@ -503,7 +505,6 @@ impl IngestJobEngine {
             .unwrap_or_else(|| format!("Imported Chunk {}", chunk.chunk_index));
         let detail = Some(chunk.text.clone());
         const MIN_SUMMARY_LEN: usize = 20;
-        const MAX_SUMMARY_LEN: usize = 120;
         let mut summary = if let Some(end) = first_summary_boundary(&chunk.text, MIN_SUMMARY_LEN) {
             chunk.text[..end].to_string()
         } else if chunk.text.chars().count() >= MIN_SUMMARY_LEN {
@@ -677,8 +678,10 @@ fn validate_candidate_integrity(
             warnings.push("candidate detail is not contained in its source chunk".to_string());
         }
     }
-    if candidate.summary.chars().count() > 120 {
-        warnings.push("candidate summary exceeds the 120-character ingestion limit".to_string());
+    if candidate.summary.chars().count() > MAX_SUMMARY_LEN {
+        warnings.push(format!(
+            "candidate summary exceeds the {MAX_SUMMARY_LEN}-character ingestion limit"
+        ));
     }
 
     let title_matches_current_heading = chunk
