@@ -742,6 +742,17 @@ fn run_seed_data(conn: &mut Connection) -> Result<(), String> {
     )
     .map_err(|err| format!("Failed inserting Root Graph vault: {err}"))?;
 
+    // Soft-deleted Root Graph blocks INSERT OR IGNORE while privacy queries require deleted_at IS NULL.
+    tx.execute(
+        "UPDATE vaults
+         SET deleted_at = NULL,
+             name = COALESCE(NULLIF(name, ''), 'Root Graph'),
+             updated_at = datetime('now')
+         WHERE id = 'vault_root_graph';",
+        [],
+    )
+    .map_err(|err| format!("Failed restoring Root Graph vault: {err}"))?;
+
     tx.execute(
         "INSERT OR IGNORE INTO vaults (id, name, icon, description, privacy_tier, priority_profile, sort_order, meta)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
@@ -1342,7 +1353,7 @@ fn validate_import_start_input(
         }
     }
     if let Some(vault_id) = input.target_vault_id.as_deref() {
-        let exists: Option<i64> = conn
+        let exists_vault: Option<i64> = conn
             .query_row(
                 "SELECT 1 FROM vaults WHERE id = ?1 AND deleted_at IS NULL LIMIT 1;",
                 [vault_id],
@@ -1350,7 +1361,18 @@ fn validate_import_start_input(
             )
             .optional()
             .map_err(|err| format!("Failed validating target vault: {err}"))?;
-        if exists.is_none() {
+        let exists_subvault: Option<i64> = if exists_vault.is_none() {
+            conn.query_row(
+                "SELECT 1 FROM sub_vaults WHERE id = ?1 AND deleted_at IS NULL LIMIT 1;",
+                [vault_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| format!("Failed validating target subvault: {err}"))?
+        } else {
+            None
+        };
+        if exists_vault.is_none() && exists_subvault.is_none() {
             return Err(format!("Target vault not found: {vault_id}"));
         }
     }
@@ -1878,29 +1900,38 @@ pub(crate) fn resolve_vault_effective_privacy(
     let mut strictest = "open".to_string();
 
     while let Some(id) = current_id {
-        let record = conn
-            .query_row(
-                "SELECT parent_vault_id, privacy_tier
-                 FROM (
-                    SELECT id, NULL AS parent_vault_id, privacy_tier
-                    FROM vaults
-                    WHERE deleted_at IS NULL
-                    UNION ALL
-                    SELECT id, vault_id AS parent_vault_id, COALESCE(privacy_tier, 'open') AS privacy_tier
-                    FROM sub_vaults
-                    WHERE deleted_at IS NULL
-                 )
-                 WHERE id = ?1
-                 LIMIT 1;",
-                [id.as_str()],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, String>(1)?,
-                    ))
-                },
-            )
-            .map_err(|err| format!("Failed resolving vault privacy for {vault_id}: {err}"))?;
+        let record = match conn.query_row(
+            "SELECT parent_vault_id, privacy_tier
+             FROM (
+                SELECT id, NULL AS parent_vault_id, privacy_tier
+                FROM vaults
+                WHERE deleted_at IS NULL
+                UNION ALL
+                SELECT id, vault_id AS parent_vault_id, COALESCE(privacy_tier, 'open') AS privacy_tier
+                FROM sub_vaults
+                WHERE deleted_at IS NULL
+             )
+             WHERE id = ?1
+             LIMIT 1;",
+            [id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                ))
+            },
+        ) {
+            Ok(record) => record,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                eprintln!(
+                    "[privacy] vault or subvault '{id}' missing or deleted; treating chain as '{strictest}'"
+                );
+                return Ok(strictest);
+            }
+            Err(err) => {
+                return Err(format!("Failed resolving vault privacy for {vault_id}: {err}"));
+            }
+        };
 
         strictest =
             privacy::get_effective_privacy(Some(record.1.as_str()), None, Some(strictest.as_str()))
@@ -2820,6 +2851,8 @@ fn import_start_job(
 
         let conn = open_connection(&state.db_path)?;
         let file_path = validate_import_start_input(&conn, &input)?;
+        let (parent_for_fk, write_target) =
+            ingest::resolve_import_vault_ids(&conn, input.target_vault_id.as_deref())?;
 
         let import_job = Arc::clone(&state.import_job);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -2854,7 +2887,8 @@ fn import_start_job(
                 &ingest::CreateImportJobParams {
                     import_type: "pdf".to_string(),
                     source_name,
-                    target_vault_id: input.target_vault_id.clone(),
+                    // FK to vaults(id): always store parent vault when a subvault was selected.
+                    target_vault_id: parent_for_fk.clone(),
                     rasterization_dpi,
                 },
             )?;
@@ -2871,7 +2905,8 @@ fn import_start_job(
 
         let db_path = state.db_path.clone();
         let config = ingest_config_from_input(&input);
-        let worker_target_vault_id = input.target_vault_id.clone();
+        // Selected vault or subvault id — used as the write target when finalizing.
+        let worker_target_vault_id = write_target.clone();
         let worker_model = config.model.clone();
         let app_handle_worker = app_handle.clone();
         let import_job_worker = Arc::clone(&import_job);
@@ -5046,6 +5081,93 @@ mod tests {
         let result = super::validate_import_start_input(&conn, &input);
         assert!(result.is_err());
         let _ = std::fs::remove_file(txt_path);
+    }
+
+    #[test]
+    fn validate_import_start_input_accepts_subvault_id() {
+        let pdf_path = std::env::temp_dir().join("amber_import_subvault_validate.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4")
+            .unwrap_or_else(|err| panic!("failed to write temp pdf: {err}"));
+
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite connection: {err}"));
+        conn.execute_batch(
+            "CREATE TABLE vaults (id TEXT PRIMARY KEY, deleted_at TEXT);
+             CREATE TABLE sub_vaults (id TEXT PRIMARY KEY, vault_id TEXT, deleted_at TEXT);
+             INSERT INTO vaults (id, deleted_at) VALUES ('vault_parent', NULL);
+             INSERT INTO sub_vaults (id, vault_id, deleted_at) VALUES ('sub_year3', 'vault_parent', NULL);",
+        )
+        .unwrap_or_else(|err| panic!("failed to seed vault tables: {err}"));
+
+        let input = super::ImportStartJobInput {
+            file_path: pdf_path.to_string_lossy().to_string(),
+            target_vault_id: Some("sub_year3".to_string()),
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        };
+
+        let result = super::validate_import_start_input(&conn, &input);
+        assert!(
+            result.is_ok(),
+            "expected subvault id to be accepted: {result:?}"
+        );
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn validate_import_start_input_rejects_missing_vault() {
+        let pdf_path = std::env::temp_dir().join("amber_import_missing_vault.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4")
+            .unwrap_or_else(|err| panic!("failed to write temp pdf: {err}"));
+
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite connection: {err}"));
+        conn.execute_batch(
+            "CREATE TABLE vaults (id TEXT PRIMARY KEY, deleted_at TEXT);
+             CREATE TABLE sub_vaults (id TEXT PRIMARY KEY, vault_id TEXT, deleted_at TEXT);",
+        )
+        .unwrap_or_else(|err| panic!("failed to seed vault tables: {err}"));
+
+        let input = super::ImportStartJobInput {
+            file_path: pdf_path.to_string_lossy().to_string(),
+            target_vault_id: Some("vault_does_not_exist".to_string()),
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        };
+
+        let result = super::validate_import_start_input(&conn, &input);
+        assert!(result.is_err());
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn resolve_vault_effective_privacy_missing_vault_is_open() {
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite connection: {err}"));
+        conn.execute_batch(
+            "CREATE TABLE vaults (
+                id TEXT PRIMARY KEY,
+                privacy_tier TEXT NOT NULL DEFAULT 'open',
+                deleted_at TEXT
+             );
+             CREATE TABLE sub_vaults (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT,
+                privacy_tier TEXT,
+                deleted_at TEXT
+             );",
+        )
+        .unwrap_or_else(|err| panic!("failed to create privacy tables: {err}"));
+
+        let tier = super::resolve_vault_effective_privacy(&conn, "vault_root_graph")
+            .unwrap_or_else(|err| panic!("expected missing vault to resolve without error: {err}"));
+        assert_eq!(tier, "open");
     }
 
     #[test]

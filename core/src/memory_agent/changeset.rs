@@ -101,6 +101,27 @@ fn combined_text(title: &str, summary: &str) -> String {
     format!("{title} {summary}")
 }
 
+/// Resolve write target vault for a proposed node.
+/// Priority: onboarding category key → explicit write vault → session vault → Root Graph.
+fn resolve_proposed_vault_id(
+    candidate: &CandidateNode,
+    write_vault_id: Option<&str>,
+    active_vault_id: Option<&str>,
+) -> String {
+    if let Some(key) = candidate.target_vault_key.as_deref() {
+        if let Some(onboarding_id) = crate::onboarding::vault_id_for_category_key(key) {
+            return onboarding_id.to_string();
+        }
+    }
+    if let Some(id) = write_vault_id.filter(|s| !s.is_empty()) {
+        return id.to_string();
+    }
+    if let Some(id) = active_vault_id.filter(|s| !s.is_empty()) {
+        return id.to_string();
+    }
+    "vault_root_graph".to_string()
+}
+
 fn best_match_via_embeddings(
     conn: &Connection,
     query_vector: &[f32],
@@ -133,6 +154,18 @@ pub fn build_changeset(
     conn: &Connection,
     candidates: &[CandidateNode],
     session_id: &str,
+    engine: Option<&dyn EmbedEngine>,
+) -> Result<PendingChangeset, String> {
+    build_changeset_with_write_vault(conn, candidates, session_id, None, engine)
+}
+
+/// Like [`build_changeset`], but prefers `write_vault_id` when assigning proposed node vaults
+/// (used when import targets a subvault while the session FK row stores the parent vault).
+pub fn build_changeset_with_write_vault(
+    conn: &Connection,
+    candidates: &[CandidateNode],
+    session_id: &str,
+    write_vault_id: Option<&str>,
     engine: Option<&dyn EmbedEngine>,
 ) -> Result<PendingChangeset, String> {
     // 1. Resolve active vault ID from session
@@ -171,6 +204,11 @@ pub fn build_changeset(
         }
     }
 
+    if let Some(write_id) = write_vault_id.filter(|s| !s.is_empty()) {
+        has_context = true;
+        relevant_vaults.insert(write_id.to_string());
+    }
+
     for candidate in candidates {
         if let Some(ref key) = candidate.target_vault_key {
             if let Some(resolved) = crate::onboarding::vault_id_for_category_key(key) {
@@ -190,12 +228,8 @@ pub fn build_changeset(
             if candidate.action == CandidateAction::Delete {
                 continue;
             }
-            let resolved_vault_id = candidate
-                .target_vault_key
-                .as_deref()
-                .and_then(crate::onboarding::vault_id_for_category_key)
-                .unwrap_or("vault_root_graph")
-                .to_string();
+            let resolved_vault_id =
+                resolve_proposed_vault_id(candidate, write_vault_id, active_vault_id.as_deref());
 
             let proposed = ProposedNodeData {
                 title: candidate.title.clone(),
@@ -425,12 +459,11 @@ pub fn build_changeset(
                 }
             }
             CandidateAction::Add | CandidateAction::Update => {
-                let resolved_vault_id = candidate
-                    .target_vault_key
-                    .as_deref()
-                    .and_then(crate::onboarding::vault_id_for_category_key)
-                    .unwrap_or("vault_root_graph")
-                    .to_string();
+                let resolved_vault_id = resolve_proposed_vault_id(
+                    candidate,
+                    write_vault_id,
+                    active_vault_id.as_deref(),
+                );
 
                 if let Some((best_node, score)) = best_match {
                     let classification = classify_similarity(score);
@@ -744,6 +777,43 @@ mod tests {
         };
         assert_eq!(proposed.title, "Rust programming");
         assert_eq!(proposed.vault_id, Some("vault_learning".to_string()));
+    }
+
+    #[test]
+    fn test_session_vault_used_when_candidate_has_no_target_key() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sessions (id, vault_id) VALUES ('session-custom', 'vault_university');",
+            [],
+        )
+        .unwrap_or_else(|err| panic!("failed to insert session: {err}"));
+
+        let candidates = vec![CandidateNode {
+            title: "Imported chapter".to_string(),
+            summary: "From a custom vault import".to_string(),
+            detail: None,
+            node_type: Some("fact".to_string()),
+            target_vault_key: None,
+            tags: None,
+            confidence: 0.9,
+            action: CandidateAction::Add,
+            source: Some("doc.pdf".to_string()),
+            source_type: Some("pdf_import".to_string()),
+            meta: None,
+        }];
+
+        let changeset = match build_changeset(&conn, &candidates, "session-custom", None) {
+            Ok(cs) => cs,
+            Err(e) => panic!("Expected Ok changeset but got Err: {e}"),
+        };
+
+        assert_eq!(changeset.items.len(), 1);
+        let proposed: ProposedNodeData =
+            match serde_json::from_str(&changeset.items[0].proposed_data) {
+                Ok(p) => p,
+                Err(e) => panic!("Failed to parse proposed JSON: {e}"),
+            };
+        assert_eq!(proposed.vault_id.as_deref(), Some("vault_university"));
     }
 
     #[test]

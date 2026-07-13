@@ -9,7 +9,7 @@ pub mod storage;
 pub mod templates;
 pub mod text;
 
-pub use changeset::finalize_import_changeset;
+pub use changeset::{finalize_import_changeset, resolve_import_vault_ids};
 pub use job::{
     chunk_ingest_blocks, derive_document_extraction_path, HybridMergeStrategy, ImportChunkSpec,
     ImportJobHandle, ImportJobProgress, IngestJobConfig, IngestJobEngine, IngestJobResult,
