@@ -214,6 +214,14 @@ fn insert_door(
     Ok(())
 }
 
+struct ImportJobSpineRow {
+    source_name: String,
+    assembled_markdown: String,
+    avg_ocr_confidence: f64,
+    tables_detected_unpreserved: i64,
+    extraction_path: Option<String>,
+}
+
 /// After an import changeset is fully reviewed, create a parent document node and wire
 /// `section` (parent→chunk) + `next` (chunk→chunk) doors.
 fn create_import_document_spine(
@@ -232,19 +240,36 @@ fn create_import_document_spine(
         return Ok(());
     }
 
-    let job: Option<(String, String, Option<String>)> = tx
+    let job: Option<ImportJobSpineRow> = tx
         .query_row(
-            "SELECT COALESCE(source_name, ''), COALESCE(assembled_markdown, ''), target_vault_id
+            "SELECT COALESCE(source_name, ''), COALESCE(assembled_markdown, ''),
+                    COALESCE(avg_ocr_confidence, 0.0), COALESCE(tables_detected_unpreserved, 0),
+                    extraction_path
              FROM import_jobs
              WHERE changeset_id = ?1 AND status = 'staged'
              LIMIT 1;",
             [changeset_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok(ImportJobSpineRow {
+                    source_name: row.get(0)?,
+                    assembled_markdown: row.get(1)?,
+                    avg_ocr_confidence: row.get(2)?,
+                    tables_detected_unpreserved: row.get(3)?,
+                    extraction_path: row.get(4)?,
+                })
+            },
         )
         .optional()
         .map_err(|err| format!("Failed loading import job for spine: {err}"))?;
 
-    let Some((source_name, assembled_markdown, _job_vault)) = job else {
+    let Some(ImportJobSpineRow {
+        source_name,
+        assembled_markdown,
+        avg_ocr_confidence,
+        tables_detected_unpreserved,
+        extraction_path,
+    }) = job
+    else {
         return Ok(());
     };
     if assembled_markdown.trim().is_empty() {
@@ -333,10 +358,17 @@ fn create_import_document_spine(
         chunks[0].summary.clone()
     };
 
-    let parent_meta = serde_json::json!({
+    let mut parent_meta = serde_json::json!({
         "import_role": "document",
         "chunk_total": chunk_total,
+        "avg_ocr_confidence": avg_ocr_confidence as f32,
+        "tables_unstructured": tables_detected_unpreserved > 0,
     });
+    if let Some(path) = extraction_path.filter(|p| !p.trim().is_empty()) {
+        if let Some(map) = parent_meta.as_object_mut() {
+            map.insert("extraction_path".to_string(), serde_json::json!(path));
+        }
+    }
     let parent_proposed = crate::memory_agent::changeset::ProposedNodeData {
         title: parent_title,
         summary: parent_summary,
@@ -1290,7 +1322,10 @@ mod tests {
                 error TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 completed_at TEXT,
-                assembled_markdown TEXT
+                assembled_markdown TEXT,
+                avg_ocr_confidence REAL DEFAULT 0.0,
+                tables_detected_unpreserved INTEGER DEFAULT 0,
+                extraction_path TEXT
             );
         ";
         conn.execute_batch(ddl)?;
@@ -2487,18 +2522,20 @@ mod tests {
             [],
         )?;
         conn.execute(
-            "INSERT INTO import_jobs (id, source_name, target_vault_id, status, changeset_id, assembled_markdown)
-             VALUES ('job_import', 'CSE824 HW1.pdf', 'vault_learning', 'staged', 'cs_import', '# Full Doc\n\nBody');",
+            "INSERT INTO import_jobs (id, source_name, target_vault_id, status, changeset_id, assembled_markdown,
+             avg_ocr_confidence, tables_detected_unpreserved, extraction_path)
+             VALUES ('job_import', 'CSE824 HW1.pdf', 'vault_learning', 'staged', 'cs_import', '# Full Doc\n\nBody',
+             0.91, 2, 'hybrid');",
             [],
         )?;
         conn.execute(
             "INSERT INTO changeset_items (id, changeset_id, item_type, proposed_data, status, sort_order)
              VALUES
              ('item_c0', 'cs_import', 'add',
-              '{\"title\":\"CSE824 HW1 · Intro (1/2)\",\"summary\":\"Intro\",\"detail\":\"chunk0\",\"node_type\":\"fact\",\"vault_id\":\"vault_learning\",\"source\":\"CSE824 HW1.pdf\",\"source_type\":\"pdf_import\",\"meta\":{\"chunk_index\":0,\"token_estimate\":10},\"action\":\"add\",\"confidence\":0.9}',
+              '{\"title\":\"CSE824 HW1 · Intro (1/2)\",\"summary\":\"Intro\",\"detail\":\"chunk0\",\"node_type\":\"fact\",\"vault_id\":\"vault_learning\",\"source\":\"CSE824 HW1.pdf\",\"source_type\":\"pdf_import\",\"meta\":{\"chunk_index\":0,\"token_estimate\":10,\"ocr_confidence\":0.9,\"tables_unstructured\":true},\"action\":\"add\",\"confidence\":0.9}',
               'pending', 0),
              ('item_c1', 'cs_import', 'add',
-              '{\"title\":\"CSE824 HW1 · Body (2/2)\",\"summary\":\"Body\",\"detail\":\"chunk1\",\"node_type\":\"fact\",\"vault_id\":\"vault_learning\",\"source\":\"CSE824 HW1.pdf\",\"source_type\":\"pdf_import\",\"meta\":{\"chunk_index\":1,\"token_estimate\":12},\"action\":\"add\",\"confidence\":0.9}',
+              '{\"title\":\"CSE824 HW1 · Body (2/2)\",\"summary\":\"Body\",\"detail\":\"chunk1\",\"node_type\":\"fact\",\"vault_id\":\"vault_learning\",\"source\":\"CSE824 HW1.pdf\",\"source_type\":\"pdf_import\",\"meta\":{\"chunk_index\":1,\"token_estimate\":12,\"ocr_confidence\":0.92},\"action\":\"add\",\"confidence\":0.9}',
               'pending', 1);",
             [],
         )?;
@@ -2537,6 +2574,18 @@ mod tests {
         )?;
         assert_eq!(detail.as_deref(), Some("# Full Doc\n\nBody"));
         assert_eq!(node_type, "summary");
+
+        let (avg_ocr, tables_flag, extraction): (f64, i64, Option<String>) = conn.query_row(
+            "SELECT json_extract(meta, '$.avg_ocr_confidence'),
+                    json_extract(meta, '$.tables_unstructured'),
+                    json_extract(meta, '$.extraction_path')
+             FROM nodes WHERE id = ?1;",
+            [&doc_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert!((avg_ocr - 0.91).abs() < 0.001);
+        assert_eq!(tables_flag, 1);
+        assert_eq!(extraction.as_deref(), Some("hybrid"));
 
         let chunk_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM nodes WHERE json_extract(meta, '$.import_role') = 'chunk';",

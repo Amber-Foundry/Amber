@@ -1783,6 +1783,13 @@ pub fn run() {
                 }
             });
             chat::purge_temporary_session(&conn)?;
+            // Clean up any stale active import jobs on startup
+            let _ = conn.execute(
+                "UPDATE import_jobs 
+                 SET status = 'failed', error = 'Interrupted due to application restart' 
+                 WHERE status IN ('pending', 'extracting');",
+                [],
+            );
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -3113,11 +3120,28 @@ fn import_get_extraction_preview(
 
 #[tauri::command]
 fn import_cancel_job(state: tauri::State<'_, AppState>) -> IpcResponse<()> {
-    into_ipc(with_import_job_lock(&state.import_job, |slot| {
-        if let Some(handle) = slot.as_ref() {
-            handle.cancel.store(true, Ordering::Relaxed);
+    into_ipc((|| -> Result<(), String> {
+        let has_active = with_import_job_lock(&state.import_job, |slot| {
+            if let Some(handle) = slot.as_ref() {
+                handle.cancel.store(true, Ordering::Relaxed);
+                true
+            } else {
+                false
+            }
+        })?;
+
+        if !has_active {
+            let conn = open_connection(&state.db_path)?;
+            conn.execute(
+                "UPDATE import_jobs 
+                 SET status = 'failed', error = 'Cancelled by user' 
+                 WHERE status IN ('pending', 'extracting');",
+                [],
+            )
+            .map_err(|err| format!("Failed to cancel stuck jobs in database: {err}"))?;
         }
-    }))
+        Ok(())
+    })())
 }
 
 #[tauri::command]

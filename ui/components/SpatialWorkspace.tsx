@@ -19,6 +19,7 @@ import {
   shouldOmitSpatialConnector,
 } from "../utils/privacy";
 import { isImportChunkNode } from "../utils/importDocument";
+import ImportProvenanceBadges from "./ImportProvenanceBadges";
 import type { Vault, Node, Door } from "../types/generated";
 import "../style/components/SpatialWorkspace.css";
 
@@ -1539,32 +1540,35 @@ export default function SpatialWorkspace({
                     >
                       <div className="spatial-node-title-area">
                         <span className="spatial-node-dot" />
-                        {editingItemId === node.id ? (
-                          <input
-                            className="spatial-node-title-input"
-                            autoFocus
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={() => handleRenameSave(node.id, "node")}
-                            onKeyDown={(e) => handleRenameKeyDown(e, node.id, "node")}
-                          />
-                        ) : (
-                          <span
-                            className={`spatial-node-title ${isRedacted ? "spatial-redacted-label" : ""}`}
-                            onDoubleClick={() => {
-                              if (!isNodeEditable) return;
-                              setEditingItemId(node.id);
-                              setEditingItemType("node");
-                              setEditValue(node.title);
-                            }}
-                          >
-                            {getPrivacyDisplayLabel(
-                              node.title,
-                              nodeEffectiveTier,
-                              isRedactedUnlocked
-                            )}
-                          </span>
-                        )}
+                        <div className="spatial-node-title-stack">
+                          {editingItemId === node.id ? (
+                            <input
+                              className="spatial-node-title-input"
+                              autoFocus
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onBlur={() => handleRenameSave(node.id, "node")}
+                              onKeyDown={(e) => handleRenameKeyDown(e, node.id, "node")}
+                            />
+                          ) : (
+                            <span
+                              className={`spatial-node-title ${isRedacted ? "spatial-redacted-label" : ""}`}
+                              onDoubleClick={() => {
+                                if (!isNodeEditable) return;
+                                setEditingItemId(node.id);
+                                setEditingItemType("node");
+                                setEditValue(node.title);
+                              }}
+                            >
+                              {getPrivacyDisplayLabel(
+                                node.title,
+                                nodeEffectiveTier,
+                                isRedactedUnlocked
+                              )}
+                            </span>
+                          )}
+                          {!isRedacted && <ImportProvenanceBadges node={node} allNodes={nodes} />}
+                        </div>
                       </div>
 
                       <div className="spatial-node-right-area">

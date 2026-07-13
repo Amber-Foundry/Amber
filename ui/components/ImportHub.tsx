@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { browseImportPdf, buildImportStartInput, startImportJob } from "../services/import";
+import type { ImportStartJobInput } from "../types/generated/ImportStartJobInput";
 import { toAppError } from "../services/ipcResult";
 import { listVaults } from "../services/vaults";
 import ImportHubStyles from "../style/components/ImportHub.module.css";
@@ -223,7 +224,14 @@ export default function ImportHub({
           targetVaultId: vaultId,
           useLlmExtraction: selectedFramework === "ai",
         });
-        await startImportJob(input);
+        const job = await startImportJob(input);
+        try {
+          const paramsMap = JSON.parse(localStorage.getItem("mindvault.import.job_params") || "{}");
+          paramsMap[job.id] = input;
+          localStorage.setItem("mindvault.import.job_params", JSON.stringify(paramsMap));
+        } catch (e) {
+          console.error("Failed to store import job params: ", e);
+        }
         setImportBusy(true);
         setJobLogRefreshKey((key) => key + 1);
       } catch (error) {
@@ -239,6 +247,30 @@ export default function ImportHub({
       }
     },
     [importBusy, refreshVaultOptions, selectedFramework, selectedVault, starting]
+  );
+  const handleRetry = useCallback(
+    async (input: ImportStartJobInput) => {
+      if (starting || importBusy) return;
+      setStarting(true);
+      setStartError(null);
+      try {
+        const job = await startImportJob(input);
+        try {
+          const paramsMap = JSON.parse(localStorage.getItem("mindvault.import.job_params") || "{}");
+          paramsMap[job.id] = input;
+          localStorage.setItem("mindvault.import.job_params", JSON.stringify(paramsMap));
+        } catch (e) {
+          console.error("Failed to store import job params: ", e);
+        }
+        setImportBusy(true);
+        setJobLogRefreshKey((key) => key + 1);
+      } catch (error) {
+        setStartError(toAppError(error).message);
+      } finally {
+        setStarting(false);
+      }
+    },
+    [importBusy, starting]
   );
 
   const handleBrowse = useCallback(async () => {
@@ -356,6 +388,7 @@ export default function ImportHub({
         refreshKey={jobLogRefreshKey}
         onOpenChangeset={onOpenImportChangeset}
         onActiveJobsChange={handleActiveJobsChange}
+        onRetry={handleRetry}
       />
     </div>
   );

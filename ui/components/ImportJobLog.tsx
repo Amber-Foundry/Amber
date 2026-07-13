@@ -10,6 +10,7 @@ import {
 import { listVaults } from "../services/vaults";
 import { toAppError } from "../services/ipcResult";
 import ImportJobLogStyles from "../style/components/ImportJobLog.module.css";
+import type { ImportStartJobInput } from "../types/generated/ImportStartJobInput";
 import {
   formatImportDestinationLabel,
   formatImportJobPhaseSummary,
@@ -30,15 +31,24 @@ type ImportJobLogProps = {
   refreshKey?: number;
   onOpenChangeset?: (changesetId: string) => void;
   onActiveJobsChange?: (hasActive: boolean) => void;
+  onRetry?: (input: ImportStartJobInput) => void;
 };
 
 export default function ImportJobLog({
   refreshKey = 0,
   onOpenChangeset,
   onActiveJobsChange,
+  onRetry,
 }: ImportJobLogProps) {
   const [jobs, setJobs] = useState<ImportJobStatus[]>([]);
   const [vaultNameById, setVaultNameById] = useState<Map<string, string>>(() => new Map());
+  const [jobParams, setJobParams] = useState<Record<string, ImportStartJobInput>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("mindvault.import.job_params") || "{}");
+    } catch {
+      return {};
+    }
+  });
   const [isDownloadingModels, setIsDownloadingModels] = useState(false);
   const [hasAttemptedDownload, setHasAttemptedDownload] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -53,6 +63,12 @@ export default function ImportJobLog({
       const result = await listImportJobs();
       if (mountedRef.current) {
         setJobs(result);
+        try {
+          const parsed = JSON.parse(localStorage.getItem("mindvault.import.job_params") || "{}");
+          setJobParams(parsed);
+        } catch {
+          // Ignore
+        }
       }
     } catch {
       // Swallow polling errors — the log just skips this tick.
@@ -201,21 +217,55 @@ export default function ImportJobLog({
                   </button>
                 )}
                 <span className={ImportJobLogStyles.jobStatusBadge} data-status={job.status}>
+                  {isImportJobActive(job) && <span className={ImportJobLogStyles.spinner} />}
                   {formatImportJobStatusLabel(job.status)}
                 </span>
               </div>
             </div>
 
-            <p className={ImportJobLogStyles.jobDestination}>Destination: {destination}</p>
+            <p className={ImportJobLogStyles.jobDestination}>
+              Destination: {destination}
+              {jobParams[job.id] != null && (
+                <>
+                  {" • "}
+                  <span className={ImportJobLogStyles.modeLabel}>
+                    {jobParams[job.id].useLlmExtraction ? "AI Extraction" : "Fast Import"}
+                  </span>
+                </>
+              )}
+            </p>
 
             {isDownloadingModels && modelMissing ? (
               <p className={ImportJobLogStyles.jobNotice}>Downloading OCR models, please wait...</p>
             ) : isImportJobFailed(job) ? (
-              <p className={ImportJobLogStyles.jobError}>
-                {hasAttemptedDownload && modelMissing
-                  ? "Models downloaded — retry import."
-                  : (job.error ?? "Import failed")}
-              </p>
+              <div className={ImportJobLogStyles.jobErrorContainer}>
+                <p className={ImportJobLogStyles.jobError}>
+                  {hasAttemptedDownload && modelMissing
+                    ? "Models downloaded — retry import."
+                    : (job.error ?? "Import failed")}
+                </p>
+                {jobParams[job.id] && onRetry && (
+                  <button
+                    type="button"
+                    className={ImportJobLogStyles.retryBtn}
+                    onClick={() => onRetry(jobParams[job.id])}
+                    title="Retry Import"
+                  >
+                    <svg
+                      className={ImportJobLogStyles.retryIcon}
+                      viewBox="0 0 24 24"
+                      width="12"
+                      height="12"
+                    >
+                      <path
+                        fill="currentColor"
+                        d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"
+                      />
+                    </svg>
+                    <span>Retry</span>
+                  </button>
+                )}
+              </div>
             ) : (
               <>
                 <div className={ImportJobLogStyles.progressTrack}>

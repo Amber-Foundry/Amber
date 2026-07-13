@@ -121,7 +121,11 @@ struct LmStudioChoiceMessage {
 #[async_trait]
 impl LlmClient for UniversalClient {
     async fn list_models(&self) -> Result<Vec<String>, crate::AppError> {
-        let http = reqwest::Client::new();
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         match self.provider {
             LlmProvider::Ollama => {
                 let url = format!("{}/api/tags", self.normalized_endpoint());
@@ -194,7 +198,11 @@ impl LlmClient for UniversalClient {
         system_prompt: &str,
         messages: &[LlmMessage],
     ) -> Result<String, crate::AppError> {
-        let http = reqwest::Client::new();
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         match self.provider {
             LlmProvider::Ollama => {
                 let url = format!("{}/api/chat", self.normalized_endpoint());

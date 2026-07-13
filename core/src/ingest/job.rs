@@ -432,6 +432,7 @@ impl IngestJobEngine {
                 &config,
                 &runtime_handle,
                 chunks.len(),
+                cancel,
             );
             for candidate in &mut chunk_candidates {
                 attach_integrity_trace(chunk, candidate, &chunks);
@@ -511,6 +512,7 @@ impl IngestJobEngine {
                 &config,
                 &runtime_handle,
                 chunks.len(),
+                None,
             );
             for candidate in &mut chunk_candidates {
                 attach_integrity_trace(chunk, candidate, &chunks);
@@ -627,6 +629,7 @@ impl IngestJobEngine {
         config: &IngestJobConfig,
         runtime: &tokio::runtime::Handle,
         total_chunks: usize,
+        cancel: Option<&AtomicBool>,
     ) -> Vec<CandidateNode> {
         let resolved_vault = match &config.allowed_vault_keys {
             None => Some("learning".to_string()),
@@ -695,7 +698,24 @@ impl IngestJobEngine {
         let sys_prompt = crate::ingest::prompt::get_system_prompt(&allowed_keys);
 
         let complete_fut = crate::llm::client::LlmClient::complete(&client, &sys_prompt, &messages);
-        let raw_res = runtime.block_on(complete_fut);
+        let raw_res = if let Some(flag) = cancel {
+            let cancel_fut = async {
+                loop {
+                    if flag.load(Ordering::Relaxed) {
+                        return Err(crate::AppError::from("Cancelled by user".to_string()));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            };
+            runtime.block_on(async {
+                tokio::select! {
+                    res = complete_fut => res,
+                    cancel_res = cancel_fut => cancel_res,
+                }
+            })
+        } else {
+            runtime.block_on(complete_fut)
+        };
 
         let raw = match raw_res {
             Ok(r) => r,
@@ -883,7 +903,7 @@ fn is_likely_abbreviation_period(text: &str, period_idx: usize) -> bool {
 fn prepare_job_runtime() -> Result<(tokio::runtime::Handle, tokio::runtime::Runtime), OcrError> {
     // Ingest jobs run on blocking threads; always use a job-owned runtime so LLM
     // block_on never borrows the Tauri async runtime handle.
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|err| {
@@ -1341,6 +1361,7 @@ mod tests {
             &config,
             &runtime_handle,
             1,
+            None,
         );
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].target_vault_key, None);
@@ -1372,6 +1393,7 @@ mod tests {
             &config,
             &runtime_handle,
             1,
+            None,
         );
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].target_vault_key, Some("learning".to_string()));

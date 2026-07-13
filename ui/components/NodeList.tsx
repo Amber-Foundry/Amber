@@ -13,6 +13,7 @@ import {
 } from "../utils/privacy";
 import { isImportChunkNode } from "../utils/importDocument";
 import { PrivacyBadge } from "./PrivacyBadge";
+import ImportProvenanceBadges from "./ImportProvenanceBadges";
 
 const VAULT_ICON_CHOICES = [
   "💳",
@@ -389,6 +390,7 @@ function NodeList({
                     </strong>
                     <PrivacyBadge tier={effectiveTier} />
                   </span>
+                  {!isNodeRedactedLocked && <ImportProvenanceBadges node={node} allNodes={nodes} />}
                   <p>{getPrivacyDisplaySummary(summaryText, effectiveTier, isRedactedUnlocked)}</p>
                 </button>
               );
@@ -463,6 +465,9 @@ function NodeList({
                       </strong>
                       <PrivacyBadge tier={effectiveTier} />
                     </span>
+                    {!isNodeRedactedLocked && (
+                      <ImportProvenanceBadges node={node} allNodes={nodes} />
+                    )}
                     <p>
                       {getPrivacyDisplaySummary(summaryText, effectiveTier, isRedactedUnlocked)}
                     </p>

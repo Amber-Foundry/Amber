@@ -9,6 +9,14 @@ type ImportMeta = {
   documentId?: string;
   chunk_total?: number;
   chunkTotal?: number;
+  avg_ocr_confidence?: number;
+  avgOcrConfidence?: number;
+  ocr_confidence?: number;
+  ocrConfidence?: number;
+  tables_unstructured?: boolean;
+  tablesUnstructured?: boolean;
+  extraction_path?: string;
+  extractionPath?: string;
 };
 
 export function parseNodeMeta(node: Pick<Node, "meta">): ImportMeta {
@@ -38,6 +46,13 @@ export function isImportChunkNode(node: Pick<Node, "meta" | "sourceType">): bool
   }
   const chunkIndex = meta.chunk_index ?? meta.chunkIndex;
   return node.sourceType === "pdf_import" && chunkIndex != null;
+}
+
+export function isPdfImportNode(node: Pick<Node, "meta" | "sourceType">): boolean {
+  if (node.sourceType === "pdf_import") {
+    return true;
+  }
+  return isImportDocumentNode(node) || isImportChunkNode(node);
 }
 
 export function getImportDocumentId(node: Pick<Node, "meta">): string | null {
@@ -75,4 +90,66 @@ export function formatImportSectionTitle(title: string, ordinal: number, total: 
     heading = `Section ${ordinal}`;
   }
   return `${heading} (${ordinal}/${total})`;
+}
+
+/** Short filename for "Imported: …" (strip path + extension). */
+export function getImportSourceLabel(node: Pick<Node, "source" | "title">): string {
+  const raw = (node.source ?? "").trim() || node.title.trim();
+  const base = raw.replace(/\\/g, "/").split("/").pop() ?? raw;
+  const withoutExt = base.replace(/\.(pdf|PDF)$/, "").trim();
+  return withoutExt || base || "Document";
+}
+
+function readOcrConfidence(meta: ImportMeta): number | null {
+  const value =
+    meta.avg_ocr_confidence ?? meta.avgOcrConfidence ?? meta.ocr_confidence ?? meta.ocrConfidence;
+  if (typeof value !== "number" || Number.isNaN(value) || value <= 0) {
+    return null;
+  }
+  return value;
+}
+
+function readTablesFlag(meta: ImportMeta): boolean {
+  return Boolean(meta.tables_unstructured ?? meta.tablesUnstructured);
+}
+
+/**
+ * OCR confidence for badges: parent rollup meta, else mean of section chunk confidences.
+ * Returns null when no OCR signal is available (e.g. pure digital).
+ */
+export function getImportOcrConfidence(
+  node: Pick<Node, "id" | "meta" | "sourceType">,
+  allNodes: Node[] = []
+): number | null {
+  const own = readOcrConfidence(parseNodeMeta(node));
+  if (own != null) {
+    return own;
+  }
+  if (!isImportDocumentNode(node)) {
+    return null;
+  }
+  const sections = listImportDocumentSections(node.id, allNodes);
+  const values = sections
+    .map((section) => readOcrConfidence(parseNodeMeta(section)))
+    .filter((v): v is number => v != null);
+  if (values.length === 0) {
+    return null;
+  }
+  return values.reduce((sum, v) => sum + v, 0) / values.length;
+}
+
+/** True when parent meta or any section chunk flags unstructured tables. */
+export function importHasUnstructuredTables(
+  node: Pick<Node, "id" | "meta" | "sourceType">,
+  allNodes: Node[] = []
+): boolean {
+  if (readTablesFlag(parseNodeMeta(node))) {
+    return true;
+  }
+  if (!isImportDocumentNode(node)) {
+    return false;
+  }
+  return listImportDocumentSections(node.id, allNodes).some((section) =>
+    readTablesFlag(parseNodeMeta(section))
+  );
 }
