@@ -327,7 +327,7 @@ export default function ImportHub({
       <div className="pane-header">
         <span className="sidebar-subtitle">Import</span>
       </div>
-      <div className="dropdown-container">
+      <div className={ImportHubStyles.dropdownContainer}>
         <ExtractionDropdown
           options={ExtractionModeOptions}
           selectedValue={selectedFramework}
