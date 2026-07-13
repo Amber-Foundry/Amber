@@ -4,6 +4,8 @@ export type ImportJobStatus = {
   id: string;
   status: string;
   sourceName: string;
+  changesetId: string | null;
+  nodeCount: number;
   totalPages: number;
   digitalPages: number;
   ocrPages: number;

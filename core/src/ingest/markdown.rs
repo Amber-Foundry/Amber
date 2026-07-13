@@ -1,12 +1,45 @@
 use crate::ingest::layout::{BlockType, TextBlock};
+use crate::ingest::text::{
+    attaches_to_following_word, attaches_to_previous_word, collapse_internal_whitespace_block,
+    is_mid_word_split,
+};
 use crate::ocr::engine::Rect;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct IngestBlock {
+    /// Pre-markdown layout text used for OCR confidence weighting (not display).
+    #[serde(default)]
+    pub recognized_text: String,
     pub formatted_text: String,
     pub block_type: BlockType,
     pub confidence: Option<f32>,
     pub page_index: usize,
+    #[serde(default)]
+    pub fragment: bool,
+}
+
+impl IngestBlock {
+    fn from_layout_block(
+        recognized_text: &str,
+        formatted_text: String,
+        block_type: BlockType,
+        confidence: Option<f32>,
+        page_index: usize,
+        fragment: bool,
+    ) -> Self {
+        debug_assert!(
+            confidence.is_none() || !recognized_text.trim().is_empty(),
+            "OCR-confidence block must have non-empty recognized_text"
+        );
+        Self {
+            recognized_text: recognized_text.to_string(),
+            formatted_text,
+            block_type,
+            confidence,
+            page_index,
+            fragment,
+        }
+    }
 }
 
 /// Assembles a sequential vector of layout `TextBlock`s into a clean Markdown document string.
@@ -19,8 +52,9 @@ pub fn assemble_markdown(blocks: &[TextBlock]) -> String {
 pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<IngestBlock> {
     let mut out = Vec::with_capacity(blocks.len());
     let mut pending_body: Option<PendingBody> = None;
+    let coalesced_blocks = coalesce_consecutive_headings(blocks);
 
-    for block in blocks {
+    for block in &coalesced_blocks {
         let text = block.text.trim();
         if text.is_empty() {
             continue;
@@ -43,20 +77,39 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
                     pending.last_text = text.to_string();
                     pending.last_bbox = block.bbox.clone();
                     pending.bbox = union_optional_rects(pending.bbox.take(), block.bbox.clone());
+                    pending.fragment |= block.fragment;
                     if let Some(confidence) = block.confidence {
-                        pending.confidence_sum += confidence;
-                        pending.confidence_count += 1;
+                        let weight = text.chars().count().max(1) as f32;
+                        pending.confidence_weighted_sum += confidence * weight;
+                        pending.confidence_weight_total += weight;
                     }
                     continue;
                 }
             }
 
             flush_pending_body(&mut pending_body, &mut out, page_index);
-            pending_body = Some(PendingBody::new(text, block.bbox.clone(), block.confidence));
+            pending_body = Some(PendingBody::new(
+                text,
+                block.bbox.clone(),
+                block.confidence,
+                block.fragment,
+            ));
             continue;
         }
 
         flush_pending_body(&mut pending_body, &mut out, page_index);
+
+        if matches!(block.block_type, BlockType::Header | BlockType::Footer) {
+            out.push(IngestBlock::from_layout_block(
+                text,
+                collapse_internal_whitespace_block(text),
+                block.block_type,
+                block.confidence,
+                page_index,
+                block.fragment,
+            ));
+            continue;
+        }
 
         let formatted = match block.block_type {
             BlockType::Heading(level) => {
@@ -64,15 +117,25 @@ pub fn assemble_markdown_blocks(blocks: &[TextBlock], page_index: usize) -> Vec<
                 format!("{hashes} {text}")
             }
             BlockType::ListItem => format_list_item(text),
+            BlockType::Header | BlockType::Footer => text.to_string(),
+            // Table layout text may already include grid separators (|, tabs, newlines).
             BlockType::Table | BlockType::Body => text.to_string(),
         };
 
-        out.push(IngestBlock {
-            formatted_text: formatted,
-            block_type: block.block_type,
-            confidence: block.confidence,
+        let collapsed_text = if block.block_type == BlockType::Table {
+            formatted
+        } else {
+            collapse_internal_whitespace_block(&formatted)
+        };
+
+        out.push(IngestBlock::from_layout_block(
+            text,
+            collapsed_text,
+            block.block_type,
+            block.confidence,
             page_index,
-        });
+            block.fragment,
+        ));
     }
 
     flush_pending_body(&mut pending_body, &mut out, page_index);
@@ -85,25 +148,31 @@ struct PendingBody {
     /// Last fragment only — used for mid-word gap detection (not the union bbox).
     last_bbox: Option<Rect>,
     last_text: String,
-    confidence_sum: f32,
-    confidence_count: usize,
+    confidence_weighted_sum: f32,
+    confidence_weight_total: f32,
+    fragment: bool,
 }
 
 impl PendingBody {
-    fn new(text: &str, bbox: Option<Rect>, confidence: Option<f32>) -> Self {
+    fn new(text: &str, bbox: Option<Rect>, confidence: Option<f32>, fragment: bool) -> Self {
+        let weight = text.chars().count().max(1) as f32;
+        let (confidence_weighted_sum, confidence_weight_total) = confidence
+            .map(|c| (c * weight, weight))
+            .unwrap_or((0.0, 0.0));
         Self {
             text: text.to_string(),
             bbox: bbox.clone(),
             last_bbox: bbox,
             last_text: text.to_string(),
-            confidence_sum: confidence.unwrap_or(0.0),
-            confidence_count: usize::from(confidence.is_some()),
+            confidence_weighted_sum,
+            confidence_weight_total,
+            fragment,
         }
     }
 
     fn confidence(&self) -> Option<f32> {
-        if self.confidence_count > 0 {
-            Some(self.confidence_sum / self.confidence_count as f32)
+        if self.confidence_weight_total > 0.0 {
+            Some(self.confidence_weighted_sum / self.confidence_weight_total)
         } else {
             None
         }
@@ -117,12 +186,14 @@ fn flush_pending_body(
 ) {
     if let Some(pending) = pending_body.take() {
         let confidence = pending.confidence();
-        out.push(IngestBlock {
-            formatted_text: pending.text,
-            block_type: BlockType::Body,
+        out.push(IngestBlock::from_layout_block(
+            &pending.text,
+            collapse_internal_whitespace_block(&pending.text),
+            BlockType::Body,
             confidence,
             page_index,
-        });
+            pending.fragment,
+        ));
     }
 }
 
@@ -148,10 +219,14 @@ fn should_merge_body_line(
         }
     }
 
-    let vertical_gap = next.y - (union_prev.y + union_prev.height);
-    let line_height = union_prev.height.max(next.height).max(1.0);
-    let same_column = horizontal_overlap_ratio(union_prev, next) > 0.15
-        || (union_prev.x - next.x).abs() <= line_height * 3.0;
+    // Use the last visual fragment, not the union bounding box: a merged paragraph can
+    // span many lines, and treating its total height as a line height wrongly joins the
+    // next column or an unrelated block below it.
+    let reference = last_prev.unwrap_or(union_prev);
+    let vertical_gap = next.y - (reference.y + reference.height);
+    let line_height = reference.height.max(next.height).max(1.0);
+    let same_column = horizontal_overlap_ratio(reference, next) > 0.15
+        || (reference.x - next.x).abs() <= line_height * 3.0;
 
     vertical_gap >= -line_height * 0.5 && vertical_gap <= line_height * 1.8 && same_column
 }
@@ -163,6 +238,7 @@ fn append_body_line(
     next_bbox: Option<&Rect>,
     prev_text: &str,
 ) {
+    let next = next.trim_start();
     let next_starts_lowercase = next.chars().next().is_some_and(char::is_lowercase);
     if current.ends_with('-')
         && next_starts_lowercase
@@ -175,41 +251,17 @@ fn append_body_line(
         // Same-line fragments whose boxes sit tighter than a normal word gap.
         current.push_str(next);
     } else {
-        if !current.chars().last().is_some_and(char::is_whitespace) {
+        let trimmed_len = current.trim_end().len();
+        current.truncate(trimmed_len);
+        if !current.is_empty()
+            && !next.chars().next().is_some_and(char::is_whitespace)
+            && !attaches_to_previous_word(next)
+            && !attaches_to_following_word(current)
+        {
             current.push(' ');
         }
         current.push_str(next);
     }
-}
-
-/// True when `next` continues the same word as `prev` based on horizontal gap,
-/// matching the threshold used when merging PDF text objects on a visual line.
-fn is_mid_word_split(
-    prev: Option<&Rect>,
-    next: Option<&Rect>,
-    prev_text: &str,
-    next_text: &str,
-) -> bool {
-    let (Some(prev), Some(next)) = (prev, next) else {
-        return false;
-    };
-
-    let line_height = prev.height.max(next.height).max(1.0);
-    // Mid-word splits only occur between fragments on the same visual line.
-    if (next.y - prev.y).abs() > line_height * 0.5 {
-        return false;
-    }
-
-    let gap = next.x - (prev.x + prev.width);
-    let prev_char_width = average_char_width(prev_text, prev.width);
-    let next_char_width = average_char_width(next_text, next.width);
-    let space_threshold = prev_char_width
-        .min(next_char_width)
-        .mul_add(0.5, 0.0)
-        .max(1.0);
-
-    // Allow tiny negative gaps from measurement noise; anything larger is overlap/wrap.
-    gap <= space_threshold && gap >= -space_threshold * 0.25
 }
 
 fn is_line_break_hyphen(prev: Option<&Rect>, next: Option<&Rect>) -> bool {
@@ -226,11 +278,6 @@ fn is_line_break_hyphen(prev: Option<&Rect>, next: Option<&Rect>) -> bool {
     horizontal_overlap_ratio(prev, next) > 0.15
         && vertical_gap >= -line_height * 0.5
         && vertical_gap <= line_height * 1.8
-}
-
-fn average_char_width(text: &str, width: f32) -> f32 {
-    let char_count = text.chars().filter(|ch| !ch.is_whitespace()).count().max(1) as f32;
-    (width / char_count).max(0.1)
 }
 
 fn horizontal_overlap_ratio(a: &Rect, b: &Rect) -> f32 {
@@ -253,6 +300,68 @@ fn union_optional_rects(a: Option<Rect>, b: Option<Rect>) -> Option<Rect> {
         (None, Some(b)) => Some(b),
         (None, None) => None,
     }
+}
+
+fn coalesce_consecutive_headings(blocks: &[TextBlock]) -> Vec<TextBlock> {
+    let median_line_height = median_line_height(blocks);
+    let mut out: Vec<TextBlock> = Vec::with_capacity(blocks.len());
+
+    for block in blocks {
+        if let Some(previous) = out.last_mut() {
+            if should_merge_headings(previous, block, median_line_height) {
+                previous.text = format!("{} {}", previous.text.trim(), block.text.trim());
+                previous.bbox = union_optional_rects(previous.bbox.take(), block.bbox.clone());
+                previous.confidence = match (previous.confidence, block.confidence) {
+                    (Some(p), Some(n)) => Some((p + n) / 2.0),
+                    (Some(p), None) => Some(p),
+                    (None, Some(n)) => Some(n),
+                    (None, None) => None,
+                };
+                continue;
+            }
+        }
+        out.push(block.clone());
+    }
+    out
+}
+
+fn should_merge_headings(prev: &TextBlock, next: &TextBlock, median_line_height: f32) -> bool {
+    let (BlockType::Heading(prev_level), BlockType::Heading(next_level)) =
+        (prev.block_type, next.block_type)
+    else {
+        return false;
+    };
+    if prev_level != next_level || prev.fragment || next.fragment {
+        return false;
+    }
+    let (Some(prev_bbox), Some(next_bbox)) = (prev.bbox.as_ref(), next.bbox.as_ref()) else {
+        return false;
+    };
+
+    let vertical_gap = next_bbox.y - (prev_bbox.y + prev_bbox.height);
+    let heading_line_height = median_line_height
+        .max(prev_bbox.height)
+        .max(next_bbox.height)
+        .max(1.0);
+    if vertical_gap >= heading_line_height * 1.2 {
+        return false;
+    }
+
+    let same_visual_line = (next_bbox.y - prev_bbox.y).abs() <= heading_line_height * 0.25;
+    !(same_visual_line && horizontal_overlap_ratio(prev_bbox, next_bbox) == 0.0)
+}
+
+fn median_line_height(blocks: &[TextBlock]) -> f32 {
+    let mut heights: Vec<f32> = blocks
+        .iter()
+        .filter_map(|block| block.bbox.as_ref().map(|bbox| bbox.height))
+        .filter(|height| *height > 0.0)
+        .collect();
+    if heights.is_empty() {
+        return 1.0;
+    }
+    heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    heights[(heights.len() - 1) / 2]
 }
 
 /// Joins structured blocks into a formatted Markdown string, using `\n` for consecutive list items
@@ -339,16 +448,20 @@ mod tests {
     fn test_markdown_assembler_list_items_cross_pages() {
         let blocks = vec![
             IngestBlock {
+                recognized_text: "Item 1 on Page 0".to_string(),
                 formatted_text: "- Item 1 on Page 0".to_string(),
                 block_type: BlockType::ListItem,
                 confidence: None,
                 page_index: 0,
+                fragment: false,
             },
             IngestBlock {
+                recognized_text: "Item 2 on Page 1".to_string(),
                 formatted_text: "- Item 2 on Page 1".to_string(),
                 block_type: BlockType::ListItem,
                 confidence: None,
                 page_index: 1,
+                fragment: false,
             },
         ];
 
@@ -365,12 +478,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 220.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "ate and House of Representatives.".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 22.0, 160.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -392,12 +507,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 180.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "bers chosen every second Year".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(190.2, 10.1, 160.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -418,12 +535,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 18.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "ernment of the United States".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(28.2, 10.0, 150.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -443,12 +562,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 90.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "of the United States".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 22.0, 120.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -468,12 +589,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 120.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "Unrelated second block.".to_string(),
                 block_type: BlockType::Body,
                 bbox: None,
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -492,12 +615,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 20.0, 60.0, 8.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "Right column".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(220.0, 20.0, 70.0, 8.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -517,12 +642,14 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 42.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "States".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(58.0, 10.0, 40.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
@@ -539,17 +666,133 @@ mod tests {
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(10.0, 10.0, 36.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
             TextBlock {
                 text: "level".to_string(),
                 block_type: BlockType::Body,
                 bbox: Some(Rect::new(58.0, 10.0, 40.0, 10.0)),
                 confidence: None,
+                fragment: false,
             },
         ];
 
         let ingest_blocks = assemble_markdown_blocks(&blocks, 0);
 
         assert_eq!(ingest_blocks[0].formatted_text, "multi- level");
+    }
+
+    fn heading(text: &str, level: u8, y: f32, x: f32) -> TextBlock {
+        TextBlock {
+            text: text.to_string(),
+            block_type: BlockType::Heading(level),
+            bbox: Some(Rect::new(x, y, 180.0, 14.0)),
+            confidence: None,
+            fragment: false,
+        }
+    }
+
+    #[test]
+    fn markdown_sink_collapses_duplicate_spaces_without_changing_paragraphs() {
+        let blocks = vec![TextBlock {
+            text: "Density  Preserving".to_string(),
+            block_type: BlockType::Body,
+            bbox: None,
+            confidence: None,
+            fragment: false,
+        }];
+        let markdown = assemble_markdown(&blocks);
+        assert_eq!(markdown, "Density Preserving");
+        crate::ingest::text::assert_no_duplicate_spaces(&markdown)
+            .unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    #[test]
+    fn table_blocks_preserve_internal_whitespace_alignment() {
+        let blocks = vec![TextBlock {
+            text: "Col1\tCol2\tCol3".to_string(),
+            block_type: BlockType::Table,
+            bbox: None,
+            confidence: None,
+            fragment: false,
+        }];
+        let assembled = assemble_markdown_blocks(&blocks, 0);
+        assert_eq!(assembled.len(), 1);
+        assert_eq!(assembled[0].formatted_text, "Col1\tCol2\tCol3");
+    }
+
+    #[test]
+    fn merge_three_line_title() {
+        let blocks = vec![
+            heading("Title Line One", 1, 10.0, 50.0),
+            heading("Title Line Two", 1, 26.0, 50.0),
+            heading("Title Line Three", 1, 42.0, 50.0),
+        ];
+        let assembled = assemble_markdown_blocks(&blocks, 0);
+        assert_eq!(assembled.len(), 1);
+        assert_eq!(
+            assembled[0].formatted_text,
+            "# Title Line One Title Line Two Title Line Three"
+        );
+    }
+
+    #[test]
+    fn heading_merge_rejects_different_levels_distant_and_side_by_side_titles() {
+        let different_levels = assemble_markdown_blocks(
+            &[
+                heading("First", 1, 10.0, 50.0),
+                heading("Second", 2, 26.0, 50.0),
+            ],
+            0,
+        );
+        assert_eq!(different_levels.len(), 2);
+
+        let distant = assemble_markdown_blocks(
+            &[
+                heading("First", 1, 10.0, 50.0),
+                heading("Second", 1, 200.0, 50.0),
+            ],
+            0,
+        );
+        assert_eq!(distant.len(), 2);
+
+        let side_by_side = assemble_markdown_blocks(
+            &[
+                heading("Left", 1, 10.0, 50.0),
+                heading("Right", 1, 10.0, 350.0),
+            ],
+            0,
+        );
+        assert_eq!(side_by_side.len(), 2);
+    }
+
+    #[test]
+    fn pending_body_merge_char_weights_confidence() {
+        let blocks = vec![
+            TextBlock {
+                text: "Long paragraph body with many characters.".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(10.0, 100.0, 400.0, 14.0)),
+                confidence: Some(0.9),
+                fragment: false,
+            },
+            TextBlock {
+                text: "Short".to_string(),
+                block_type: BlockType::Body,
+                bbox: Some(Rect::new(10.0, 116.0, 40.0, 14.0)),
+                confidence: Some(0.1),
+                fragment: false,
+            },
+        ];
+        let assembled = assemble_markdown_blocks(&blocks, 0);
+        assert_eq!(assembled.len(), 1);
+        let conf = match assembled[0].confidence {
+            Some(value) => value,
+            None => panic!("merged body should have confidence"),
+        };
+        assert!(
+            conf > 0.8,
+            "char-weighted merge should favor long high-conf line, got {conf}"
+        );
     }
 }

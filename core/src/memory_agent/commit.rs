@@ -922,6 +922,26 @@ pub fn commit_changeset_transaction(
     )
     .map_err(|err| format!("Failed final status update on parent changeset: {err}"))?;
 
+    if resolved_status != "pending" {
+        let import_jobs_table_exists = tx
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'import_jobs' LIMIT 1;",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if import_jobs_table_exists {
+            tx.execute(
+                "UPDATE import_jobs
+                 SET status = 'committed',
+                     completed_at = datetime('now')
+                 WHERE changeset_id = ?1 AND status = 'staged';",
+                [&input.changeset_id],
+            )
+            .map_err(|err| format!("Failed to commit linked import job: {err}"))?;
+        }
+    }
+
     drop(tag_stmt);
 
     tx.commit()

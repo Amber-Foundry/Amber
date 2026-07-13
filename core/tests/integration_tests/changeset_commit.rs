@@ -72,6 +72,10 @@ fn setup_test_db() -> Result<(Connection, PathBuf), Box<dyn Error>> {
         "INSERT OR IGNORE INTO vaults (id, name, privacy_tier) VALUES ('vault_credentials', 'Credentials', 'redacted');",
         [],
     )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO vaults (id, name, privacy_tier) VALUES ('vault_learning', 'Learning', 'open');",
+        [],
+    )?;
 
     // Seed a session
     conn.execute(
@@ -641,6 +645,166 @@ fn test_changeset_commit_repoint_door_missing_fields_fail() -> Result<(), Box<dy
         Ok(_) => return Err("Expected Err, got Ok".into()),
     };
     assert!(err_msg_2.contains("Missing target_node_id"));
+
+    let parent_dir = db_path.parent().ok_or("No parent dir")?;
+    let _ = fs::remove_dir_all(parent_dir);
+    Ok(())
+}
+
+#[test]
+fn test_import_job_committed_when_changeset_resolves() -> Result<(), Box<dyn Error>> {
+    let (mut conn, db_path) = setup_test_db()?;
+
+    conn.execute(
+        "INSERT INTO sessions (id, vault_id, scope_json) VALUES ('import-job-001', 'vault_learning', '[]');",
+        [],
+    )?;
+
+    let pending = PendingChangeset {
+        session_id: "import-job-001".to_string(),
+        model_used: Some("import-model".to_string()),
+        items: vec![PendingChangesetItem {
+            item_type: ChangesetItemType::Add,
+            target_node_id: None,
+            proposed_data:
+                r#"{"title":"Imported note","summary":"From PDF","vaultId":"vault_learning"}"#
+                    .to_string(),
+            existing_data: None,
+            similarity: None,
+            merge_with_id: None,
+        }],
+    };
+    let cs_id = persist_changeset(&conn, &pending, Some("import-model"))?;
+    let items = list_changeset_items(&conn, &cs_id)?;
+
+    conn.execute(
+        "INSERT INTO import_jobs (id, import_type, source_name, target_vault_id, status, changeset_id, node_count)
+         VALUES ('job-001', 'pdf', 'sample.pdf', 'vault_learning', 'staged', ?1, 1);",
+        [&cs_id],
+    )?;
+
+    let input = ChangesetCommitInput {
+        changeset_id: cs_id.clone(),
+        item_actions: vec![ItemReviewAction {
+            item_id: items[0].id.clone(),
+            action: "accept".to_string(),
+            edited_data: None,
+        }],
+    };
+
+    let ok = commit_changeset_transaction(&mut conn, &input, &db_path, None)?;
+    assert!(ok);
+
+    let import_status: String = conn.query_row(
+        "SELECT status FROM import_jobs WHERE id = 'job-001';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(import_status, "committed");
+
+    let parent_dir = db_path.parent().ok_or("No parent dir")?;
+    let _ = fs::remove_dir_all(parent_dir);
+    Ok(())
+}
+
+#[test]
+fn test_ingest_changeset_commit_enforces_backup() -> Result<(), Box<dyn Error>> {
+    let (mut conn, db_path) = setup_test_db()?;
+
+    conn.execute(
+        "INSERT INTO sessions (id, vault_id, scope_json) VALUES ('import-job-backup', 'vault_learning', '[]');",
+        [],
+    )?;
+
+    let pending = PendingChangeset {
+        session_id: "import-job-backup".to_string(),
+        model_used: Some("import-model".to_string()),
+        items: vec![PendingChangesetItem {
+            item_type: ChangesetItemType::Add,
+            target_node_id: None,
+            proposed_data: r#"{
+                "title":"Traffic sign fact",
+                "summary":"Imported from academic PDF",
+                "vaultId":"vault_learning",
+                "source":"report.pdf",
+                "sourceType":"pdf_import"
+            }"#
+            .to_string(),
+            existing_data: None,
+            similarity: None,
+            merge_with_id: None,
+        }],
+    };
+    let cs_id = persist_changeset(&conn, &pending, Some("import-model"))?;
+    let items = list_changeset_items(&conn, &cs_id)?;
+
+    let input = ChangesetCommitInput {
+        changeset_id: cs_id,
+        item_actions: vec![ItemReviewAction {
+            item_id: items[0].id.clone(),
+            action: "accept".to_string(),
+            edited_data: None,
+        }],
+    };
+
+    let parent_dir = db_path.parent().ok_or("No parent dir")?;
+    let backups_dir = parent_dir.join("backups");
+    assert!(!backups_dir.exists() || fs::read_dir(&backups_dir)?.count() == 0);
+
+    let ok = commit_changeset_transaction(&mut conn, &input, &db_path, None)?;
+    assert!(ok);
+
+    assert!(
+        backups_dir.exists(),
+        "Backups directory should have been created for ingest changeset commit"
+    );
+    let backup_files = fs::read_dir(&backups_dir)?.count();
+    assert_eq!(backup_files, 1, "Expected exactly 1 backup file");
+
+    let _ = fs::remove_dir_all(parent_dir);
+    Ok(())
+}
+
+#[test]
+fn test_ingest_changeset_cross_vault_anomaly() -> Result<(), Box<dyn Error>> {
+    let (conn, db_path) = setup_test_db()?;
+
+    conn.execute(
+        "INSERT INTO sessions (id, vault_id, scope_json) VALUES ('import-job-anomaly', 'vault_learning', '[]');",
+        [],
+    )?;
+
+    let pending = PendingChangeset {
+        session_id: "import-job-anomaly".to_string(),
+        model_used: Some("import-model".to_string()),
+        items: vec![PendingChangesetItem {
+            item_type: ChangesetItemType::Add,
+            target_node_id: None,
+            proposed_data: r#"{
+                "title":"Password hint",
+                "summary":"Should not land in learning vault",
+                "vaultId":"vault_credentials"
+            }"#
+            .to_string(),
+            existing_data: None,
+            similarity: None,
+            merge_with_id: None,
+        }],
+    };
+    let cs_id = persist_changeset(&conn, &pending, Some("import-model"))?;
+    let items = list_changeset_items(&conn, &cs_id)?;
+
+    assert_eq!(items.len(), 1);
+    assert!(
+        items[0].cross_vault_anomaly,
+        "Import session scoped to open vault should flag redacted target"
+    );
+    let warning = items[0]
+        .anomaly_warning
+        .as_deref()
+        .ok_or("expected cross-vault warning text")?;
+    assert!(warning.contains("Security Warning"));
+    assert!(warning.contains("REDACTED") || warning.contains("Credentials"));
 
     let parent_dir = db_path.parent().ok_or("No parent dir")?;
     let _ = fs::remove_dir_all(parent_dir);
