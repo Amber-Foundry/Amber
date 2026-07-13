@@ -177,8 +177,8 @@ pub(crate) fn is_mid_word_split(
     let prev_letters = letter_count(prev_token);
     let next_letters = letter_count(next_token);
 
-    let prev_char_width = average_char_width(prev_token, prev.width);
-    let next_char_width = average_char_width(next_token, next.width);
+    let prev_char_width = average_char_width(prev_text, prev.width);
+    let next_char_width = average_char_width(next_text, next.width);
     let space_threshold = prev_char_width
         .min(next_char_width)
         .mul_add(0.5, 0.0)
