@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import type { Node } from "../types/generated/Node";
+import { FileIcon } from "./icons";
 
 type NodeLinkAutocompleteProps = {
   query: string;
@@ -138,7 +139,9 @@ export default function NodeLinkAutocomplete({
           }}
           onMouseEnter={() => setSelectedIndex(index)}
         >
-          <span className="wikilink-option-icon">📄</span>
+          <span className="wikilink-option-icon">
+            <FileIcon size={14} />
+          </span>
           <div className="wikilink-option-text">
             <strong>{node.title}</strong>
             {node.summary ? <small>{node.summary}</small> : <small>No summary available</small>}

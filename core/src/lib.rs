@@ -38,6 +38,7 @@ pub use ipc_types::{
 /// Default `max_tokens` for context assembly (`debug_assemble_context`, `llm_chat`).
 /// Keep in sync with `CONTEXT_MAX_TOKENS` in `ui/constants/contextBudget.ts`.
 const DEFAULT_ASSEMBLER_MAX_TOKENS: usize = 8000;
+const CHAT_ATTACHED_DOC_MAX_TOKENS: usize = 6000;
 
 static MEMORY_AGENT_LIMITER: std::sync::OnceLock<
     governor::RateLimiter<
@@ -1854,6 +1855,7 @@ pub fn run() {
             llm_count_tokens,
             llm_list_models,
             llm_chat,
+            chat_extract_pdf_text,
             onboarding_extract_proposals,
             onboarding_commit,
             save_markdown_file,
@@ -4663,6 +4665,7 @@ async fn llm_chat(
     is_redacted_unlocked: bool,
     state: tauri::State<'_, AppState>,
     session_id: &str,
+    attached_document: Option<String>,
 ) -> Result<String, String> {
     let db_path = state.db_path.clone();
     let persona_instruction = "You are Amber, a personal memory assistant. Only help capture, organize, and recall the user's notes, ideas, and projects.";
@@ -4737,6 +4740,26 @@ async fn llm_chat(
         system_prompt = format!("{persona_instruction}\n\n{system_prompt}");
     }
 
+    if let Some(attached_doc) = attached_document.filter(|s| !s.is_empty()) {
+        let mut doc_text = attached_doc.clone();
+        let token_count = crate::llm::assembler::count_tokens(&doc_text);
+        if token_count > CHAT_ATTACHED_DOC_MAX_TOKENS {
+            let ratio = CHAT_ATTACHED_DOC_MAX_TOKENS as f32 / token_count as f32;
+            let target_chars = (doc_text.chars().count() as f32 * ratio) as usize;
+            doc_text = doc_text.chars().take(target_chars).collect();
+            doc_text.push_str("\n... [Truncated due to token length] ...");
+        }
+
+        system_prompt = format!(
+            "{}\n\n[AUXILIARY DOCUMENT]\n\
+             The user attached this document for reference. Use it to answer their questions and cite it when relevant.\n\
+             <attached_document>\n\
+             {}\n\
+             </attached_document>",
+            system_prompt, doc_text
+        );
+    }
+
     let parsed_provider = match provider.trim().to_lowercase().as_str() {
         "ollama" => llm::client::LlmProvider::Ollama,
         "lmstudio" => llm::client::LlmProvider::LmStudio,
@@ -4753,6 +4776,220 @@ async fn llm_chat(
         content: user_prompt,
     }];
     llm::client::LlmClient::complete(&client, &system_prompt, &messages).await
+}
+
+#[derive(Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPdfExtraction {
+    pub source_name: String,
+    pub page_count: usize,
+    pub text: String,
+    pub ocr_confidence: Option<f32>,
+    pub needs_ocr_models: bool,
+    pub prompt_injection_flagged: bool,
+    pub page_token_estimates: Vec<usize>,
+}
+
+#[tauri::command]
+async fn chat_extract_pdf_text(file_path: String) -> IpcResponse<ChatPdfExtraction> {
+    use crate::ocr::engine::OcrEngine;
+
+    into_ipc((|| -> Result<ChatPdfExtraction, String> {
+        let path = Path::new(&file_path);
+        let source_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Attached Document")
+            .to_string();
+
+        let rasterizer = ocr::PdfRasterizer::new()
+            .map_err(|e| format!("Failed to initialize PDF rasterizer: {e}"))?;
+        let document = rasterizer
+            .load_document_from_file(path)
+            .map_err(|e| format!("Failed to load PDF file: {e}"))?;
+        let page_infos = ocr::PdfRasterizer::scan_loaded_document(&document)
+            .map_err(|e| format!("Failed to scan PDF pages: {e}"))?;
+
+        let total_pages = page_infos.len();
+        if total_pages == 0 {
+            return Err("PDF document contains no pages.".to_string());
+        }
+
+        let mut has_ocr_or_hybrid = false;
+        for p in &page_infos {
+            if p.page_type == ocr::PdfPageType::Ocr || p.page_type == ocr::PdfPageType::Hybrid {
+                has_ocr_or_hybrid = true;
+                break;
+            }
+        }
+
+        let ocr_models_available = ocr::ocr_models_exist();
+        let needs_ocr_models = has_ocr_or_hybrid && !ocr_models_available;
+
+        let mut cached_ocr_engine: Option<ocr::BundledOcrEngine> = None;
+        let mut total_ocr_confidence_sum = 0.0;
+        let mut ocr_pass_count = 0;
+        let mut page_token_estimates = Vec::new();
+
+        let rasterizer_config = ocr::PdfRasterizerConfig { dpi: 150 };
+
+        let mut page_markdowns = Vec::new();
+
+        for (i, p) in page_infos.iter().enumerate() {
+            let (raw_blocks, page_width, page_height) = match p.page_type {
+                ocr::PdfPageType::Digital => {
+                    let raw_blocks =
+                        ocr::PdfRasterizer::extract_digital_blocks_from_document(&document, i)
+                            .map_err(|e| {
+                                format!("Failed extracting digital blocks on page {}: {e}", i + 1)
+                            })?;
+                    (raw_blocks, p.width_pts, p.height_pts)
+                }
+                ocr::PdfPageType::Ocr => {
+                    if !ocr_models_available {
+                        (Vec::new(), p.width_pts, p.height_pts)
+                    } else {
+                        if cached_ocr_engine.is_none() {
+                            cached_ocr_engine = Some(
+                                ocr::BundledOcrEngine::new()
+                                    .map_err(|e| format!("Failed initializing OCR engine: {e}"))?,
+                            );
+                        }
+                        let ocr_engine = cached_ocr_engine
+                            .as_mut()
+                            .ok_or_else(|| "OCR engine not initialized".to_string())?;
+                        let page_img = rasterizer
+                            .render_loaded_page(&document, i, &rasterizer_config)
+                            .map_err(|e| format!("Failed rendering page {} for OCR: {e}", i + 1))?;
+                        let (image_width, image_height) =
+                            (page_img.width() as f32, page_img.height() as f32);
+                        let ocr_output = ocr_engine.recognize(&page_img).map_err(|e| {
+                            format!("OCR recognition failed on page {}: {e}", i + 1)
+                        })?;
+
+                        total_ocr_confidence_sum += ocr_output.avg_confidence;
+                        ocr_pass_count += 1;
+
+                        let raw_blocks = crate::ingest::coords::normalize_blocks_to_pdf_points(
+                            ocr_output
+                                .blocks
+                                .into_iter()
+                                .map(|b| {
+                                    ingest::layout::RawLayoutBlock::new(b.text, b.bbox)
+                                        .with_confidence(b.confidence)
+                                })
+                                .collect(),
+                            image_width,
+                            image_height,
+                            p.width_pts,
+                            p.height_pts,
+                        );
+                        (raw_blocks, p.width_pts, p.height_pts)
+                    }
+                }
+                ocr::PdfPageType::Hybrid => {
+                    let digital_blocks =
+                        ocr::PdfRasterizer::extract_digital_blocks_from_document(&document, i)
+                            .map_err(|e| {
+                                format!("Failed extracting digital blocks on page {}: {e}", i + 1)
+                            })?;
+                    let page_area = p.width_pts * p.height_pts;
+
+                    let run_ocr = if !ocr_models_available {
+                        false
+                    } else {
+                        if digital_blocks.len() < 2 {
+                            true
+                        } else {
+                            let text_area: f32 = digital_blocks
+                                .iter()
+                                .map(|block| block.bbox.width.max(0.0) * block.bbox.height.max(0.0))
+                                .sum();
+                            text_area / page_area.max(1.0) < 0.01
+                        }
+                    };
+
+                    if run_ocr {
+                        if cached_ocr_engine.is_none() {
+                            cached_ocr_engine = Some(
+                                ocr::BundledOcrEngine::new()
+                                    .map_err(|e| format!("Failed initializing OCR engine: {e}"))?,
+                            );
+                        }
+                        let ocr_engine = cached_ocr_engine
+                            .as_mut()
+                            .ok_or_else(|| "OCR engine not initialized".to_string())?;
+                        let page_img = rasterizer
+                            .render_loaded_page(&document, i, &rasterizer_config)
+                            .map_err(|e| format!("Failed rendering page {} for OCR: {e}", i + 1))?;
+                        let (image_width, image_height) =
+                            (page_img.width() as f32, page_img.height() as f32);
+                        let ocr_output = ocr_engine.recognize(&page_img).map_err(|e| {
+                            format!("OCR recognition failed on page {}: {e}", i + 1)
+                        })?;
+
+                        total_ocr_confidence_sum += ocr_output.avg_confidence;
+                        ocr_pass_count += 1;
+
+                        let ocr_blocks = crate::ingest::coords::normalize_blocks_to_pdf_points(
+                            ocr_output
+                                .blocks
+                                .into_iter()
+                                .map(|b| {
+                                    ingest::layout::RawLayoutBlock::new(b.text, b.bbox)
+                                        .with_confidence(b.confidence)
+                                })
+                                .collect(),
+                            image_width,
+                            image_height,
+                            p.width_pts,
+                            p.height_pts,
+                        );
+
+                        let raw_blocks = crate::ingest::job::merge_hybrid_raw_blocks(
+                            digital_blocks,
+                            ocr_blocks,
+                            crate::ingest::HybridMergeStrategy::OcrPreferred,
+                        );
+                        (raw_blocks, p.width_pts, p.height_pts)
+                    } else {
+                        (digital_blocks, p.width_pts, p.height_pts)
+                    }
+                }
+            };
+
+            let layout_blocks = ingest::layout::analyze_layout(raw_blocks, page_width, page_height);
+            let page_ingest_blocks = crate::ingest::assemble_markdown_blocks(&layout_blocks, i);
+
+            let mut page_markdown = crate::ingest::join_ingest_blocks(&page_ingest_blocks);
+            if p.page_type != ocr::PdfPageType::Digital && !ocr_models_available {
+                page_markdown.push_str("\n\n* [Warning: OCR models not installed. Scanned text could not be extracted from this page.] *\n");
+            }
+
+            let page_token_est = crate::llm::assembler::count_tokens(&page_markdown);
+            page_token_estimates.push(page_token_est);
+            page_markdowns.push(page_markdown);
+        }
+
+        let assembled_markdown = page_markdowns.join("\n\n--- PAGE_BREAK ---\n\n");
+        let prompt_injection_flagged = ingest::security::scan_prompt_injection(&assembled_markdown);
+
+        let ocr_confidence = if ocr_pass_count > 0 {
+            Some((total_ocr_confidence_sum / (ocr_pass_count as f32)).clamp(0.0, 1.0))
+        } else {
+            None
+        };
+
+        Ok(ChatPdfExtraction {
+            source_name,
+            page_count: total_pages,
+            text: assembled_markdown,
+            ocr_confidence,
+            needs_ocr_models,
+            prompt_injection_flagged,
+            page_token_estimates,
+        })
+    })())
 }
 
 #[tauri::command]

@@ -1107,7 +1107,7 @@
 }
 
 .wikilink-badge::before {
-  content: "🚪";
+  content: "\1F6AA";
   font-size: 0.82rem;
   filter: sepia(0.65) saturate(1.2);
 }

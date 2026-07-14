@@ -1,5 +1,6 @@
 import { type ChangesetItem } from "../../ipc";
 import ItemActions from "./ItemActions";
+import { AlertIcon, FolderIcon, LinkIcon } from "../icons";
 
 interface DiffRowProps {
   item: ChangesetItem;
@@ -280,7 +281,7 @@ export default function DiffRow({ item, onCommitItem }: DiffRowProps) {
           </div>
           <div className="anomaly-warning-content">
             <span className="anomaly-warning-badge">
-              ⚠️ Security Warning: Mismatched Vault Sensitivity!
+              <AlertIcon size={14} /> Security Warning: Mismatched Vault Sensitivity!
             </span>
             <p className="anomaly-warning-text">
               {item.anomalyWarning ||
@@ -326,7 +327,7 @@ export default function DiffRow({ item, onCommitItem }: DiffRowProps) {
             <div className="diff-card-section">
               <span className="diff-card-label">Target Vault</span>
               <span className="diff-text-value" style={{ fontSize: "0.8rem", color: "#bc6c25" }}>
-                📂 {proposed.vaultId || proposed.vault_id || "unknown_vault"}
+                <FolderIcon size={14} /> {proposed.vaultId || proposed.vault_id || "unknown_vault"}
               </span>
             </div>
           </div>
@@ -494,7 +495,9 @@ export default function DiffRow({ item, onCommitItem }: DiffRowProps) {
                 Retraction Evidence
               </div>
               <div className="retraction-note">
-                <strong>⚠️ Proposed Deletion Context</strong>
+                <strong>
+                  <AlertIcon size={14} /> Proposed Deletion Context
+                </strong>
                 <p style={{ margin: "6px 0 0 0", fontSize: "0.82rem" }}>
                   {proposed.summary ||
                     "No specific deletion reason compiled by the extraction agent."}
@@ -514,7 +517,9 @@ export default function DiffRow({ item, onCommitItem }: DiffRowProps) {
               Orphaned Connection Alignment
             </div>
             <div className="orphan-mapping-box">
-              <strong>🔗 Resolve Orphaned Door Alert</strong>
+              <strong>
+                <LinkIcon size={14} /> Resolve Orphaned Door Alert
+              </strong>
               <p style={{ margin: "6px 0 0 0", fontSize: "0.84rem" }}>
                 Proposed to repoint orphaned door ID{" "}
                 <code

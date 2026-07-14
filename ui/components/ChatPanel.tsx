@@ -41,7 +41,30 @@ import {
   getApiKey,
 } from "../utils/settings";
 import { useUIStore } from "../utils/store";
-import { chatConvertTemporaryToMemory } from "../ipc";
+import { chatConvertTemporaryToMemory, chatExtractPdfText } from "../ipc";
+import { browseImportPdf, startOcrModelDownload } from "../services/import";
+import {
+  FileIcon,
+  AlertIcon,
+  ArrowUpIcon,
+  ChevronDownIcon,
+  GlobeIcon,
+  FolderIcon,
+  MessageIcon,
+  InboxIcon,
+  GraduationIcon,
+  GearIcon,
+  ComputerIcon,
+  CloudIcon,
+  ZapIcon,
+  BrainIcon,
+  HourglassIcon,
+  EyeOffIcon,
+  BarChartIcon,
+  TrendingUpIcon,
+  CloseIcon,
+  SparklesIcon,
+} from "./icons";
 
 // Memoized individual message bubble — prevents re-rendering existing messages
 // when unrelated parent state (e.g. input text) changes. Each bubble only
@@ -335,6 +358,21 @@ async function resolveLlmConfig(): Promise<{
   return { provider, endpoint, model };
 }
 
+type AttachedDoc = {
+  id: string;
+  filePath: string;
+  sourceName: string;
+  pageCount: number;
+  text: string;
+  ocrConfidence: number | null;
+  needsOcrModels: boolean;
+  promptInjectionFlagged: boolean;
+  pageTokenEstimates: number[];
+  isOverridden: boolean;
+  includedPageCount: number;
+  isTruncated: boolean;
+};
+
 type ChatPanelProps = {
   selectedNodeIds: string[];
   scope: ContextAssemblerScope;
@@ -349,6 +387,66 @@ type ChatPanelProps = {
   visible?: boolean;
   activeSessionId?: string | null;
   onActivateSession?: (sessionId: string) => void;
+};
+
+const computeAttachedDocsBudget = (docs: AttachedDoc[]): AttachedDoc[] => {
+  if (docs.length === 0) return [];
+
+  const maxTokens = 6000;
+  const processed = docs.map((d) => ({
+    ...d,
+    includedPageCount: d.pageCount,
+    isTruncated: false,
+  }));
+
+  let remainingBudget = maxTokens;
+  const activeIndices = new Set(processed.keys());
+
+  const includedPages = processed.map((d) => d.pageCount);
+
+  let iterations = 0;
+  while (activeIndices.size > 0 && iterations < 10) {
+    iterations++;
+    const share = Math.floor(remainingBudget / activeIndices.size);
+    let budgetReleased = false;
+
+    for (const idx of Array.from(activeIndices)) {
+      const fullDocTokens = processed[idx].pageTokenEstimates.reduce((a, b) => a + b, 0);
+      if (fullDocTokens <= share) {
+        remainingBudget -= fullDocTokens;
+        includedPages[idx] = processed[idx].pageCount;
+        activeIndices.delete(idx);
+        budgetReleased = true;
+      }
+    }
+
+    if (!budgetReleased) {
+      for (const idx of Array.from(activeIndices)) {
+        let acc = 0;
+        let pCount = 0;
+        for (const pageTokens of processed[idx].pageTokenEstimates) {
+          if (acc + pageTokens <= share) {
+            acc += pageTokens;
+            pCount++;
+          } else {
+            break;
+          }
+        }
+        if (pCount === 0 && processed[idx].pageCount > 0) {
+          pCount = 1;
+        }
+        includedPages[idx] = pCount;
+        processed[idx].isTruncated = pCount < processed[idx].pageCount;
+      }
+      break;
+    }
+  }
+
+  return processed.map((d, idx) => ({
+    ...d,
+    includedPageCount: includedPages[idx],
+    isTruncated: includedPages[idx] < d.pageCount,
+  }));
 };
 
 function ChatPanel({
@@ -367,6 +465,14 @@ function ChatPanel({
   onActivateSession,
 }: ChatPanelProps) {
   const [isOffTheRecord, setIsOffTheRecord] = useState(false);
+  const [attachedDocs, setAttachedDocs] = useState<AttachedDoc[]>([]);
+  const [isAttaching, setIsAttaching] = useState(false);
+  const [isDownloadingOcr, setIsDownloadingOcr] = useState(false);
+
+  const attachedDocsRef = useRef<AttachedDoc[]>([]);
+  useEffect(() => {
+    attachedDocsRef.current = attachedDocs;
+  }, [attachedDocs]);
   const MAX_RENDERED_MESSAGES = 60;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -377,6 +483,101 @@ function ChatPanel({
   const [editingContent, setEditingContent] = useState("");
   const [existingNodeIds, setExistingNodeIds] = useState<Set<string> | null>(null);
   const sessionId = isOffTheRecord ? "temporary-session" : activeSessionId || "default-session";
+
+  const handleAttachPdf = async () => {
+    setIsAttaching(true);
+    setStatus("");
+    try {
+      const filePath = await browseImportPdf();
+      if (!filePath) {
+        setIsAttaching(false);
+        return;
+      }
+
+      if (attachedDocs.some((d) => d.filePath === filePath)) {
+        setStatus("Document is already attached.");
+        setIsAttaching(false);
+        return;
+      }
+
+      setStatus("Extracting document content...");
+      const res = await chatExtractPdfText(filePath);
+      if ("err" in res) {
+        setStatus(`Extraction failed: ${res.err}`);
+        setIsAttaching(false);
+        return;
+      }
+
+      const doc = res.ok;
+      const newDoc: AttachedDoc = {
+        id: crypto.randomUUID(),
+        filePath,
+        sourceName: doc.sourceName,
+        pageCount: doc.pageCount,
+        text: doc.text,
+        ocrConfidence: doc.ocrConfidence,
+        needsOcrModels: doc.needsOcrModels,
+        promptInjectionFlagged: doc.promptInjectionFlagged,
+        pageTokenEstimates: doc.pageTokenEstimates,
+        isOverridden: false,
+        includedPageCount: doc.pageCount,
+        isTruncated: false,
+      };
+
+      setAttachedDocs((prev) => [...prev, newDoc]);
+      setStatus("");
+    } catch (err) {
+      console.error(err);
+      setStatus("Failed to attach PDF.");
+    } finally {
+      setIsAttaching(false);
+    }
+  };
+
+  const handleRemoveAttachment = (id: string) => {
+    setAttachedDocs((prev) => prev.filter((d) => d.id !== id));
+  };
+
+  const handleOverrideAttachment = (id: string) => {
+    setAttachedDocs((prev) => prev.map((d) => (d.id === id ? { ...d, isOverridden: true } : d)));
+  };
+
+  const handleDownloadOcr = async () => {
+    setIsDownloadingOcr(true);
+    setStatus("Downloading OCR models...");
+    try {
+      await startOcrModelDownload();
+      setStatus("OCR models downloaded. Re-processing attachments...");
+      const updated = [];
+      for (const doc of attachedDocs) {
+        if (doc.needsOcrModels) {
+          const res = await chatExtractPdfText(doc.filePath);
+          if ("ok" in res) {
+            const fresh = res.ok;
+            updated.push({
+              ...doc,
+              text: fresh.text,
+              ocrConfidence: fresh.ocrConfidence,
+              needsOcrModels: fresh.needsOcrModels,
+              promptInjectionFlagged: fresh.promptInjectionFlagged,
+              pageTokenEstimates: fresh.pageTokenEstimates,
+            });
+          } else {
+            updated.push(doc);
+          }
+        } else {
+          updated.push(doc);
+        }
+      }
+      setAttachedDocs(updated);
+      setStatus("");
+    } catch (err) {
+      console.error(err);
+      setStatus("Failed to download OCR models.");
+    } finally {
+      setIsDownloadingOcr(false);
+    }
+  };
 
   const handleToggleOtr = useCallback(async () => {
     const next = !isOffTheRecord;
@@ -707,6 +908,17 @@ function ChatPanel({
           executionPrompt = `[Agent Mode: Onboarding] Act as the Onboarding Agent. Conduct an interview and ask clarifying questions to help build initial context for the user:\n\n${promptText}`;
         }
 
+        const processed = computeAttachedDocsBudget(attachedDocsRef.current);
+        const safeDocs = processed.filter((d) => !d.promptInjectionFlagged || d.isOverridden);
+        let attachedText: string | null = null;
+        if (safeDocs.length > 0) {
+          const docTexts = safeDocs.map((d) => {
+            const pages = d.text.split("\n\n--- PAGE_BREAK ---\n\n");
+            return pages.slice(0, d.includedPageCount).join("\n\n");
+          });
+          attachedText = docTexts.join("\n\n");
+        }
+
         const aiResponse = await chatWithScope(
           selectedNodeIds,
           scope,
@@ -716,7 +928,8 @@ function ChatPanel({
           executionPrompt,
           chartsEnabled,
           isRedactedUnlocked,
-          sessionId
+          sessionId,
+          attachedText
         );
 
         const aiMsgId = crypto.randomUUID();
@@ -728,6 +941,7 @@ function ChatPanel({
         };
 
         setMessages((prev) => [...prev, aiMsg]);
+        setAttachedDocs([]); // clear attachments on successful send
         await chatAppendMessage(aiMsgId, "assistant", aiResponse, sessionId);
 
         // Fire-and-forget background extraction check (non-blocking for the user)
@@ -763,6 +977,75 @@ function ChatPanel({
   useEffect(() => {
     executeLlmResponseRef.current = executeLlmResponse;
   }, [executeLlmResponse]);
+
+  const budgetedDocs = useMemo(() => computeAttachedDocsBudget(attachedDocs), [attachedDocs]);
+  const anyNeedsOcr = budgetedDocs.some((d) => d.needsOcrModels);
+
+  const attachmentChipsJsx =
+    budgetedDocs.length > 0 ? (
+      <div className="chat-attachment-chips">
+        {budgetedDocs.map((doc) => (
+          <div
+            key={doc.id}
+            className={`chat-attachment-chip${doc.promptInjectionFlagged && !doc.isOverridden ? " flagged" : ""}`}
+          >
+            <span className="chip-icon">
+              <FileIcon size={14} />
+            </span>
+            <span className="chip-name">{doc.sourceName}</span>
+            <span className="chip-pages">
+              {doc.isTruncated
+                ? `pp. 1–${doc.includedPageCount} of ${doc.pageCount}`
+                : `${doc.pageCount} pg`}
+            </span>
+            {doc.isTruncated && (
+              <span
+                className="chip-truncated"
+                title="Document was truncated to fit the token budget"
+              >
+                <AlertIcon size={12} /> Truncated
+              </span>
+            )}
+            {doc.needsOcrModels && (
+              <span className="chip-ocr-warn" title="OCR models needed for full extraction">
+                <AlertIcon size={12} /> OCR
+              </span>
+            )}
+            {doc.promptInjectionFlagged && !doc.isOverridden && (
+              <span className="chip-injection-warn">
+                <AlertIcon size={12} /> Hidden instructions detected
+                <button
+                  type="button"
+                  className="chip-override-btn"
+                  onClick={() => handleOverrideAttachment(doc.id)}
+                  title="Keep this attachment despite the warning"
+                >
+                  Keep
+                </button>
+              </span>
+            )}
+            <button
+              type="button"
+              className="chip-remove-btn"
+              onClick={() => handleRemoveAttachment(doc.id)}
+              aria-label={`Remove ${doc.sourceName}`}
+            >
+              <CloseIcon size={14} />
+            </button>
+          </div>
+        ))}
+        {anyNeedsOcr && (
+          <button
+            type="button"
+            className="chip-download-ocr-btn"
+            onClick={() => void handleDownloadOcr()}
+            disabled={isDownloadingOcr}
+          >
+            {isDownloadingOcr ? "Downloading OCR..." : "Download OCR Models"}
+          </button>
+        )}
+      </div>
+    ) : null;
 
   async function executeSendMessage(promptText: string) {
     if (isSending || !promptText.trim()) return;
@@ -932,7 +1215,29 @@ function ChatPanel({
           <h1 className="zen-greeting">
             Good {timeOfDay}, <span className="zen-username">{userName}</span>
           </h1>
+          {attachmentChipsJsx}
           <div className="zen-search-wrapper">
+            <button
+              type="button"
+              className="chat-attach-btn"
+              onClick={() => void handleAttachPdf()}
+              disabled={isAttaching || isSending}
+              title="Attach a PDF document"
+              aria-label="Attach PDF"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
             <textarea
               ref={inputRef}
               value={input}
@@ -951,7 +1256,7 @@ function ChatPanel({
               disabled={!input.trim() || isSending}
               aria-label="Send query"
             >
-              ➔
+              <ArrowUpIcon size={18} />
             </button>
           </div>
 
@@ -966,10 +1271,14 @@ function ChatPanel({
                   toggleDropdown("vault");
                 }}
               >
-                <span className="zen-pill-icon">📁</span>
+                <span className="zen-pill-icon">
+                  <FolderIcon size={16} />
+                </span>
                 <span className="zen-pill-label">Vault:</span>
                 <span className="zen-pill-value">{selectedVaultName}</span>
-                <span className="zen-pill-chevron">▾</span>
+                <span className="zen-pill-chevron">
+                  <ChevronDownIcon size={14} />
+                </span>
               </button>
               {activeDropdown === "vault" && (
                 <div className="zen-dropdown">
@@ -979,7 +1288,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${!selectedVaultId ? "selected" : ""}`}
                     onClick={() => handleSelectVault(null)}
                   >
-                    <span className="item-icon">🌐</span>
+                    <span className="item-icon">
+                      <GlobeIcon size={16} />
+                    </span>
                     <span className="item-text">Root Graph (Global Context)</span>
                   </button>
                   {vaults.map((v) => (
@@ -989,7 +1300,9 @@ function ChatPanel({
                       className={`zen-dropdown-item ${selectedVaultId === v.id ? "selected" : ""}`}
                       onClick={() => handleSelectVault(v.id)}
                     >
-                      <span className="item-icon">📁</span>
+                      <span className="item-icon">
+                        <FolderIcon size={16} />
+                      </span>
                       <span className="item-text">{v.name}</span>
                       <span className="item-badge">{v.privacyTier.replace("_", " ")}</span>
                     </button>
@@ -1008,10 +1321,14 @@ function ChatPanel({
                   toggleDropdown("mode");
                 }}
               >
-                <span className="zen-pill-icon">✦</span>
+                <span className="zen-pill-icon">
+                  <SparklesIcon size={16} />
+                </span>
                 <span className="zen-pill-label">Mode:</span>
                 <span className="zen-pill-value">{agentMode}</span>
-                <span className="zen-pill-chevron">▾</span>
+                <span className="zen-pill-chevron">
+                  <ChevronDownIcon size={14} />
+                </span>
               </button>
               {activeDropdown === "mode" && (
                 <div className="zen-dropdown animate-fade-in">
@@ -1021,7 +1338,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${agentMode === "Recall/Chat" ? "selected" : ""}`}
                     onClick={() => handleSelectMode("Recall/Chat")}
                   >
-                    <span className="item-icon">💬</span>
+                    <span className="item-icon">
+                      <MessageIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Recall/Chat</div>
                       <div className="item-desc">
@@ -1034,7 +1353,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${agentMode === "Ingest/Memory" ? "selected" : ""}`}
                     onClick={() => handleSelectMode("Ingest/Memory")}
                   >
-                    <span className="item-icon">📥</span>
+                    <span className="item-icon">
+                      <InboxIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Ingest/Memory</div>
                       <div className="item-desc">
@@ -1047,7 +1368,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${agentMode === "Onboarding" ? "selected" : ""}`}
                     onClick={() => handleSelectMode("Onboarding")}
                   >
-                    <span className="item-icon">🎓</span>
+                    <span className="item-icon">
+                      <GraduationIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Onboarding</div>
                       <div className="item-desc">
@@ -1069,10 +1392,14 @@ function ChatPanel({
                   toggleDropdown("model");
                 }}
               >
-                <span className="zen-pill-icon">⚙</span>
+                <span className="zen-pill-icon">
+                  <GearIcon size={16} />
+                </span>
                 <span className="zen-pill-label">Model:</span>
                 <span className="zen-pill-value">{activeModelDisplay}</span>
-                <span className="zen-pill-chevron">▾</span>
+                <span className="zen-pill-chevron">
+                  <ChevronDownIcon size={14} />
+                </span>
               </button>
               {activeDropdown === "model" && (
                 <div className="zen-dropdown models-dropdown">
@@ -1083,7 +1410,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${currentMode === "local" ? "selected" : ""}`}
                     onClick={() => handleSelectModeSettings("local")}
                   >
-                    <span className="item-icon">💻</span>
+                    <span className="item-icon">
+                      <ComputerIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Local Models</div>
                       <div className="item-desc">
@@ -1097,7 +1426,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${currentMode === "cloud" ? "selected" : ""}`}
                     onClick={() => handleSelectModeSettings("cloud")}
                   >
-                    <span className="item-icon">☁️</span>
+                    <span className="item-icon">
+                      <CloudIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Cloud Models</div>
                       <div className="item-desc">
@@ -1111,7 +1442,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${currentMode === "hybrid" ? "selected" : ""}`}
                     onClick={() => handleSelectModeSettings("hybrid")}
                   >
-                    <span className="item-icon">⚡</span>
+                    <span className="item-icon">
+                      <ZapIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Hybrid Mode</div>
                       <div className="item-desc">
@@ -1131,7 +1464,9 @@ function ChatPanel({
                 onClick={() => void handleForceExtract()}
                 disabled={isExtracting || isSending}
               >
-                <span className="zen-pill-icon">{isExtracting ? "⏳" : "🧠"}</span>
+                <span className="zen-pill-icon">
+                  {isExtracting ? <HourglassIcon size={16} /> : <BrainIcon size={16} />}
+                </span>
                 <span className="zen-pill-label">{isExtracting ? "Extracting..." : "Extract"}</span>
               </button>
             </div>
@@ -1147,7 +1482,10 @@ function ChatPanel({
                     : "Enable Off the Record (private brainstorm)"
                 }
               >
-                {isOffTheRecord ? "🕶️ Off the Record" : "🧠 Mind Sync Active"}
+                <span className="otr-banner-icon">
+                  {isOffTheRecord ? <EyeOffIcon size={16} /> : <BrainIcon size={16} />}
+                </span>
+                {isOffTheRecord ? "Off the Record" : "Mind Sync Active"}
               </button>
             </div>
 
@@ -1158,7 +1496,9 @@ function ChatPanel({
                 className={`zen-pill charts-pill ${chartsEnabled ? "active" : ""}`}
                 onClick={handleToggleCharts}
               >
-                <span className="zen-pill-icon">{chartsEnabled ? "📊" : "📈"}</span>
+                <span className="zen-pill-icon">
+                  {chartsEnabled ? <BarChartIcon size={16} /> : <TrendingUpIcon size={16} />}
+                </span>
                 <span className="zen-pill-label">Charts:</span>
                 <span className="zen-pill-value">{chartsEnabled ? "ON" : "OFF"}</span>
               </button>
@@ -1170,7 +1510,9 @@ function ChatPanel({
           <div className="charts-modal-overlay" onClick={() => setShowChartsConfirmModal(false)}>
             <div className="charts-modal-card" onClick={(e) => e.stopPropagation()}>
               <div className="charts-modal-header">
-                <span className="charts-modal-icon">⚠️</span>
+                <span className="charts-modal-icon">
+                  <AlertIcon size={20} />
+                </span>
                 <h3 className="charts-modal-title">Enable Experimental Charts?</h3>
               </div>
               <div className="charts-modal-body">
@@ -1273,10 +1615,14 @@ function ChatPanel({
                 toggleDropdown("vault");
               }}
             >
-              <span className="zen-pill-icon">📁</span>
+              <span className="zen-pill-icon">
+                <FolderIcon size={16} />
+              </span>
               <span className="zen-pill-label">Vault:</span>
               <span className="zen-pill-value">{selectedVaultName}</span>
-              <span className="zen-pill-chevron">▾</span>
+              <span className="zen-pill-chevron">
+                <ChevronDownIcon size={16} />
+              </span>
             </button>
             {activeDropdown === "vault" && (
               <div className="zen-dropdown">
@@ -1286,7 +1632,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${!selectedVaultId ? "selected" : ""}`}
                   onClick={() => handleSelectVault(null)}
                 >
-                  <span className="item-icon">🌐</span>
+                  <span className="item-icon">
+                    <GlobeIcon size={16} />
+                  </span>
                   <span className="item-text">Root Graph (Global Context)</span>
                 </button>
                 {vaults.map((v) => (
@@ -1296,7 +1644,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${selectedVaultId === v.id ? "selected" : ""}`}
                     onClick={() => handleSelectVault(v.id)}
                   >
-                    <span className="item-icon">📁</span>
+                    <span className="item-icon">
+                      <FolderIcon size={16} />
+                    </span>
                     <span className="item-text">{v.name}</span>
                     <span className="item-badge">{v.privacyTier.replace("_", " ")}</span>
                   </button>
@@ -1315,10 +1665,14 @@ function ChatPanel({
                 toggleDropdown("mode");
               }}
             >
-              <span className="zen-pill-icon">✦</span>
+              <span className="zen-pill-icon">
+                <SparklesIcon size={16} />
+              </span>
               <span className="zen-pill-label">Mode:</span>
               <span className="zen-pill-value">{agentMode}</span>
-              <span className="zen-pill-chevron">▾</span>
+              <span className="zen-pill-chevron">
+                <ChevronDownIcon size={16} />
+              </span>
             </button>
             {activeDropdown === "mode" && (
               <div className="zen-dropdown animate-fade-in">
@@ -1328,7 +1682,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${agentMode === "Recall/Chat" ? "selected" : ""}`}
                   onClick={() => handleSelectMode("Recall/Chat")}
                 >
-                  <span className="item-icon">💬</span>
+                  <span className="item-icon">
+                    <MessageIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Recall/Chat</div>
                     <div className="item-desc">
@@ -1341,7 +1697,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${agentMode === "Ingest/Memory" ? "selected" : ""}`}
                   onClick={() => handleSelectMode("Ingest/Memory")}
                 >
-                  <span className="item-icon">📥</span>
+                  <span className="item-icon">
+                    <InboxIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Ingest/Memory</div>
                     <div className="item-desc">
@@ -1354,7 +1712,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${agentMode === "Onboarding" ? "selected" : ""}`}
                   onClick={() => handleSelectMode("Onboarding")}
                 >
-                  <span className="item-icon">🎓</span>
+                  <span className="item-icon">
+                    <GraduationIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Onboarding</div>
                     <div className="item-desc">Trigger Onboarding Agent interview for context</div>
@@ -1374,10 +1734,14 @@ function ChatPanel({
                 toggleDropdown("model");
               }}
             >
-              <span className="zen-pill-icon">⚙</span>
+              <span className="zen-pill-icon">
+                <GearIcon size={16} />
+              </span>
               <span className="zen-pill-label">Model:</span>
               <span className="zen-pill-value">{activeModelDisplay}</span>
-              <span className="zen-pill-chevron">▾</span>
+              <span className="zen-pill-chevron">
+                <ChevronDownIcon size={16} />
+              </span>
             </button>
             {activeDropdown === "model" && (
               <div className="zen-dropdown models-dropdown">
@@ -1388,7 +1752,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${currentMode === "local" ? "selected" : ""}`}
                   onClick={() => handleSelectModeSettings("local")}
                 >
-                  <span className="item-icon">💻</span>
+                  <span className="item-icon">
+                    <ComputerIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Local Models</div>
                     <div className="item-desc">Secure, offline models via Ollama or LM Studio</div>
@@ -1400,7 +1766,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${currentMode === "cloud" ? "selected" : ""}`}
                   onClick={() => handleSelectModeSettings("cloud")}
                 >
-                  <span className="item-icon">☁️</span>
+                  <span className="item-icon">
+                    <CloudIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Cloud Models</div>
                     <div className="item-desc">
@@ -1414,7 +1782,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${currentMode === "hybrid" ? "selected" : ""}`}
                   onClick={() => handleSelectModeSettings("hybrid")}
                 >
-                  <span className="item-icon">⚡</span>
+                  <span className="item-icon">
+                    <ZapIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Hybrid Mode</div>
                     <div className="item-desc">Run both Cloud and Local models simultaneously</div>
@@ -1431,14 +1801,18 @@ function ChatPanel({
               onClick={() => void handleForceExtract()}
               disabled={isExtracting || isSending}
             >
-              <span className="zen-pill-icon">{isExtracting ? "⏳" : "🧠"}</span>
+              <span className="zen-pill-icon">
+                {isExtracting ? <HourglassIcon size={16} /> : <BrainIcon size={16} />}
+              </span>
               <span className="zen-pill-label">{isExtracting ? "Extracting..." : "Extract"}</span>
             </button>
           </div>
           {/* Pill 5: Off the Record Banner */}
           {isOffTheRecord && (
             <div className="otr-convert-banner">
-              <span className="otr-banner-label">🕶️ Off the Record</span>
+              <span className="otr-banner-label">
+                <EyeOffIcon size={16} /> Off the Record
+              </span>
               <button
                 type="button"
                 className="convert-memory-btn"
@@ -1458,15 +1832,39 @@ function ChatPanel({
               className={`zen-pill charts-pill ${chartsEnabled ? "active" : ""}`}
               onClick={handleToggleCharts}
             >
-              <span className="zen-pill-icon">{chartsEnabled ? "📊" : "📈"}</span>
+              <span className="zen-pill-icon">
+                {chartsEnabled ? <BarChartIcon size={16} /> : <TrendingUpIcon size={16} />}
+              </span>
               <span className="zen-pill-label">Charts:</span>
               <span className="zen-pill-value">{chartsEnabled ? "ON" : "OFF"}</span>
             </button>
           </div>
         </div>
 
+        {attachmentChipsJsx}
         {/* High-rounded input area matching search bar styles */}
         <div className="chat-input-wrapper">
+          <button
+            type="button"
+            className="chat-attach-btn"
+            onClick={() => void handleAttachPdf()}
+            disabled={isAttaching || isSending}
+            title="Attach a PDF document"
+            aria-label="Attach PDF"
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+            </svg>
+          </button>
           <textarea
             ref={inputRef}
             value={input}
@@ -1483,7 +1881,7 @@ function ChatPanel({
             disabled={!canSend}
             aria-label="Send query"
           >
-            ➔
+            <ArrowUpIcon size={18} />
           </button>
         </div>
       </div>
@@ -1492,7 +1890,9 @@ function ChatPanel({
         <div className="charts-modal-overlay" onClick={() => setShowChartsConfirmModal(false)}>
           <div className="charts-modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="charts-modal-header">
-              <span className="charts-modal-icon">⚠️</span>
+              <span className="charts-modal-icon">
+                <AlertIcon size={20} />
+              </span>
               <h3 className="charts-modal-title">Enable Experimental Charts?</h3>
             </div>
             <div className="charts-modal-body">

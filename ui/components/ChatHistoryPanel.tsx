@@ -8,6 +8,7 @@ import {
   chatIsOffTheRecord,
   type ChatSession,
 } from "../services/chat";
+import { PlusIcon, CloseIcon, CheckIcon, PencilIcon, TrashIcon } from "./icons";
 
 type ChatHistoryPanelProps = {
   activeSessionId: string | null;
@@ -190,7 +191,7 @@ export default function ChatHistoryPanel({
       <div className="pane-header">
         <span className="sidebar-subtitle">Conversations</span>
         <button type="button" className="chat-history-new-btn" onClick={handleCreateSession}>
-          ➕ New Chat
+          <PlusIcon size={14} /> New Chat
         </button>
       </div>
 
@@ -219,7 +220,7 @@ export default function ChatHistoryPanel({
                         className="chat-history-rename-btn cancel"
                         onClick={cancelRename}
                       >
-                        ✕
+                        <CloseIcon size={14} />
                       </button>
                       <button
                         type="button"
@@ -227,7 +228,7 @@ export default function ChatHistoryPanel({
                         onClick={(e) => void saveRename(e, s.id)}
                         disabled={isRenaming}
                       >
-                        ✓
+                        <CheckIcon size={14} />
                       </button>
                     </div>
                   </div>
@@ -255,7 +256,7 @@ export default function ChatHistoryPanel({
                       onClick={(e) => startRename(e, s)}
                       title="Rename conversation"
                     >
-                      ✏️
+                      <PencilIcon size={14} />
                     </button>
                     <button
                       type="button"
@@ -263,7 +264,7 @@ export default function ChatHistoryPanel({
                       onClick={(e) => void handleDeleteSession(e, s.id)}
                       title="Delete conversation"
                     >
-                      🗑️
+                      <TrashIcon size={14} />
                     </button>
                   </div>
                 </button>

@@ -22,6 +22,7 @@ import {
   getAccessCount,
 } from "../utils/priority";
 import PriorityBar from "./PriorityBar";
+import { BrainIcon, SparklesIcon, SnowflakeIcon } from "./icons";
 
 type PriorityDashboardProps = {
   refreshKey: number;
@@ -194,14 +195,22 @@ function PriorityDashboard({ refreshKey, isRedactedUnlocked }: PriorityDashboard
   return (
     <aside className="pane pane-right">
       <div className="pane-header">
-        <h3>🧠 Active Memory</h3>
+        <h3>
+          <BrainIcon size={16} /> Active Memory
+        </h3>
         <button
           type="button"
           className="optimize-button"
           disabled={isOptimizing}
           onClick={() => void onAutoOptimize()}
         >
-          {isOptimizing ? "Optimizing…" : "✨ Auto-Optimize"}
+          {isOptimizing ? (
+            "Optimizing…"
+          ) : (
+            <>
+              <SparklesIcon size={14} /> Auto-Optimize
+            </>
+          )}
         </button>
       </div>
       {status && <p className="pane-error">{status}</p>}
@@ -253,7 +262,7 @@ function PriorityDashboard({ refreshKey, isRedactedUnlocked }: PriorityDashboard
                   frozen ? "Unfreeze — allow auto-optimize" : "Freeze — protect from auto-optimize"
                 }
               >
-                ❄️
+                <SnowflakeIcon size={14} />
               </button>
             </div>
           );

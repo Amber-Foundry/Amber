@@ -13,25 +13,9 @@ import {
   getVaultEffectivePrivacy as getRecursiveVaultEffectivePrivacy,
 } from "../utils/privacy";
 import { getImportDocumentId, isImportChunkNode } from "../utils/importDocument";
+import { VaultIcon, VAULT_ICON_KEYS, resolveVaultIconKey } from "./VaultIcon";
 
-const VAULT_ICON_CHOICES = [
-  "💳",
-  "🪙",
-  "💪",
-  "📚",
-  "👤",
-  "💼",
-  "🏠",
-  "📱",
-  "💻",
-  "📝",
-  "🧠",
-  "💰",
-  "🔑",
-  "🎨",
-  "🚀",
-  "📂",
-];
+const VAULT_ICON_CHOICES = VAULT_ICON_KEYS;
 
 type VaultSidebarProps = {
   selectedVaultId: string | null;
@@ -172,59 +156,7 @@ function VaultSidebar({
   }
 
   function getVaultEmoji(vault: Vault): string {
-    const iconKey = (vault.icon || "").trim().toLowerCase();
-
-    // First translate known icon keywords stored in DB
-    if (iconKey) {
-      if (iconKey === "key" || iconKey === "credentials") return "💳";
-      if (iconKey === "coins" || iconKey === "finance" || iconKey === "money") return "🪙";
-      if (iconKey === "heart" || iconKey === "health" || iconKey === "fitness") return "💪";
-      if (iconKey === "book" || iconKey === "learning" || iconKey === "read") return "📚";
-      if (iconKey === "user" || iconKey === "personal") return "👤";
-      if (iconKey === "briefcase" || iconKey === "work" || iconKey === "project") return "💼";
-      if (iconKey === "home" || iconKey === "vault 1") return "🏠";
-      if (iconKey === "mobile" || iconKey === "phone" || iconKey === "cse") return "📱";
-      if (iconKey === "classes" || iconKey === "computer" || iconKey === "laptop") return "💻";
-
-      // If it is already a single emoji or double character, return it directly
-      if (iconKey.length <= 2) {
-        return vault.icon!.trim();
-      }
-    }
-
-    // Fall back to name-based heuristics
-    const name = vault.name.toLowerCase();
-    if (name.includes("home") || name.includes("vault 1")) return "🏠";
-    if (name.includes("class") || name.includes("cse")) return "💻";
-    if (name.includes("credential") || name.includes("password") || name.includes("key"))
-      return "💳";
-    if (
-      name.includes("fitness") ||
-      name.includes("gym") ||
-      name.includes("workout") ||
-      name.includes("health")
-    )
-      return "💪";
-    if (name.includes("project") || name.includes("work") || name.includes("mindvault"))
-      return "📝";
-    if (name.includes("memory") || name.includes("brain")) return "🧠";
-    if (
-      name.includes("book") ||
-      name.includes("read") ||
-      name.includes("study") ||
-      name.includes("learn")
-    )
-      return "📚";
-    if (name.includes("personal") || name.includes("private") || name.includes("user")) return "👤";
-    if (
-      name.includes("finance") ||
-      name.includes("money") ||
-      name.includes("wallet") ||
-      name.includes("coins")
-    )
-      return "💰";
-
-    return "📂";
+    return resolveVaultIconKey(vault.icon, vault.name);
   }
 
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -814,7 +746,7 @@ function VaultSidebar({
     const isDimmed = isSearching && !isVaultOnMatchPath(vault.id);
     const isHighlighted = isSearching && isVaultOnMatchPath(vault.id);
     const isFav = favoriteVaultIds.includes(vault.id);
-    const vaultEmoji = isRedactedLocked ? "⬛" : getVaultEmoji(vault);
+    const vaultIconKey = isRedactedLocked ? "folder" : getVaultEmoji(vault);
 
     return (
       <li key={vault.id + suffix} className={isDimmed ? "tree-dimmed" : ""}>
@@ -830,12 +762,30 @@ function VaultSidebar({
             disabled={!hasExpandableContent}
             aria-label={expanded ? `Collapse ${vault.name}` : `Expand ${vault.name}`}
           >
-            {!hasExpandableContent ? "" : expanded ? "▾" : "▸"}
+            {!hasExpandableContent ? (
+              ""
+            ) : (
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d={expanded ? "m6 9 6 6 6-6" : "m9 6 6 6-6 6"} />
+              </svg>
+            )}
           </button>
           <div className="vault-header">
             <button type="button" className="list-main" onClick={() => onSelectVaultEntry(vault)}>
               <span className="list-title-row">
-                <span className="vault-icon-emoji">{vaultEmoji}</span>
+                <span className="vault-icon-emoji">
+                  <VaultIcon icon={vaultIconKey} name={vault.name} size={16} />
+                </span>
                 <span className="list-title-text">
                   {getPrivacyDisplayLabel(vault.name, effectiveTier, isRedactedUnlocked)}
                 </span>
@@ -844,7 +794,24 @@ function VaultSidebar({
                     Global
                   </span>
                 )}
-                {effectiveTier === "locked" && <span className="privacy-lock-icon">🔒</span>}
+                {effectiveTier === "locked" && (
+                  <span className="privacy-lock-icon">
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <rect width="18" height="11" x="3" y="11" rx="2" />
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </svg>
+                  </span>
+                )}
               </span>
               {isRedactedLocked ? (
                 <small>[Metadata Locked]</small>
@@ -866,7 +833,19 @@ function VaultSidebar({
                 }}
                 aria-label={isFav ? "Remove from Favorites" : "Add to Favorites"}
               >
-                {isFav ? "★" : "☆"}
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill={isFav ? "currentColor" : "none"}
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z" />
+                </svg>
               </button>
               <button
                 type="button"
@@ -885,7 +864,20 @@ function VaultSidebar({
                 }}
                 aria-label={`Update settings for ${vault.name}`}
               >
-                ⚙️
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
               </button>
               <button
                 type="button"
@@ -914,7 +906,7 @@ function VaultSidebar({
               const childExpanded =
                 childHasContent &&
                 ((isSearching && isSubVaultMatch(child.id)) || (expandedVaults[child.id] ?? false));
-              const childEmoji = isChildRedactedLocked ? "⬛" : getVaultEmoji(child);
+              const childIconKey = isChildRedactedLocked ? "folder" : getVaultEmoji(child);
 
               return (
                 <li key={child.id + suffix} className={childIsDimmed ? "tree-dimmed" : ""}>
@@ -930,7 +922,23 @@ function VaultSidebar({
                       disabled={!childHasContent}
                       aria-label={childExpanded ? `Collapse ${child.name}` : `Expand ${child.name}`}
                     >
-                      {!childHasContent ? "" : childExpanded ? "▾" : "▸"}
+                      {!childHasContent ? (
+                        ""
+                      ) : (
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d={childExpanded ? "m6 9 6 6 6-6" : "m9 6 6 6-6 6"} />
+                        </svg>
+                      )}
                     </button>
                     <button
                       type="button"
@@ -938,7 +946,9 @@ function VaultSidebar({
                       onClick={() => onSelectVaultEntry(child)}
                     >
                       <span className="list-title-row">
-                        <span className="vault-icon-emoji">{childEmoji}</span>
+                        <span className="vault-icon-emoji">
+                          <VaultIcon icon={childIconKey} name={child.name} size={16} />
+                        </span>
                         <span className="list-title-text">
                           {getPrivacyDisplayLabel(
                             child.name,
@@ -947,7 +957,22 @@ function VaultSidebar({
                           )}
                         </span>
                         {childEffectiveTier === "locked" && (
-                          <span className="privacy-lock-icon">🔒</span>
+                          <span className="privacy-lock-icon">
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              aria-hidden="true"
+                            >
+                              <rect width="18" height="11" x="3" y="11" rx="2" />
+                              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                            </svg>
+                          </span>
                         )}
                       </span>
                       {isChildRedactedLocked ? (
@@ -974,7 +999,20 @@ function VaultSidebar({
                         }}
                         aria-label={`Update settings for ${child.name}`}
                       >
-                        ⚙️
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                          <circle cx="12" cy="12" r="3" />
+                        </svg>
                       </button>
                       <button
                         type="button"
@@ -1001,7 +1039,11 @@ function VaultSidebar({
                         const isNodeRedactedLocked =
                           nodeEffectiveTier === "redacted" && !isRedactedUnlocked;
                         const isNodeLocked = nodeEffectiveTier === "locked";
-                        const nodeIcon = isNodeRedactedLocked ? "⬛" : isNodeLocked ? "🔒" : "📄";
+                        const nodeIconKey = isNodeRedactedLocked
+                          ? "folder"
+                          : isNodeLocked
+                            ? "lock"
+                            : "note";
                         const summaryText = isNodeRedactedLocked
                           ? "[Metadata Locked]"
                           : node.summary.slice(0, 60);
@@ -1013,7 +1055,26 @@ function VaultSidebar({
                               className={`tree-node-item ${nodeHighlighted ? "tree-match" : ""}`}
                               onClick={() => onSelectNodeEntry(node)}
                             >
-                              <span className="tree-node-icon">{nodeIcon}</span>
+                              <span className="tree-node-icon">
+                                {nodeIconKey === "lock" ? (
+                                  <svg
+                                    width="14"
+                                    height="14"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    aria-hidden="true"
+                                  >
+                                    <rect width="18" height="11" x="3" y="11" rx="2" />
+                                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                  </svg>
+                                ) : (
+                                  <VaultIcon icon={nodeIconKey} name="" size={14} />
+                                )}
+                              </span>
                               <span className="tree-node-text">
                                 <strong>
                                   {getPrivacyDisplayLabel(
@@ -1051,7 +1112,7 @@ function VaultSidebar({
               );
               const isNodeRedactedLocked = nodeEffectiveTier === "redacted" && !isRedactedUnlocked;
               const isNodeLocked = nodeEffectiveTier === "locked";
-              const nodeIcon = isNodeRedactedLocked ? "⬛" : isNodeLocked ? "🔒" : "📄";
+              const nodeIconKey = isNodeRedactedLocked ? "folder" : isNodeLocked ? "lock" : "note";
               const summaryText = isNodeRedactedLocked
                 ? "[Metadata Locked]"
                 : node.summary.slice(0, 60);
@@ -1063,7 +1124,26 @@ function VaultSidebar({
                     className={`tree-node-item ${nodeHighlighted ? "tree-match" : ""}`}
                     onClick={() => onSelectNodeEntry(node)}
                   >
-                    <span className="tree-node-icon">{nodeIcon}</span>
+                    <span className="tree-node-icon">
+                      {nodeIconKey === "lock" ? (
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <rect width="18" height="11" x="3" y="11" rx="2" />
+                          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                        </svg>
+                      ) : (
+                        <VaultIcon icon={nodeIconKey} name="" size={14} />
+                      )}
+                    </span>
                     <span className="tree-node-text">
                       <strong>
                         {getPrivacyDisplayLabel(node.title, nodeEffectiveTier, isRedactedUnlocked)}
@@ -1096,7 +1176,22 @@ function VaultSidebar({
       </div>
 
       <div className="search-container">
-        <span className="search-icon">🔍</span>
+        <span className="search-icon">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
+        </span>
         <input
           type="search"
           className="search-input-field"
@@ -1107,7 +1202,24 @@ function VaultSidebar({
       </div>
 
       <button type="button" className="dashboard-trigger" onClick={onOpenDashboard}>
-        <span className="active-memory-icon">🧠</span> Active Memory
+        <span className="active-memory-icon">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
+            <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
+            <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
+          </svg>
+        </span>{" "}
+        Active Memory
       </button>
 
       <div className="sidebar-scrollable-content">
@@ -1157,7 +1269,23 @@ function VaultSidebar({
 
       <div className="sidebar-footer">
         <button type="button" className="settings-trigger" onClick={onOpenSettings}>
-          <span className="settings-icon">⚙️</span> Account and Settings
+          <span className="settings-icon">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </span>{" "}
+          Account and Settings
         </button>
       </div>
 
@@ -1169,7 +1297,19 @@ function VaultSidebar({
               onClick={(e) => e.stopPropagation()}
             >
               <span className="redacted-lock-icon" aria-hidden="true">
-                🔒
+                <svg
+                  width="28"
+                  height="28"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect width="18" height="11" x="3" y="11" rx="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
               </span>
               <h4 className="redacted-lock-title">{authModalTitle}</h4>
               <p className="redacted-lock-subtitle">{authModalSubtitle}</p>
@@ -1293,17 +1433,18 @@ function VaultSidebar({
                 </label>
 
                 <div className="settings-field">
-                  <span>Emoji / Icon</span>
+                  <span>Icon</span>
                   <div className="emoji-picker-container">
                     <div className="emoji-picker-grid">
-                      {VAULT_ICON_CHOICES.map((emoji) => (
+                      {VAULT_ICON_CHOICES.map((key) => (
                         <button
-                          key={emoji}
+                          key={key}
                           type="button"
-                          className={`emoji-choice-btn ${createModalIcon === emoji ? "selected" : ""}`}
-                          onClick={() => setCreateModalIcon(emoji)}
+                          className={`emoji-choice-btn ${createModalIcon === key ? "selected" : ""}`}
+                          onClick={() => setCreateModalIcon(key)}
+                          aria-label={`Select ${key} icon`}
                         >
-                          {emoji}
+                          <VaultIcon icon={key} name="" size={18} />
                         </button>
                       ))}
                     </div>
@@ -1311,8 +1452,8 @@ function VaultSidebar({
                       type="text"
                       value={createModalIcon}
                       onChange={(e) => setCreateModalIcon(e.target.value)}
-                      placeholder="Or type a custom emoji/text"
-                      maxLength={10}
+                      placeholder="Or type a custom icon key"
+                      maxLength={24}
                       className="settings-input custom-emoji-input"
                     />
                   </div>
@@ -1392,17 +1533,18 @@ function VaultSidebar({
                 </label>
 
                 <div className="settings-field">
-                  <span>Emoji / Icon</span>
+                  <span>Icon</span>
                   <div className="emoji-picker-container">
                     <div className="emoji-picker-grid">
-                      {VAULT_ICON_CHOICES.map((emoji) => (
+                      {VAULT_ICON_CHOICES.map((key) => (
                         <button
-                          key={emoji}
+                          key={key}
                           type="button"
-                          className={`emoji-choice-btn ${createSubvaultIcon === emoji ? "selected" : ""}`}
-                          onClick={() => setCreateSubvaultIcon(emoji)}
+                          className={`emoji-choice-btn ${createSubvaultIcon === key ? "selected" : ""}`}
+                          onClick={() => setCreateSubvaultIcon(key)}
+                          aria-label={`Select ${key} icon`}
                         >
-                          {emoji}
+                          <VaultIcon icon={key} name="" size={18} />
                         </button>
                       ))}
                     </div>
@@ -1410,8 +1552,8 @@ function VaultSidebar({
                       type="text"
                       value={createSubvaultIcon}
                       onChange={(e) => setCreateSubvaultIcon(e.target.value)}
-                      placeholder="Or type a custom emoji/text"
-                      maxLength={10}
+                      placeholder="Or type a custom icon key"
+                      maxLength={24}
                       className="settings-input custom-emoji-input"
                     />
                   </div>
@@ -1487,34 +1629,18 @@ function VaultSidebar({
                 </label>
 
                 <div className="settings-field">
-                  <span>Emoji / Icon</span>
+                  <span>Icon</span>
                   <div className="emoji-picker-container">
                     <div className="emoji-picker-grid">
-                      {[
-                        "💳",
-                        "🪙",
-                        "💪",
-                        "📚",
-                        "👤",
-                        "💼",
-                        "🏠",
-                        "📱",
-                        "💻",
-                        "📝",
-                        "🧠",
-                        "💰",
-                        "🔑",
-                        "🎨",
-                        "🚀",
-                        "📂",
-                      ].map((emoji) => (
+                      {VAULT_ICON_CHOICES.map((key) => (
                         <button
-                          key={emoji}
+                          key={key}
                           type="button"
-                          className={`emoji-choice-btn ${editIcon === emoji ? "selected" : ""}`}
-                          onClick={() => setEditIcon(emoji)}
+                          className={`emoji-choice-btn ${editIcon === key ? "selected" : ""}`}
+                          onClick={() => setEditIcon(key)}
+                          aria-label={`Select ${key} icon`}
                         >
-                          {emoji}
+                          <VaultIcon icon={key} name="" size={18} />
                         </button>
                       ))}
                     </div>
@@ -1522,8 +1648,8 @@ function VaultSidebar({
                       type="text"
                       value={editIcon}
                       onChange={(e) => setEditIcon(e.target.value)}
-                      placeholder="Or type a custom emoji/text"
-                      maxLength={10}
+                      placeholder="Or type a custom icon key"
+                      maxLength={24}
                       className="settings-input custom-emoji-input"
                     />
                   </div>

@@ -27,6 +27,7 @@ import "./style/MonoStyles.css";
 import ChatHistoryPanel from "./components/ChatHistoryPanel";
 import { chatListSessions, chatCreateSession, getChatHistory } from "./services/chat";
 import ImportHub from "./components/ImportHub";
+import { MessageIcon, NetworkIcon } from "./components/icons";
 
 const SIDEBAR_RAIL_WIDTH = 48;
 
@@ -570,13 +571,13 @@ function App() {
                       className={`canvas-view-toggle-btn ${viewMode === "chat" ? "active" : ""}`}
                       onClick={() => handleSetViewMode("chat")}
                     >
-                      💬 Recall / Chat
+                      <MessageIcon size={14} /> Recall / Chat
                     </button>
                     <button
                       className={`canvas-view-toggle-btn ${viewMode === "spatial" ? "active" : ""}`}
                       onClick={() => handleSetViewMode("spatial")}
                     >
-                      🕸️ Spatial Workspace
+                      <NetworkIcon size={14} /> Spatial Workspace
                     </button>
                   </div>
                 )}

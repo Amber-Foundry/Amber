@@ -103,6 +103,20 @@ export function onboardingSetComplete(isComplete: boolean) {
   return settingsSet("onboarding_complete", JSON.stringify(isComplete));
 }
 
+export type ChatPdfExtraction = {
+  sourceName: string;
+  pageCount: number;
+  text: string;
+  ocrConfidence: number | null;
+  needsOcrModels: boolean;
+  promptInjectionFlagged: boolean;
+  pageTokenEstimates: number[];
+};
+
+export function chatExtractPdfText(filePath: string) {
+  return invokeTyped<ChatPdfExtraction>("chat_extract_pdf_text", { filePath });
+}
+
 export function chatGetHistory(sessionId: string) {
   return invokeTyped<ChatMessage[]>("chat_get_history", { sessionId });
 }
@@ -265,7 +279,8 @@ export function chatWithLlm(
   userPrompt: string,
   chartsEnabled: boolean,
   isRedactedUnlocked: boolean,
-  sessionId: string
+  sessionId: string,
+  attachedDocument?: string | null
 ) {
   return invoke<string>("llm_chat", {
     nodeIds,
@@ -277,6 +292,7 @@ export function chatWithLlm(
     chartsEnabled,
     isRedactedUnlocked,
     sessionId,
+    attachedDocument,
   })
     .then((ok) => ({ ok }) as IpcResult<string>)
     .catch((error) => ({ err: String(error) }) as IpcResult<string>);

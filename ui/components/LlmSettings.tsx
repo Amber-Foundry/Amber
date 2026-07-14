@@ -23,6 +23,7 @@ import AdvancedLlmSettings from "./AdvancedLlmSettings";
 import ModelSetupPanel from "./ModelSetupPanel";
 import { cancelReembed, getEmbeddingStatus, startReembed } from "../services/embedding";
 import type { EmbeddingStatus } from "../types/generated";
+import { GearIcon, ComputerIcon, CloudIcon, ZapIcon } from "./icons";
 
 const DEV_SAMPLE_ONBOARDING_ANSWERS = `{
   "displayName": "Dev Tester",
@@ -571,7 +572,9 @@ function LlmSettings() {
   return (
     <aside className="pane pane-right llm-settings">
       <div className="pane-header">
-        <h3>⚙️ LLM Settings</h3>
+        <h3>
+          <GearIcon size={16} /> LLM Settings
+        </h3>
       </div>
 
       <ModelSetupPanel variant="settings" />
@@ -607,21 +610,21 @@ function LlmSettings() {
             className={mode === "local" ? "active" : ""}
             onClick={() => handleModeChange("local")}
           >
-            💻 Local
+            <ComputerIcon size={14} /> Local
           </button>
           <button
             type="button"
             className={mode === "cloud" ? "active" : ""}
             onClick={() => handleModeChange("cloud")}
           >
-            ☁️ Cloud
+            <CloudIcon size={14} /> Cloud
           </button>
           <button
             type="button"
             className={mode === "hybrid" ? "active" : ""}
             onClick={() => handleModeChange("hybrid")}
           >
-            ⚡ Hybrid
+            <ZapIcon size={14} /> Hybrid
           </button>
         </div>
 
@@ -669,7 +672,7 @@ function LlmSettings() {
                     setLlmProvider(localProvider);
                   }}
                 >
-                  💻 Local Set
+                  <ComputerIcon size={14} /> Local Set
                 </button>
                 <button
                   type="button"
@@ -679,7 +682,7 @@ function LlmSettings() {
                     setLlmProvider(cloudProvider);
                   }}
                 >
-                  ☁️ Cloud Set
+                  <CloudIcon size={14} /> Cloud Set
                 </button>
               </div>
               {hybridTab === "local" ? (

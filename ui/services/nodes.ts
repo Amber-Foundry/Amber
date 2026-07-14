@@ -126,7 +126,8 @@ export async function chatWithScope(
   userPrompt: string,
   chartsEnabled: boolean,
   isRedactedUnlocked: boolean,
-  sessionId: string
+  sessionId: string,
+  attachedDocument?: string | null
 ): Promise<string> {
   const result = await unwrapIpcResult(
     chatWithLlm(
@@ -138,7 +139,8 @@ export async function chatWithScope(
       userPrompt,
       chartsEnabled,
       isRedactedUnlocked,
-      sessionId
+      sessionId,
+      attachedDocument
     )
   );
   clearNodesCache();

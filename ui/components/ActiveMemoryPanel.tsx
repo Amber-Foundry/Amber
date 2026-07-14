@@ -8,6 +8,7 @@ import {
   getPrivacyDisplayLabel,
   getVaultEffectivePrivacy,
 } from "../utils/privacy";
+import { DoorIcon } from "./icons";
 
 type ActiveMemoryPanelProps = {
   selectedNodeIds: string[];
@@ -134,7 +135,9 @@ function ActiveMemoryPanel({ selectedNodeIds, isRedactedUnlocked }: ActiveMemory
           <strong>
             {getPrivacyDisplayLabel(shortLabel(node), effectiveTier, isRedactedUnlocked)}
           </strong>
-          <span className="active-memory-door-stub">🚪 0</span>
+          <span className="active-memory-door-stub">
+            <DoorIcon size={14} /> 0
+          </span>
         </div>
         <div className="active-memory-item-meta">
           <span className={`active-memory-rate-badge rate-${meta.profile}`}>{meta.profile}</span>

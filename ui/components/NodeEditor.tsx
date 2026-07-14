@@ -33,6 +33,7 @@ import PriorityBar from "./PriorityBar";
 import NodeEditorDetail from "./NodeEditorDetail";
 import ImportDocumentSpine from "./ImportDocumentSpine";
 import { isImportDocumentNode } from "../utils/importDocument";
+import { SnowflakeIcon, LockIcon, ArrowUpRightIcon, CloseIcon } from "./icons";
 
 type NodeEditorProps = {
   selectedNodeId: string | null;
@@ -922,7 +923,7 @@ function NodeEditor({
                       : "Freeze — protect from auto-optimize"
                   }
                 >
-                  ❄️
+                  <SnowflakeIcon size={14} />
                 </button>
               </label>
             )}
@@ -930,7 +931,7 @@ function NodeEditor({
           {isRedactedLocked ? (
             <div className="redacted-lock-screen">
               <span className="redacted-lock-icon" aria-hidden="true">
-                🔒
+                <LockIcon size={20} />
               </span>
               <h4 className="redacted-lock-title">Redacted</h4>
               <p className="redacted-lock-subtitle">
@@ -1035,7 +1036,7 @@ function NodeEditor({
               {isContentLocked ? (
                 <div className="redacted-lock-screen inline-content-lock">
                   <span className="redacted-lock-icon" aria-hidden="true">
-                    🔒
+                    <LockIcon size={20} />
                   </span>
                   <h4 className="redacted-lock-title">Content Protected</h4>
                   <p className="redacted-lock-subtitle">
@@ -1128,7 +1129,9 @@ function NodeEditor({
                                 onClick={() => onSelectNode && onSelectNode(door.targetNodeId!)}
                                 title={`Navigate to: ${targetTitle}`}
                               >
-                                <strong>{targetTitle} ↗</strong>
+                                <strong>
+                                  {targetTitle} <ArrowUpRightIcon size={12} />
+                                </strong>
                               </button>
                             ) : (
                               <strong>{targetTitle}</strong>
@@ -1154,7 +1157,7 @@ function NodeEditor({
                                 onClick={() => void onDoorDelete(door.id)}
                                 aria-label="Delete door"
                               >
-                                ×
+                                <CloseIcon size={14} />
                               </button>
                             </div>
                           )}
@@ -1177,7 +1180,9 @@ function NodeEditor({
                               onClick={() => onSelectNode && onSelectNode(backlink.sourceNodeId)}
                               title={`Navigate to: ${sourceTitle}`}
                             >
-                              <strong>{sourceTitle} ↗</strong>
+                              <strong>
+                                {sourceTitle} <ArrowUpRightIcon size={12} />
+                              </strong>
                             </button>
                             <span className="door-label">Incoming</span>
                           </div>

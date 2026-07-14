@@ -1,7 +1,8 @@
 import type { ImportExtractionPreview } from "../types/generated/ImportExtractionPreview";
 import type { ImportJobStatus } from "../types/generated/ImportJobStatus";
 import type { ImportStartJobInput } from "../types/generated/ImportStartJobInput";
-import { invokeTyped } from "../ipc";
+import { invokeTyped, chatExtractPdfText } from "../ipc";
+import type { ChatPdfExtraction } from "../ipc";
 import {
   getApiKey,
   getLmStudioEndpoint,
@@ -90,6 +91,25 @@ export async function browseImportPdf(): Promise<string | null> {
     return "C:\\mock\\sample.pdf";
   }
   return unwrapIpcResult(invokeTyped<string | null>("import_browse_pdf"));
+}
+
+export async function chatAttachPdf(): Promise<ChatPdfExtraction | null> {
+  const filePath = await browseImportPdf();
+  if (!filePath) {
+    return null;
+  }
+  if (USE_MOCK) {
+    return {
+      sourceName: filePath.split(/[/\\]/).pop() || "mock-source.pdf",
+      pageCount: 1,
+      text: "This is mock extracted text from the PDF attachment.",
+      ocrConfidence: 1.0,
+      needsOcrModels: false,
+      promptInjectionFlagged: false,
+      pageTokenEstimates: [20],
+    };
+  }
+  return unwrapIpcResult(chatExtractPdfText(filePath));
 }
 
 export async function startImportJob(input: ImportStartJobInput): Promise<ImportJobStatus> {

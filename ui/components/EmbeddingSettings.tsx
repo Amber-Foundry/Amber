@@ -1,5 +1,6 @@
 import type { EmbeddingStatus } from "../types/generated";
 import styles from "../style/components/EmbeddingSettings.module.css";
+import { AlertIcon } from "./icons";
 
 type EmbeddingSettingsProps = {
   status: EmbeddingStatus | null;
@@ -107,7 +108,7 @@ export default function EmbeddingSettings({
           aria-label="Embedding fallback warning"
         >
           <span className={styles["embedding-jaccard-warning-icon"]} aria-hidden="true">
-            ⚠
+            <AlertIcon size={16} />
           </span>
           <span>
             Using text overlap for dedup — embedding model not available. Download a model for

@@ -45,6 +45,18 @@ import NodeLinkAutocomplete from "./NodeLinkAutocomplete";
 import { useUIStore } from "../utils/store";
 import ImportDocumentSpine from "./ImportDocumentSpine";
 import { isImportDocumentNode } from "../utils/importDocument";
+import {
+  ArrowLeftIcon,
+  CheckIcon,
+  CopyIcon,
+  InboxIcon,
+  BarChartIcon,
+  SnowflakeIcon,
+  ArrowUpRightIcon,
+  LockIcon,
+  ArrowRightIcon,
+  CloseIcon,
+} from "./icons";
 
 type NodeEditorExpandedProps = {
   nodeId: string;
@@ -823,7 +835,7 @@ export default function NodeEditorExpanded({
             onClick={onClose}
             title="Go back to workspace"
           >
-            ← Back
+            <ArrowLeftIcon size={14} /> Back
           </button>
           <div className="header-breadcrumbs">
             {breadcrumbPath && <span className="breadcrumb-path">{breadcrumbPath} /</span>}
@@ -844,7 +856,15 @@ export default function NodeEditorExpanded({
             onClick={handleCopyMarkdown}
             title="Copy entire markdown source to clipboard"
           >
-            {copiedNode ? "✓ Copied!" : "📋 Copy Markdown"}
+            {copiedNode ? (
+              <>
+                <CheckIcon size={14} /> Copied!
+              </>
+            ) : (
+              <>
+                <CopyIcon size={14} /> Copy Markdown
+              </>
+            )}
           </button>
           <button
             type="button"
@@ -852,7 +872,7 @@ export default function NodeEditorExpanded({
             onClick={handleSaveMarkdown}
             title="Save markdown to filesystem"
           >
-            📥 Save Markdown
+            <InboxIcon size={14} /> Save Markdown
           </button>
           <button
             type="button"
@@ -860,7 +880,7 @@ export default function NodeEditorExpanded({
             onClick={() => setNodeEditorChartsEnabled(!chartsEnabled)}
             title="Toggle interactive charts and diagrams rendering in the workspace"
           >
-            📊 Render Workspace Assets: {chartsEnabled ? "ON" : "OFF"}
+            <BarChartIcon size={14} /> Render Workspace Assets: {chartsEnabled ? "ON" : "OFF"}
           </button>
           <button type="button" className="header-exit-btn" onClick={onClose}>
             Close Focus
@@ -952,7 +972,7 @@ export default function NodeEditorExpanded({
                           : "Freeze — protect from auto-optimize"
                       }
                     >
-                      ❄️
+                      <SnowflakeIcon size={14} />
                     </button>
                   </div>
                 </label>
@@ -975,7 +995,7 @@ export default function NodeEditorExpanded({
                           onClick={() => onRemoveTag(tag.id)}
                           aria-label={`Remove ${tag.name}`}
                         >
-                          ×
+                          <CloseIcon size={14} />
                         </button>
                       )}
                     </span>
@@ -1100,7 +1120,9 @@ export default function NodeEditorExpanded({
                             onClick={() => onSelectNode(door.targetNodeId!)}
                             title={`Navigate to: ${targetTitle}`}
                           >
-                            <strong>{targetTitle} ↗</strong>
+                            <strong>
+                              {targetTitle} <ArrowUpRightIcon size={12} />
+                            </strong>
                           </button>
                         ) : (
                           <strong>{targetTitle}</strong>
@@ -1118,7 +1140,7 @@ export default function NodeEditorExpanded({
                           title="Delete door link"
                           aria-label={`Delete door link to ${targetTitle}`}
                         >
-                          ×
+                          <CloseIcon size={14} />
                         </button>
                       )}
                     </div>
@@ -1141,7 +1163,9 @@ export default function NodeEditorExpanded({
                           onClick={() => onSelectNode(backlink.sourceNodeId)}
                           title={`Navigate to: ${sourceTitle}`}
                         >
-                          <strong>{sourceTitle} ↗</strong>
+                          <strong>
+                            {sourceTitle} <ArrowUpRightIcon size={12} />
+                          </strong>
                         </button>
                         <span className="door-label">Incoming Door Link</span>
                       </div>
@@ -1161,7 +1185,9 @@ export default function NodeEditorExpanded({
         >
           {isRedactedLocked ? (
             <div className="redacted-lock-screen">
-              <span className="redacted-lock-icon">🔒</span>
+              <span className="redacted-lock-icon">
+                <LockIcon size={20} />
+              </span>
               <h4 className="redacted-lock-title">Redacted Node Details</h4>
               <p className="redacted-lock-subtitle">
                 {authIsSetupState === false
@@ -1261,7 +1287,9 @@ export default function NodeEditorExpanded({
         >
           {isAnyLocked ? (
             <div className="preview-locked-placeholder">
-              <span className="placeholder-lock-icon">🔒</span>
+              <span className="placeholder-lock-icon">
+                <LockIcon size={20} />
+              </span>
               <p>Preview locked. Enter password in source column to unlock details.</p>
             </div>
           ) : (
@@ -1326,7 +1354,9 @@ export default function NodeEditorExpanded({
             }}
             title="Show Editor"
           >
-            <span>← Edit Source</span>
+            <span>
+              <ArrowLeftIcon size={14} /> Edit Source
+            </span>
           </button>
         )}
 
@@ -1340,7 +1370,9 @@ export default function NodeEditorExpanded({
             }}
             title="Show Preview"
           >
-            <span>Show Preview →</span>
+            <span>
+              Show Preview <ArrowRightIcon size={14} />
+            </span>
           </button>
         )}
       </div>

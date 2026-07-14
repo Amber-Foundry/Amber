@@ -913,7 +913,7 @@ fn prepare_job_runtime() -> Result<(tokio::runtime::Handle, tokio::runtime::Runt
     Ok((handle, runtime))
 }
 
-fn merge_hybrid_raw_blocks(
+pub(crate) fn merge_hybrid_raw_blocks(
     digital_blocks: Vec<RawLayoutBlock>,
     ocr_blocks: Vec<RawLayoutBlock>,
     strategy: HybridMergeStrategy,
