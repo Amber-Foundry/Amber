@@ -38,7 +38,6 @@ pub use ipc_types::{
 /// Default `max_tokens` for context assembly (`debug_assemble_context`, `llm_chat`).
 /// Keep in sync with `CONTEXT_MAX_TOKENS` in `ui/constants/contextBudget.ts`.
 const DEFAULT_ASSEMBLER_MAX_TOKENS: usize = 8000;
-const CHAT_ATTACHED_DOC_MAX_TOKENS: usize = 6000;
 
 static MEMORY_AGENT_LIMITER: std::sync::OnceLock<
     governor::RateLimiter<
@@ -4741,22 +4740,13 @@ async fn llm_chat(
     }
 
     if let Some(attached_doc) = attached_document.filter(|s| !s.is_empty()) {
-        let mut doc_text = attached_doc.clone();
-        let token_count = crate::llm::assembler::count_tokens(&doc_text);
-        if token_count > CHAT_ATTACHED_DOC_MAX_TOKENS {
-            let ratio = CHAT_ATTACHED_DOC_MAX_TOKENS as f32 / token_count as f32;
-            let target_chars = (doc_text.chars().count() as f32 * ratio) as usize;
-            doc_text = doc_text.chars().take(target_chars).collect();
-            doc_text.push_str("\n... [Truncated due to token length] ...");
-        }
-
         system_prompt = format!(
             "{}\n\n[AUXILIARY DOCUMENT]\n\
              The user attached this document for reference. Use it to answer their questions and cite it when relevant.\n\
              <attached_document>\n\
              {}\n\
              </attached_document>",
-            system_prompt, doc_text
+            system_prompt, attached_doc
         );
     }
 
