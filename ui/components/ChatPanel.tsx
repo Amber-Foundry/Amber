@@ -15,6 +15,10 @@ import {
   preprocessWikiLinks,
   ExistingNodesContext,
 } from "../utils/markdownUtils";
+import {
+  CLOUD_MODEL_CONTEXT_REGISTRY,
+  getCloudModelContextLimit,
+} from "../constants/contextBudget";
 import type { ContextAssemblerScope } from "../constants/contextBudget";
 import type { Vault } from "../ipc";
 import {
@@ -39,9 +43,11 @@ import {
   getLlmMode,
   setLlmMode,
   getApiKey,
+  getChatContextAuto,
+  getChatContextLimit,
 } from "../utils/settings";
 import { useUIStore } from "../utils/store";
-import { chatConvertTemporaryToMemory, chatExtractPdfText } from "../ipc";
+import { chatConvertTemporaryToMemory, chatExtractPdfText, getModelContextLimit } from "../ipc";
 import { browseImportPdf, startOcrModelDownload } from "../services/import";
 import {
   FileIcon,
@@ -389,10 +395,9 @@ type ChatPanelProps = {
   onActivateSession?: (sessionId: string) => void;
 };
 
-const computeAttachedDocsBudget = (docs: AttachedDoc[]): AttachedDoc[] => {
+const computeAttachedDocsBudget = (docs: AttachedDoc[], maxTokens = 6000): AttachedDoc[] => {
   if (docs.length === 0) return [];
 
-  const maxTokens = 6000;
   const processed = docs.map((d) => ({
     ...d,
     includedPageCount: d.pageCount,
@@ -469,6 +474,9 @@ function ChatPanel({
   const [isAttaching, setIsAttaching] = useState(false);
   const [isDownloadingOcr, setIsDownloadingOcr] = useState(false);
   const [extractingName, setExtractingName] = useState<string | null>(null);
+  const [currentProvider, setCurrentProvider] = useState(() => getLlmProvider());
+  const [currentModel, setCurrentModel] = useState(() => getLlmModel());
+  const [currentMode, setCurrentMode] = useState(() => getLlmMode());
 
   const MAX_RENDERED_MESSAGES = 60;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -480,6 +488,103 @@ function ChatPanel({
   const [editingContent, setEditingContent] = useState("");
   const [existingNodeIds, setExistingNodeIds] = useState<Set<string> | null>(null);
   const sessionId = isOffTheRecord ? "temporary-session" : activeSessionId || "default-session";
+  const [resolvedDocBudget, setResolvedDocBudget] = useState(6000);
+  const [resolvedVaultBudget, setResolvedVaultBudget] = useState(8000);
+  const [contextTooSmall, setContextTooSmall] = useState(false);
+  const [totalContextLimit, setTotalContextLimit] = useState(8000);
+
+  const boundedBudget = (
+    desired: number,
+    available: number,
+    floor = 1000,
+    ceiling = 32000
+  ): number => {
+    if (available < floor) return 0;
+    return Math.min(available, Math.max(floor, Math.min(desired, ceiling)));
+  };
+
+  const recalculateBudgetLimit = useCallback(async () => {
+    let totalContext = 8000;
+    try {
+      const provider = currentProvider;
+      const endpoint = provider === "lmstudio" ? getLmStudioEndpoint() : getOllamaEndpoint();
+      const model = currentModel;
+
+      const isCloud = ["openai", "anthropic", "google", "xai"].includes(provider);
+      if (isCloud) {
+        totalContext = getCloudModelContextLimit(model, provider);
+      } else {
+        const limitRes = await getModelContextLimit(provider, endpoint, model);
+        if (limitRes && "ok" in limitRes && limitRes.ok !== null) {
+          totalContext = limitRes.ok;
+        } else {
+          totalContext = CLOUD_MODEL_CONTEXT_REGISTRY.default;
+        }
+      }
+      setTotalContextLimit(totalContext);
+    } catch (err) {
+      console.error("Failed to query model context limit:", err);
+      setTotalContextLimit(8000);
+    }
+
+    const isAuto = getChatContextAuto();
+    if (!isAuto) {
+      setContextTooSmall(false);
+      setResolvedDocBudget(getChatContextLimit());
+      setResolvedVaultBudget(8000);
+      return;
+    }
+
+    try {
+      let chatCharacters = 0;
+      for (const msg of messages) {
+        chatCharacters += msg.content.length;
+      }
+      const historyTokens = Math.floor(chatCharacters / 4);
+
+      const systemReserve = 500;
+      const outputReserve = 1500;
+      const availableContext = Math.max(
+        0,
+        totalContext - systemReserve - outputReserve - historyTokens
+      );
+
+      const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
+
+      if (isSingleConsumer) {
+        const docBudget = boundedBudget(availableContext, availableContext);
+        setResolvedDocBudget(docBudget);
+        setResolvedVaultBudget(0);
+        setContextTooSmall(docBudget === 0);
+      } else {
+        const docBudget = boundedBudget(availableContext * 0.5, availableContext * 0.5);
+        if (docBudget === 0) {
+          setContextTooSmall(true);
+          setResolvedDocBudget(0);
+          setResolvedVaultBudget(boundedBudget(availableContext, availableContext));
+        } else {
+          setContextTooSmall(false);
+          setResolvedDocBudget(docBudget);
+          setResolvedVaultBudget(docBudget);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to recalculate context budget:", err);
+      setContextTooSmall(false);
+      setResolvedDocBudget(6000);
+      setResolvedVaultBudget(8000);
+    }
+  }, [messages, sessionId, selectedNodeIds, currentProvider, currentModel]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void recalculateBudgetLimit();
+    }, 0);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [recalculateBudgetLimit]);
 
   const attachedDocs = useMemo(
     () => sessionAttachments[sessionId] || [],
@@ -658,9 +763,6 @@ function ChatPanel({
   const [agentMode, setAgentMode] = useState<"Recall/Chat" | "Ingest/Memory" | "Onboarding">(
     "Recall/Chat"
   );
-  const [currentProvider, setCurrentProvider] = useState(() => getLlmProvider());
-  const [currentModel, setCurrentModel] = useState(() => getLlmModel());
-  const [currentMode, setCurrentMode] = useState(() => getLlmMode());
   const chartsEnabled = useUIStore((state) => state.chat.chartsEnabled);
   const setChatChartsEnabled = useUIStore((state) => state.setChatChartsEnabled);
   const [showChartsConfirmModal, setShowChartsConfirmModal] = useState(false);
@@ -829,12 +931,13 @@ function ChatPanel({
       setCurrentProvider(getLlmProvider());
       setCurrentModel(getLlmModel());
       setCurrentMode(getLlmMode());
+      void recalculateBudgetLimit();
     }
     window.addEventListener("mindvault:llm-settings-changed", handleSettingsChange);
     return () => {
       window.removeEventListener("mindvault:llm-settings-changed", handleSettingsChange);
     };
-  }, []);
+  }, [recalculateBudgetLimit]);
 
   useEffect(() => {
     let active = true;
@@ -933,7 +1036,7 @@ function ChatPanel({
           executionPrompt = `[Agent Mode: Onboarding] Act as the Onboarding Agent. Conduct an interview and ask clarifying questions to help build initial context for the user:\n\n${promptText}`;
         }
 
-        const processed = computeAttachedDocsBudget(attachedDocsRef.current);
+        const processed = computeAttachedDocsBudget(attachedDocsRef.current, resolvedDocBudget);
         const safeDocs = processed.filter((d) => !d.promptInjectionFlagged || d.isOverridden);
         let attachedText: string | null = null;
         if (safeDocs.length > 0) {
@@ -963,7 +1066,8 @@ function ChatPanel({
           chartsEnabled,
           isRedactedUnlocked,
           sessionId,
-          attachedText
+          attachedText,
+          resolvedVaultBudget
         );
 
         const aiMsgId = crypto.randomUUID();
@@ -1004,6 +1108,8 @@ function ChatPanel({
       setStatus,
       setIsSending,
       setMessages,
+      resolvedDocBudget,
+      resolvedVaultBudget,
     ]
   );
 
@@ -1011,12 +1117,73 @@ function ChatPanel({
     executeLlmResponseRef.current = executeLlmResponse;
   }, [executeLlmResponse]);
 
-  const budgetedDocs = useMemo(() => computeAttachedDocsBudget(attachedDocs), [attachedDocs]);
+  const budgetedDocs = useMemo(
+    () => computeAttachedDocsBudget(attachedDocs, resolvedDocBudget),
+    [attachedDocs, resolvedDocBudget]
+  );
+
+  const attachedDocTokens = useMemo(() => {
+    let sum = 0;
+    for (const doc of budgetedDocs) {
+      const includedCount = doc.includedPageCount;
+      sum += doc.pageTokenEstimates.slice(0, includedCount).reduce((a, b) => a + b, 0);
+    }
+    return sum;
+  }, [budgetedDocs]);
+
+  const historyTokens = useMemo(() => {
+    let chatCharacters = 0;
+    for (const msg of messages) {
+      chatCharacters += msg.content.length;
+    }
+    return Math.floor(chatCharacters / 4);
+  }, [messages]);
+
+  const systemReserve = 500;
+
+  const totalUsed = useMemo(() => {
+    const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
+    const vaultTokens = isSingleConsumer ? 0 : resolvedVaultBudget;
+    return systemReserve + historyTokens + attachedDocTokens + vaultTokens;
+  }, [historyTokens, attachedDocTokens, sessionId, selectedNodeIds, resolvedVaultBudget]);
+
+  const contextPercentage = useMemo(() => {
+    if (totalContextLimit <= 0) return 0;
+    return Math.min(100, Math.round((totalUsed / totalContextLimit) * 100));
+  }, [totalUsed, totalContextLimit]);
+
+  const strokeDashoffset = useMemo(() => {
+    const circumference = 50.26; // 2 * pi * 8
+    const percentage = contextPercentage;
+    return circumference * (1 - percentage / 100);
+  }, [contextPercentage]);
+
+  const progressColorClass = useMemo(() => {
+    if (contextPercentage >= 90) return "danger";
+    if (contextPercentage >= 75) return "warning";
+    return "";
+  }, [contextPercentage]);
+
+  const formatTokens = (val: number): string => {
+    if (val >= 1000) {
+      return `${(val / 1000).toFixed(1)}k`;
+    }
+    return `${val}`;
+  };
+
   const anyNeedsOcr = budgetedDocs.some((d) => d.needsOcrModels);
 
   const attachmentChipsJsx =
-    budgetedDocs.length > 0 || isAttaching ? (
+    budgetedDocs.length > 0 || isAttaching || contextTooSmall ? (
       <div className="chat-attachment-chips">
+        {contextTooSmall && (
+          <div className="chat-attachment-chip context-warning">
+            <span className="chip-ocr-warn">
+              <AlertIcon size={12} /> Model context window is too small (insufficient headroom) for
+              attachments.
+            </span>
+          </div>
+        )}
         {budgetedDocs.map((doc) => (
           <div
             key={doc.id}
@@ -1261,8 +1428,12 @@ function ChatPanel({
               type="button"
               className="chat-attach-btn"
               onClick={() => void handleAttachPdf()}
-              disabled={isAttaching || isSending}
-              title="Attach a PDF document"
+              disabled={isAttaching || isSending || contextTooSmall}
+              title={
+                contextTooSmall
+                  ? "Model context window is too small for attachments"
+                  : "Attach a PDF document"
+              }
               aria-label="Attach PDF"
             >
               <svg
@@ -1833,6 +2004,78 @@ function ChatPanel({
               </div>
             )}
           </div>
+          {/* Pill 3.5: Context Usage */}
+          <div className="zen-pill-container context-usage-pill-container">
+            <div className="zen-pill context-usage-pill">
+              <span className="zen-pill-icon" style={{ display: "flex", alignItems: "center" }}>
+                <svg width="18" height="18" viewBox="0 0 20 20" className="context-progress-ring">
+                  <circle
+                    cx="10"
+                    cy="10"
+                    r="8"
+                    className="progress-ring-bg"
+                    strokeWidth="2.5"
+                    fill="transparent"
+                  />
+                  <circle
+                    cx="10"
+                    cy="10"
+                    r="8"
+                    className={`progress-ring-fg ${progressColorClass}`}
+                    strokeWidth="2.5"
+                    fill="transparent"
+                    strokeDasharray={50.26}
+                    strokeDashoffset={strokeDashoffset}
+                  />
+                </svg>
+              </span>
+              <span className="zen-pill-label">Context:</span>
+              <span className="zen-pill-value">{contextPercentage}%</span>
+
+              {/* Tooltip detail breakdown on hover */}
+              <div className="context-tooltip-details">
+                <div className="tooltip-title">Context Window Details</div>
+                <div className="tooltip-row">
+                  <span>Current Usage:</span>
+                  <strong>{formatTokens(totalUsed)}</strong>
+                </div>
+                <div className="tooltip-row">
+                  <span>Total Budget:</span>
+                  <strong>{formatTokens(totalContextLimit)}</strong>
+                </div>
+                <div className="tooltip-row">
+                  <span>Percent Used:</span>
+                  <strong>{contextPercentage}%</strong>
+                </div>
+                <hr className="tooltip-divider" />
+                <div className="tooltip-breakdown-title">Estimated Breakdown:</div>
+                <div className="tooltip-row indent">
+                  <span>System Prompt & reserves:</span>
+                  <span>{formatTokens(systemReserve)}</span>
+                </div>
+                <div className="tooltip-row indent">
+                  <span>Chat History:</span>
+                  <span>{formatTokens(historyTokens)}</span>
+                </div>
+                {attachedDocTokens > 0 && (
+                  <div className="tooltip-row indent">
+                    <span>Documents:</span>
+                    <span>{formatTokens(attachedDocTokens)}</span>
+                  </div>
+                )}
+                {selectedNodeIds.length > 0 && resolvedVaultBudget > 0 && (
+                  <div className="tooltip-row indent">
+                    <span>Vault Knowledge:</span>
+                    <span>{formatTokens(resolvedVaultBudget)}</span>
+                  </div>
+                )}
+                <div className="tooltip-row footer">
+                  <span>Remaining Headroom:</span>
+                  <strong>{formatTokens(Math.max(0, totalContextLimit - totalUsed))}</strong>
+                </div>
+              </div>
+            </div>
+          </div>
           {/* Pill 4: Extract Memory */}
           <div className="zen-pill-container">
             <button
@@ -1888,8 +2131,12 @@ function ChatPanel({
             type="button"
             className="chat-attach-btn"
             onClick={() => void handleAttachPdf()}
-            disabled={isAttaching || isSending}
-            title="Attach a PDF document"
+            disabled={isAttaching || isSending || contextTooSmall}
+            title={
+              contextTooSmall
+                ? "Model context window is too small for attachments"
+                : "Attach a PDF document"
+            }
             aria-label="Attach PDF"
           >
             <svg

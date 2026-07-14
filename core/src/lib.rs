@@ -36,6 +36,8 @@ pub use ipc_types::{
 // MARK: Internal Types and Constants
 
 /// Default `max_tokens` for context assembly (`debug_assemble_context`, `llm_chat`).
+/// Note: `llm_chat` diverges dynamically depending on the model context budget,
+/// whereas `debug_assemble_context` retains this static default.
 /// Keep in sync with `CONTEXT_MAX_TOKENS` in `ui/constants/contextBudget.ts`.
 const DEFAULT_ASSEMBLER_MAX_TOKENS: usize = 8000;
 
@@ -1853,6 +1855,7 @@ pub fn run() {
             debug_assemble_context,
             llm_count_tokens,
             llm_list_models,
+            get_model_context_limit,
             llm_chat,
             chat_extract_pdf_text,
             onboarding_extract_proposals,
@@ -4651,6 +4654,25 @@ async fn llm_list_models(provider: String, endpoint: String) -> IpcResponse<Vec<
     into_ipc(llm::client::LlmClient::list_models(&client).await)
 }
 
+#[tauri::command]
+async fn get_model_context_limit(
+    provider: String,
+    endpoint: String,
+    model: String,
+) -> IpcResponse<Option<usize>> {
+    let parsed_provider = match provider.trim().to_lowercase().as_str() {
+        "ollama" => llm::client::LlmProvider::Ollama,
+        "lmstudio" => llm::client::LlmProvider::LmStudio,
+        "anthropic" => llm::client::LlmProvider::Anthropic,
+        "openai" => llm::client::LlmProvider::OpenAi,
+        "google" => llm::client::LlmProvider::Google,
+        "xai" => llm::client::LlmProvider::XAi,
+        _ => return IpcResponse::Ok { ok: None },
+    };
+    let client = llm::client::UniversalClient::new(parsed_provider, endpoint, model);
+    into_ipc(client.get_context_limit().await.map_err(|e| e.to_string()))
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn llm_chat(
@@ -4665,8 +4687,11 @@ async fn llm_chat(
     state: tauri::State<'_, AppState>,
     session_id: &str,
     attached_document: Option<String>,
+    max_assembler_tokens: Option<usize>,
 ) -> Result<String, String> {
     let db_path = state.db_path.clone();
+    // Kept in signature for Tauri IPC contract; history is loaded from DB instead.
+    let _ = user_prompt;
     let persona_instruction = "You are Amber, a personal memory assistant. Only help capture, organize, and recall the user's notes, ideas, and projects.";
 
     let mut system_prompt = if session_id == "temporary-session" {
@@ -4678,7 +4703,7 @@ async fn llm_chat(
             node_ids,
             llm::assembler::AssemblerConfig {
                 scope,
-                max_tokens: DEFAULT_ASSEMBLER_MAX_TOKENS,
+                max_tokens: max_assembler_tokens.unwrap_or(DEFAULT_ASSEMBLER_MAX_TOKENS),
                 is_unlocked: is_redacted_unlocked,
             },
         )?
@@ -4761,10 +4786,20 @@ async fn llm_chat(
     };
 
     let client = llm::client::UniversalClient::new(parsed_provider, endpoint, model);
-    let messages = [llm::client::LlmMessage {
-        role: "user".to_string(),
-        content: user_prompt,
-    }];
+
+    // Load full conversation history so the model sees previous turns
+    let messages: Vec<llm::client::LlmMessage> = {
+        let conn = open_connection(&db_path)?;
+        let history = chat::get_chat_history(&conn, session_id).map_err(|e| e.to_string())?;
+        history
+            .into_iter()
+            .map(|msg| llm::client::LlmMessage {
+                role: msg.role,
+                content: msg.content,
+            })
+            .collect()
+    };
+
     llm::client::LlmClient::complete(&client, &system_prompt, &messages).await
 }
 

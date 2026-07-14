@@ -4,6 +4,8 @@ import { unwrapIpcResult } from "../services/ipcResult.ts";
 const LLM_PROVIDER_KEY = "mindvault.llm.provider";
 const OLLAMA_ENDPOINT_KEY = "mindvault.llm.ollama.endpoint";
 const LMSTUDIO_ENDPOINT_KEY = "mindvault.llm.lmstudio.endpoint";
+const CHAT_CONTEXT_AUTO_KEY = "mindvault.llm.chat_context_auto";
+const CHAT_CONTEXT_LIMIT_KEY = "mindvault.llm.chat_context_limit";
 const DEFAULT_PROVIDER = "ollama";
 const DEFAULT_OLLAMA_ENDPOINT = "http://localhost:11434";
 const DEFAULT_LMSTUDIO_ENDPOINT = "http://localhost:1234";
@@ -254,6 +256,41 @@ export function setPlantUmlConsent(value: "disabled" | "session" | "always"): vo
   window.dispatchEvent(new CustomEvent("mindvault:plantuml-consent-changed"));
 }
 
+export function getChatContextAuto(): boolean {
+  const value = window.localStorage.getItem(CHAT_CONTEXT_AUTO_KEY);
+  if (value === null) {
+    return true;
+  }
+  return value === "true";
+}
+
+export function setChatContextAuto(val: boolean): void {
+  const strVal = val ? "true" : "false";
+  window.localStorage.setItem(CHAT_CONTEXT_AUTO_KEY, strVal);
+  void settingsSet(CHAT_CONTEXT_AUTO_KEY, strVal).catch((err) => {
+    console.error("Failed to persist chat context auto in SQLite:", err);
+  });
+  window.dispatchEvent(new CustomEvent("mindvault:llm-settings-changed"));
+}
+
+export function getChatContextLimit(): number {
+  const value = window.localStorage.getItem(CHAT_CONTEXT_LIMIT_KEY);
+  if (!value) {
+    return 6000;
+  }
+  const parsed = parseInt(value, 10);
+  return isNaN(parsed) ? 6000 : parsed;
+}
+
+export function setChatContextLimit(val: number): void {
+  const strVal = val.toString();
+  window.localStorage.setItem(CHAT_CONTEXT_LIMIT_KEY, strVal);
+  void settingsSet(CHAT_CONTEXT_LIMIT_KEY, strVal).catch((err) => {
+    console.error("Failed to persist chat context limit in SQLite:", err);
+  });
+  window.dispatchEvent(new CustomEvent("mindvault:llm-settings-changed"));
+}
+
 // Self-executing initialization block to restore all settings from the SQLite database into localStorage at startup.
 // This resolves issues where localStorage is cleared or flaky in Tauri.
 void (async () => {
@@ -268,6 +305,8 @@ void (async () => {
     NODE_EDITOR_CHARTS_ENABLED_KEY,
     PLANTUML_SERVER_KEY,
     PLANTUML_CONSENT_KEY,
+    CHAT_CONTEXT_AUTO_KEY,
+    CHAT_CONTEXT_LIMIT_KEY,
     "mindvault.llm.ollama.model",
     "mindvault.llm.lmstudio.model",
     "mindvault.llm.openai.model",

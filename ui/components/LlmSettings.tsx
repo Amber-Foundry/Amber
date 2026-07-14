@@ -17,6 +17,10 @@ import {
   setLlmMode,
   getApiKey,
   setApiKey,
+  getChatContextAuto,
+  setChatContextAuto,
+  getChatContextLimit,
+  setChatContextLimit,
 } from "../utils/settings";
 import EmbeddingSettings from "./EmbeddingSettings";
 import AdvancedLlmSettings from "./AdvancedLlmSettings";
@@ -210,7 +214,11 @@ function CloudSettings({
   const [selectedModel, setSelectedModel] = useState(() => getLlmModel(provider) || defaultModel);
 
   useEffect(() => {
-    if (!getLlmModel(provider)) {
+    const saved = getLlmModel(provider);
+    setTimeout(() => {
+      setSelectedModel(saved || defaultModel);
+    }, 0);
+    if (!saved) {
       setLlmModel(provider, defaultModel);
     }
   }, [provider, defaultModel]);
@@ -267,17 +275,13 @@ function CloudSettings({
       </label>
 
       <label className="settings-field">
-        <span>Model Preset</span>
-        <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
-          {!providerDef.presets.includes(selectedModel) && selectedModel ? (
-            <option value={selectedModel}>{selectedModel}</option>
-          ) : null}
-          {providerDef.presets.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+        <span>Model Name</span>
+        <input
+          type="text"
+          value={selectedModel}
+          onChange={(e) => setSelectedModel(e.target.value)}
+          placeholder={`e.g. ${defaultModel}`}
+        />
       </label>
 
       <button type="button" className="settings-action save" onClick={handleSave}>
@@ -295,6 +299,19 @@ function LlmSettings() {
   const [extractionAnswersJson, setExtractionAnswersJson] = useState(DEV_SAMPLE_ONBOARDING_ANSWERS);
   const [extractionPreview, setExtractionPreview] = useState("");
   const [extractionBusy, setExtractionBusy] = useState(false);
+
+  const [chatContextAuto, setChatContextAutoState] = useState(() => getChatContextAuto());
+  const [chatContextLimit, setChatContextLimitState] = useState(() => getChatContextLimit());
+
+  const handleChatContextAutoChange = (val: boolean) => {
+    setChatContextAutoState(val);
+    setChatContextAuto(val);
+  };
+
+  const handleChatContextLimitChange = (val: number) => {
+    setChatContextLimitState(val);
+    setChatContextLimit(val);
+  };
 
   const [mode, setModeState] = useState(() => getLlmMode());
   const [localProvider, setLocalProvider] = useState<"ollama" | "lmstudio">(() => {
@@ -461,6 +478,8 @@ function LlmSettings() {
   useEffect(() => {
     function handleSettingsChange() {
       setModeState(getLlmMode());
+      setChatContextAutoState(getChatContextAuto());
+      setChatContextLimitState(getChatContextLimit());
       const p = getLlmProvider();
       if (["ollama", "lmstudio"].includes(p)) {
         setLocalProvider(p as "ollama" | "lmstudio");
@@ -722,6 +741,45 @@ function LlmSettings() {
               </div>
             </div>
           )}
+
+          <div className="settings-section context-budget-settings">
+            <h4 className="settings-section-title">Context Window Budget</h4>
+
+            <label className="settings-field checkbox-field">
+              <input
+                type="checkbox"
+                checked={chatContextAuto}
+                onChange={(e) => handleChatContextAutoChange(e.target.checked)}
+                id="llm-context-auto-checkbox"
+              />
+              <span className="checkbox-label">Auto-manage attachment context budget</span>
+            </label>
+
+            <label className={`settings-field range-field${chatContextAuto ? " disabled" : ""}`}>
+              <div className="range-label-row">
+                <span>Max Document Token Budget</span>
+                <span className="range-value">
+                  {chatContextAuto
+                    ? "Dynamic (Auto)"
+                    : `${chatContextLimit.toLocaleString()} tokens`}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="1000"
+                max="100000"
+                step="500"
+                value={chatContextLimit}
+                disabled={chatContextAuto}
+                onChange={(e) => handleChatContextLimitChange(parseInt(e.target.value, 10))}
+                id="llm-context-limit-slider"
+              />
+              <span className="field-hint">
+                Controls the maximum tokens allocated for attached documents. Larger values reduce
+                truncation but leave less room for chat history and responses.
+              </span>
+            </label>
+          </div>
 
           {showDevOnboardingTools ? (
             <div className="llm-settings-dev" aria-label="Developer onboarding shortcuts">

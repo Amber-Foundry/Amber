@@ -2392,6 +2392,13 @@
   border-color: rgba(220, 53, 69, 0.3);
 }
 
+.chat-attachment-chip.context-warning {
+  background: rgba(220, 53, 69, 0.08);
+  border: 1px solid rgba(220, 53, 69, 0.3);
+  color: #dc3545;
+  cursor: default;
+}
+
 .chip-icon {
   font-size: 0.95rem;
   flex-shrink: 0;
@@ -2520,4 +2527,123 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Context usage progress ring styles */
+.context-progress-ring {
+  display: block;
+  transform: rotate(-90deg); /* Start progress at the top */
+  flex-shrink: 0;
+}
+
+.context-progress-ring circle {
+  transition: stroke-dashoffset 0.35s ease;
+}
+
+.progress-ring-bg {
+  stroke: rgba(0, 0, 0, 0.08);
+}
+
+.progress-ring-fg {
+  stroke: #2a9d8f; /* default teal/green for safe context levels */
+}
+
+.progress-ring-fg.warning {
+  stroke: #e76f51; /* orange for medium context usage */
+}
+
+.progress-ring-fg.danger {
+  stroke: #d90429; /* red for high context usage */
+}
+
+/* Tooltip layout */
+.zen-pill.context-usage-pill {
+  position: relative;
+  overflow: visible; /* Need overflow visible so tooltip doesn't get clipped */
+  user-select: none;
+}
+
+/* Tooltip popup container */
+.context-tooltip-details {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  width: 250px;
+  background: #2b2b2a;
+  color: #f5f5f4;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 9999;
+  text-align: left;
+  font-family: inherit;
+}
+
+.context-tooltip-details::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 6px;
+  border-style: solid;
+  border-color: #2b2b2a transparent transparent transparent;
+}
+
+.zen-pill.context-usage-pill:hover .context-tooltip-details {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+.tooltip-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 8px;
+  letter-spacing: 0.02em;
+}
+
+.tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.76rem;
+  margin-bottom: 4px;
+  color: #d1d1cf;
+}
+
+.tooltip-row.indent {
+  padding-left: 10px;
+  color: #a1a19f;
+  font-size: 0.72rem;
+}
+
+.tooltip-row strong {
+  color: #fff;
+}
+
+.tooltip-divider {
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  margin: 8px 0;
+}
+
+.tooltip-breakdown-title {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #a1a19f;
+  margin-bottom: 6px;
+}
+
+.tooltip-row.footer {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: #fff;
+  border-top: 1px dashed rgba(255, 255, 255, 0.2);
+  padding-top: 6px;
 }

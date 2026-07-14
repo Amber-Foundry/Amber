@@ -270,6 +270,10 @@ export function listLlmModels(provider: string, endpoint: string) {
   return invokeTyped<string[]>("llm_list_models", { provider, endpoint });
 }
 
+export function getModelContextLimit(provider: string, endpoint: string, model: string) {
+  return invokeTyped<number | null>("get_model_context_limit", { provider, endpoint, model });
+}
+
 export function chatWithLlm(
   nodeIds: string[],
   scope: string,
@@ -280,7 +284,8 @@ export function chatWithLlm(
   chartsEnabled: boolean,
   isRedactedUnlocked: boolean,
   sessionId: string,
-  attachedDocument?: string | null
+  attachedDocument?: string | null,
+  maxAssemblerTokens?: number | null
 ) {
   return invoke<string>("llm_chat", {
     nodeIds,
@@ -293,6 +298,7 @@ export function chatWithLlm(
     isRedactedUnlocked,
     sessionId,
     attachedDocument,
+    maxAssemblerTokens,
   })
     .then((ok) => ({ ok }) as IpcResult<string>)
     .catch((error) => ({ err: String(error) }) as IpcResult<string>);

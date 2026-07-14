@@ -45,6 +45,97 @@ impl UniversalClient {
     fn normalized_endpoint(&self) -> &str {
         self.endpoint.trim_end_matches('/')
     }
+
+    pub async fn get_context_limit(&self) -> Result<Option<usize>, crate::AppError> {
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        match self.provider {
+            LlmProvider::Ollama => {
+                let url = format!("{}/api/show", self.normalized_endpoint());
+                let payload = OllamaShowRequest {
+                    name: self.model.clone(),
+                };
+                let response = http
+                    .post(url)
+                    .json(&payload)
+                    .send()
+                    .await
+                    .map_err(|err| format!("Failed calling Ollama show endpoint: {err}"))?;
+
+                if !response.status().is_success() {
+                    return Ok(None);
+                }
+
+                let parsed: OllamaShowResponse = response
+                    .json()
+                    .await
+                    .map_err(|err| format!("Failed parsing Ollama show response: {err}"))?;
+
+                if let Some(params) = parsed.parameters {
+                    for line in params.lines() {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 2 && parts[0] == "num_ctx" {
+                            if let Ok(limit) = parts[1].parse::<usize>() {
+                                return Ok(Some(limit));
+                            }
+                        }
+                    }
+                }
+                Ok(Some(8192))
+            }
+            LlmProvider::LmStudio => {
+                let url = format!("{}/api/v1/models", self.normalized_endpoint());
+                let response = http.get(url).send().await.map_err(|err| {
+                    format!("Failed calling LM Studio API models endpoint: {err}")
+                })?;
+
+                if !response.status().is_success() {
+                    return Ok(None);
+                }
+
+                let parsed: LmStudioApiModelsResponse = response.json().await.map_err(|err| {
+                    format!("Failed parsing LM Studio API models response: {err}")
+                })?;
+
+                // Try to find the model matching the selected key exactly
+                for m in &parsed.models {
+                    if m.key == self.model {
+                        if let Some(instance) = m.loaded_instances.first() {
+                            if let Some(ctx) = instance.config.context_length {
+                                return Ok(Some(ctx));
+                            }
+                        }
+                    }
+                }
+
+                // Resilient fallback: find ANY active loaded instance in LM Studio
+                for m in &parsed.models {
+                    if let Some(instance) = m.loaded_instances.first() {
+                        if let Some(ctx) = instance.config.context_length {
+                            return Ok(Some(ctx));
+                        }
+                    }
+                }
+
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct OllamaShowRequest {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct OllamaShowResponse {
+    parameters: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -88,6 +179,27 @@ struct LmStudioModelsResponse {
 #[derive(Deserialize)]
 struct LmStudioModel {
     id: String,
+}
+
+#[derive(Deserialize)]
+struct LmStudioApiModelsResponse {
+    models: Vec<LmStudioApiModel>,
+}
+
+#[derive(Deserialize)]
+struct LmStudioApiModel {
+    key: String,
+    loaded_instances: Vec<LmStudioLoadedInstance>,
+}
+
+#[derive(Deserialize)]
+struct LmStudioLoadedInstance {
+    config: LmStudioInstanceConfig,
+}
+
+#[derive(Deserialize)]
+struct LmStudioInstanceConfig {
+    context_length: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -201,7 +313,7 @@ impl LlmClient for UniversalClient {
     ) -> Result<String, crate::AppError> {
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(300))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         match self.provider {
