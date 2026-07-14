@@ -599,7 +599,7 @@
   flex: 1;
   min-height: 0;
   background: transparent;
-  padding: 72px 8px 160px;
+  padding: 72px 8px 260px;
   overflow-y: auto;
   border: none;
   gap: 0;
@@ -614,8 +614,8 @@
       to bottom,
       transparent 0px,
       black 72px,
-      black calc(100% - 180px),
-      transparent calc(100% - 68px)
+      black calc(100% - 240px),
+      transparent calc(100% - 100px)
     );
   -webkit-mask-image:
     linear-gradient(to left, black 0px, black 16px, transparent 16px, transparent 100%),
@@ -623,8 +623,8 @@
       to bottom,
       transparent 0px,
       black 72px,
-      black calc(100% - 180px),
-      transparent calc(100% - 68px)
+      black calc(100% - 240px),
+      transparent calc(100% - 100px)
     );
 }
 
@@ -2492,4 +2492,32 @@
 .chip-download-ocr-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.chip-spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid rgba(188, 108, 37, 0.15);
+  border-top-color: var(--primary-color, #bc6c25);
+  border-radius: 50%;
+  animation: chip-spin 0.8s linear infinite;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.chat-attachment-chip.loading {
+  background: rgba(188, 108, 37, 0.04);
+  border-style: dashed;
+  cursor: wait;
+}
+
+.chip-loading-text {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 0.72rem;
+}
+
+@keyframes chip-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

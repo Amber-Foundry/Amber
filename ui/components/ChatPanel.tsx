@@ -465,14 +465,11 @@ function ChatPanel({
   onActivateSession,
 }: ChatPanelProps) {
   const [isOffTheRecord, setIsOffTheRecord] = useState(false);
-  const [attachedDocs, setAttachedDocs] = useState<AttachedDoc[]>([]);
+  const [sessionAttachments, setSessionAttachments] = useState<Record<string, AttachedDoc[]>>({});
   const [isAttaching, setIsAttaching] = useState(false);
   const [isDownloadingOcr, setIsDownloadingOcr] = useState(false);
+  const [extractingName, setExtractingName] = useState<string | null>(null);
 
-  const attachedDocsRef = useRef<AttachedDoc[]>([]);
-  useEffect(() => {
-    attachedDocsRef.current = attachedDocs;
-  }, [attachedDocs]);
   const MAX_RENDERED_MESSAGES = 60;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -483,6 +480,16 @@ function ChatPanel({
   const [editingContent, setEditingContent] = useState("");
   const [existingNodeIds, setExistingNodeIds] = useState<Set<string> | null>(null);
   const sessionId = isOffTheRecord ? "temporary-session" : activeSessionId || "default-session";
+
+  const attachedDocs = useMemo(
+    () => sessionAttachments[sessionId] || [],
+    [sessionAttachments, sessionId]
+  );
+
+  const attachedDocsRef = useRef<AttachedDoc[]>([]);
+  useEffect(() => {
+    attachedDocsRef.current = attachedDocs;
+  }, [attachedDocs]);
 
   const handleAttachPdf = async () => {
     setIsAttaching(true);
@@ -500,10 +507,12 @@ function ChatPanel({
         return;
       }
 
-      setStatus("Extracting document content...");
+      const filename = filePath.split(/[/\\]/).pop() || "document.pdf";
+      setExtractingName(filename);
       const res = await chatExtractPdfText(filePath);
       if ("err" in res) {
         setStatus(`Extraction failed: ${res.err}`);
+        setExtractingName(null);
         setIsAttaching(false);
         return;
       }
@@ -524,10 +533,15 @@ function ChatPanel({
         isTruncated: false,
       };
 
-      setAttachedDocs((prev) => [...prev, newDoc]);
+      setSessionAttachments((prev) => ({
+        ...prev,
+        [sessionId]: [...(prev[sessionId] || []), newDoc],
+      }));
+      setExtractingName(null);
       setStatus("");
     } catch (err) {
       console.error(err);
+      setExtractingName(null);
       setStatus("Failed to attach PDF.");
     } finally {
       setIsAttaching(false);
@@ -535,11 +549,19 @@ function ChatPanel({
   };
 
   const handleRemoveAttachment = (id: string) => {
-    setAttachedDocs((prev) => prev.filter((d) => d.id !== id));
+    setSessionAttachments((prev) => ({
+      ...prev,
+      [sessionId]: (prev[sessionId] || []).filter((d) => d.id !== id),
+    }));
   };
 
   const handleOverrideAttachment = (id: string) => {
-    setAttachedDocs((prev) => prev.map((d) => (d.id === id ? { ...d, isOverridden: true } : d)));
+    setSessionAttachments((prev) => ({
+      ...prev,
+      [sessionId]: (prev[sessionId] || []).map((d) =>
+        d.id === id ? { ...d, isOverridden: true } : d
+      ),
+    }));
   };
 
   const handleDownloadOcr = async () => {
@@ -548,7 +570,7 @@ function ChatPanel({
     try {
       await startOcrModelDownload();
       setStatus("OCR models downloaded. Re-processing attachments...");
-      const updated = [];
+      const updated: AttachedDoc[] = [];
       for (const doc of attachedDocs) {
         if (doc.needsOcrModels) {
           const res = await chatExtractPdfText(doc.filePath);
@@ -569,7 +591,10 @@ function ChatPanel({
           updated.push(doc);
         }
       }
-      setAttachedDocs(updated);
+      setSessionAttachments((prev) => ({
+        ...prev,
+        [sessionId]: updated,
+      }));
       setStatus("");
     } catch (err) {
       console.error(err);
@@ -914,7 +939,16 @@ function ChatPanel({
         if (safeDocs.length > 0) {
           const docTexts = safeDocs.map((d) => {
             const pages = d.text.split("\n\n--- PAGE_BREAK ---\n\n");
-            return pages.slice(0, d.includedPageCount).join("\n\n");
+            const slicedPages = pages.slice(0, d.includedPageCount).join("\n\n");
+
+            const header = `--- START OF ATTACHED FILE: ${d.sourceName} ---`;
+            const footer = `--- END OF ATTACHED FILE: ${d.sourceName} ---`;
+
+            const truncationNote = d.isTruncated
+              ? `[TRUNCATION WARNING: This document was truncated to pages 1 to ${d.includedPageCount} of ${d.pageCount} due to context token limits. You ONLY have access to these first ${d.includedPageCount} pages. Do NOT assume that content beyond page ${d.includedPageCount} does not exist or was not included. If the user asks about amendments, sections, or details beyond page ${d.includedPageCount}, you must explicitly state that you cannot verify it because the document has been truncated and you only have access up to page ${d.includedPageCount}.]`
+              : `[Pages: 1 to ${d.pageCount} (Full document included)]`;
+
+            return `${header}\n${truncationNote}\n\n${slicedPages}\n${footer}`;
           });
           attachedText = docTexts.join("\n\n");
         }
@@ -941,7 +975,6 @@ function ChatPanel({
         };
 
         setMessages((prev) => [...prev, aiMsg]);
-        setAttachedDocs([]); // clear attachments on successful send
         await chatAppendMessage(aiMsgId, "assistant", aiResponse, sessionId);
 
         // Fire-and-forget background extraction check (non-blocking for the user)
@@ -982,7 +1015,7 @@ function ChatPanel({
   const anyNeedsOcr = budgetedDocs.some((d) => d.needsOcrModels);
 
   const attachmentChipsJsx =
-    budgetedDocs.length > 0 ? (
+    budgetedDocs.length > 0 || isAttaching ? (
       <div className="chat-attachment-chips">
         {budgetedDocs.map((doc) => (
           <div
@@ -1034,6 +1067,13 @@ function ChatPanel({
             </button>
           </div>
         ))}
+        {isAttaching && extractingName && (
+          <div className="chat-attachment-chip loading">
+            <span className="chip-spinner" />
+            <span className="chip-name">{extractingName}</span>
+            <span className="chip-loading-text">Extracting...</span>
+          </div>
+        )}
         {anyNeedsOcr && (
           <button
             type="button"

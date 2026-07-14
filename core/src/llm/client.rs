@@ -115,7 +115,8 @@ struct LmStudioChoice {
 
 #[derive(Deserialize)]
 struct LmStudioChoiceMessage {
-    content: String,
+    content: Option<String>,
+    reasoning_content: Option<String>,
 }
 
 #[async_trait]
@@ -288,7 +289,13 @@ impl LlmClient for UniversalClient {
                     .into_iter()
                     .next()
                     .ok_or_else(|| "LM Studio returned no chat choices".to_string())?;
-                Ok(first.message.content)
+                let text = first
+                    .message
+                    .content
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| first.message.reasoning_content.filter(|s| !s.is_empty()))
+                    .unwrap_or_default();
+                Ok(text)
             }
             LlmProvider::Anthropic => {
                 if self.endpoint.trim().is_empty() {
@@ -407,7 +414,13 @@ impl LlmClient for UniversalClient {
                     .into_iter()
                     .next()
                     .ok_or_else(|| format!("{provider_name} returned no chat choices"))?;
-                Ok(first.message.content)
+                let text = first
+                    .message
+                    .content
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| first.message.reasoning_content.filter(|s| !s.is_empty()))
+                    .unwrap_or_default();
+                Ok(text)
             }
         }
     }
