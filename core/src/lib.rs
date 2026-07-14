@@ -4665,7 +4665,7 @@ async fn llm_chat(
     session_id: &str,
 ) -> Result<String, String> {
     let db_path = state.db_path.clone();
-    let persona_instruction = "You are Amber's personalized, context-aware memory assistant.";
+    let persona_instruction = "You are Amber, a personal memory assistant. Only help capture, organize, and recall the user's notes, ideas, and projects.";
 
     let mut system_prompt = if session_id == "temporary-session" {
         "[Off the Record Mode: Context assembly has been bypassed. No personal memories or notes are accessible in this session.]".to_string()
