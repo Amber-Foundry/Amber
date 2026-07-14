@@ -102,7 +102,7 @@ fn normalize_tags(tags: Option<Vec<String>>, index: usize) -> Result<Option<Vec<
 }
 
 /// Bundled Onboarding Agent: fixed system prompt for one-shot extraction from Q&A JSON.
-pub const ONBOARDING_EXTRACTION_SYSTEM_PROMPT: &str = r#"You are MindVault's onboarding extractor. The user submitted plain onboarding answers as JSON (not a chat).
+pub const ONBOARDING_EXTRACTION_SYSTEM_PROMPT: &str = r#"You are Amber's onboarding extractor. The user submitted plain onboarding answers as JSON (not a chat).
 
 Your job: infer concise memory nodes they would want in a personal knowledge base.
 

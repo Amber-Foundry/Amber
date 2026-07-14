@@ -119,7 +119,7 @@ describe("OnboardingShell Component", () => {
     );
 
     // Initial step 0 is Model Setup
-    expect(screen.getByText("Welcome to MindVault")).toBeInTheDocument();
+    expect(screen.getByText("Welcome to Amber")).toBeInTheDocument();
     expect(screen.getByText("1. Model Setup")).toBeInTheDocument();
 
     // Click skip onboarding

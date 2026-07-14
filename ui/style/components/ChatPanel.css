@@ -92,7 +92,7 @@
 }
 
 .chat-thread:empty::before {
-  content: "Start a conversation with MindVault.";
+  content: "Start a conversation with Amber.";
   margin: auto;
   color: #8c98be;
   font-size: 0.9rem;

@@ -510,7 +510,7 @@ function App() {
         {!onboardingResolved ? (
           <section className="onboarding-shell">
             <div className="onboarding-card onboarding-loading-card">
-              <h1>Loading MindVault...</h1>
+              <h1>Loading Amber...</h1>
               <p>Checking onboarding status.</p>
             </div>
           </section>

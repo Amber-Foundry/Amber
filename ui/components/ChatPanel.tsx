@@ -938,7 +938,7 @@ function ChatPanel({
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleInputKeyDown}
-              placeholder="Ask MindVault..."
+              placeholder="Ask Amber..."
               className="zen-search-input"
               autoFocus
               disabled={isSending}
@@ -1472,7 +1472,7 @@ function ChatPanel({
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleInputKeyDown}
-            placeholder="Ask MindVault..."
+            placeholder="Ask Amber..."
             disabled={isSending}
             rows={1}
           />
