@@ -657,6 +657,12 @@ function VaultSidebar({
     const matchNodes = new Set<string>();
     let count = 0;
 
+    // Create a lookup map of nodes by ID to achieve O(1) lookup time in the loop
+    const nodesById = new Map<string, Node>();
+    for (const node of allNodes) {
+      nodesById.set(node.id, node);
+    }
+
     // Find matching nodes (chunks are hidden — promote their parent document when a chunk matches)
     for (const node of allNodes) {
       const titleMatch = node.title.toLowerCase().includes(normalizedQuery);
@@ -668,7 +674,7 @@ function VaultSidebar({
       let listed = node;
       if (isImportChunkNode(node)) {
         const documentId = getImportDocumentId(node);
-        const parent = documentId ? allNodes.find((n) => n.id === documentId) : undefined;
+        const parent = documentId ? nodesById.get(documentId) : undefined;
         if (!parent || matchNodes.has(parent.id)) {
           continue;
         }
