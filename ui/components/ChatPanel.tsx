@@ -19,7 +19,6 @@ import {
   lookupModel,
   getContextBudgetCeiling,
   AUTO_WINDOW_FRACTION,
-  ABSOLUTE_HARD_CAP,
 } from "../constants/modelRegistry";
 import type { ContextAssemblerScope } from "../constants/contextBudget";
 import type { Vault } from "../ipc";
@@ -568,21 +567,15 @@ function ChatPanel({
     }
 
     try {
-      let chatCharacters = 0;
-      for (const msg of messages) {
-        chatCharacters += msg.content.length;
-      }
-      const historyTokens = Math.floor(chatCharacters / 4);
-
       const systemReserve = 500;
       const outputReserve = 1500;
 
       // Calculate max net budget for allocation under safety ceiling
       const netBudget = Math.max(0, ceiling - systemReserve - outputReserve);
 
-      // History gets up to 40% of the net budget, with a minimum desired of 4000 tokens
-      const desiredHistory = Math.max(4000, Math.floor(netBudget * 0.4));
-      const historyBudget = boundedBudget(historyTokens, desiredHistory, 1000, ceiling);
+      // History gets up to 40% of the net budget, with a minimum desired of 1000 tokens (bounded by netBudget)
+      const desiredHistory = Math.min(netBudget, Math.max(1000, Math.floor(netBudget * 0.4)));
+      const historyBudget = boundedBudget(desiredHistory, desiredHistory, 1000, ceiling);
       setResolvedHistoryBudget(historyBudget);
 
       // Remaining context budget for docs and vault
@@ -1224,10 +1217,12 @@ function ChatPanel({
 
     // Safety cap ceiling or user-configured manual context limit
     const activeLimit = getChatContextAuto()
-      ? Math.min(Math.floor(totalContextLimit * AUTO_WINDOW_FRACTION), ABSOLUTE_HARD_CAP)
+      ? getContextBudgetCeiling(currentModel, currentProvider)
       : totalContextLimit;
 
-    const netSpaceForPrompt = activeLimit - systemReserve - 1500 - attachedDocTokens - vaultTokens;
+    const cappedHistory = Math.min(historyTokens, resolvedHistoryBudget);
+    const netSpaceForPrompt =
+      activeLimit - systemReserve - 1500 - attachedDocTokens - vaultTokens - cappedHistory;
     return netSpaceForPrompt < 1000; // less than 1000 tokens left for prompt + history
   }, [
     sessionId,
@@ -1236,6 +1231,10 @@ function ChatPanel({
     attachedDocTokens,
     totalContextLimit,
     systemReserve,
+    currentModel,
+    currentProvider,
+    historyTokens,
+    resolvedHistoryBudget,
   ]);
 
   const canSend = useMemo(
