@@ -274,7 +274,7 @@ pub fn get_recent_chat_history(
             eprintln!("Database error decoding chat history row: {err}");
             "Failed decoding chat history row".to_string()
         })?;
-        let count = msg.content.chars().count();
+        let count = msg.content.len();
         let msg_tokens = count.div_ceil(4);
         if accumulated_tokens + msg_tokens > max_tokens {
             break;
@@ -714,8 +714,7 @@ mod tests {
 
         // Multi-byte UTF-8 character estimation check (e.g. Chinese characters where each is 3 bytes)
         // 8 characters = 24 bytes.
-        // Under byte-count estimation: 24 / 4 = 6 tokens (would exceed max_tokens 2).
-        // Under character-count estimation: 8 / 4 = 2 tokens (fits max_tokens 2).
+        // Under byte-count estimation: 24.div_ceil(4) = 6 tokens.
         let sess_utf8 = "test_session_utf8";
         create_session(&conn, sess_utf8.to_string(), Some("Test UTF8".to_string()))?;
         append_message(
@@ -726,9 +725,14 @@ mod tests {
             sess_utf8,
         )?;
 
-        let history_utf8 = get_recent_chat_history(&conn, sess_utf8, 2)?;
-        assert_eq!(history_utf8.len(), 1);
-        assert_eq!(history_utf8[0].id, "utf8_msg");
+        // With max_tokens = 2, it is excluded (requires 6 tokens)
+        let history_utf8_2 = get_recent_chat_history(&conn, sess_utf8, 2)?;
+        assert_eq!(history_utf8_2.len(), 0);
+
+        // With max_tokens = 6, it is included
+        let history_utf8_6 = get_recent_chat_history(&conn, sess_utf8, 6)?;
+        assert_eq!(history_utf8_6.len(), 1);
+        assert_eq!(history_utf8_6[0].id, "utf8_msg");
 
         // Ceiling division check for short messages (e.g., "Hi" = 2 characters)
         // Under integer division `2 / 4`, this would be 0 tokens.
