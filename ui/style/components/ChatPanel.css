@@ -62,7 +62,6 @@
 .chat-thread {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -93,7 +92,7 @@
 }
 
 .chat-thread:empty::before {
-  content: "Start a conversation with MindVault.";
+  content: "Start a conversation with Amber.";
   margin: auto;
   color: #8c98be;
   font-size: 0.9rem;
@@ -600,7 +599,7 @@
   flex: 1;
   min-height: 0;
   background: transparent;
-  padding: 72px 8px 160px;
+  padding: 72px 8px 260px;
   overflow-y: auto;
   border: none;
   gap: 0;
@@ -615,8 +614,8 @@
       to bottom,
       transparent 0px,
       black 72px,
-      black calc(100% - 180px),
-      transparent calc(100% - 68px)
+      black calc(100% - 240px),
+      transparent calc(100% - 100px)
     );
   -webkit-mask-image:
     linear-gradient(to left, black 0px, black 16px, transparent 16px, transparent 100%),
@@ -624,8 +623,8 @@
       to bottom,
       transparent 0px,
       black 72px,
-      black calc(100% - 180px),
-      transparent calc(100% - 68px)
+      black calc(100% - 240px),
+      transparent calc(100% - 100px)
     );
 }
 
@@ -1055,7 +1054,7 @@
   background: #ffffff;
   border: 1.5px solid rgba(188, 108, 37, 0.18);
   border-radius: 18px;
-  padding: 6px 54px 6px 14px;
+  padding: 6px 54px 6px 6px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.02);
   transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -2326,4 +2325,383 @@
 .chat-panel.otr-active {
   box-shadow: inset 0 0 30px rgba(245, 158, 11, 0.03);
   border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+/* ── PDF Attachment: Paperclip Button ── */
+
+.chat-attach-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1.2rem;
+  border-radius: 8px;
+  transition:
+    background 150ms ease,
+    transform 150ms ease;
+  margin-right: 4px;
+}
+
+.chat-attach-btn:hover:not(:disabled) {
+  background: rgba(188, 108, 37, 0.1);
+  transform: scale(1.08);
+}
+
+.chat-attach-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── PDF Attachment: Chips Container ── */
+
+.chat-attachment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 4px 8px;
+  max-width: 100%;
+}
+
+/* ── PDF Attachment: Individual Chip ── */
+
+.chat-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  background: rgba(188, 108, 37, 0.08);
+  border: 1px solid rgba(188, 108, 37, 0.18);
+  color: var(--text-black, #1a1614);
+  transition: background 150ms ease;
+  max-width: 380px;
+}
+
+.chat-attachment-chip:hover {
+  background: rgba(188, 108, 37, 0.14);
+}
+
+.chat-attachment-chip.flagged {
+  background: rgba(220, 53, 69, 0.08);
+  border-color: rgba(220, 53, 69, 0.3);
+}
+
+.chat-attachment-chip.context-warning {
+  background: rgba(220, 53, 69, 0.08);
+  border: 1px solid rgba(220, 53, 69, 0.3);
+  color: #dc3545;
+  cursor: default;
+}
+
+.chip-icon {
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+
+.chip-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
+.chip-pages {
+  color: rgba(0, 0, 0, 0.55);
+  white-space: nowrap;
+  font-size: 0.72rem;
+}
+
+.chip-truncated {
+  color: #b45309;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chip-ocr-warn {
+  color: #d97706;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chip-injection-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #dc3545;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chip-override-btn {
+  border: 1px solid rgba(220, 53, 69, 0.3);
+  background: rgba(220, 53, 69, 0.06);
+  color: #dc3545;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.chip-override-btn:hover {
+  background: rgba(220, 53, 69, 0.15);
+}
+
+.chip-remove-btn {
+  border: none;
+  background: transparent;
+  color: rgba(0, 0, 0, 0.4);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  margin-left: 2px;
+  border-radius: 4px;
+  transition:
+    color 150ms ease,
+    background 150ms ease;
+}
+
+.chip-remove-btn:hover {
+  color: #dc3545;
+  background: rgba(220, 53, 69, 0.08);
+}
+
+.chip-download-ocr-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-radius: 8px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  border: 1px solid rgba(217, 119, 6, 0.3);
+  background: rgba(217, 119, 6, 0.08);
+  color: #b45309;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.chip-download-ocr-btn:hover:not(:disabled) {
+  background: rgba(217, 119, 6, 0.16);
+}
+
+.chip-download-ocr-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chip-spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid rgba(188, 108, 37, 0.15);
+  border-top-color: var(--primary-color, #bc6c25);
+  border-radius: 50%;
+  animation: chip-spin 0.8s linear infinite;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.chat-attachment-chip.loading {
+  background: rgba(188, 108, 37, 0.04);
+  border-style: dashed;
+  cursor: wait;
+}
+
+.chip-loading-text {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 0.72rem;
+}
+
+@keyframes chip-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Context usage progress ring styles */
+.context-progress-ring {
+  display: block;
+  transform: rotate(-90deg); /* Start progress at the top */
+  flex-shrink: 0;
+}
+
+.context-progress-ring circle {
+  transition: stroke-dashoffset 0.35s ease;
+}
+
+.progress-ring-bg {
+  stroke: rgba(0, 0, 0, 0.08);
+}
+
+.progress-ring-fg {
+  stroke: #2a9d8f; /* default teal/green for safe context levels */
+}
+
+.progress-ring-fg.warning {
+  stroke: #e76f51; /* orange for medium context usage */
+}
+
+.progress-ring-fg.danger {
+  stroke: #d90429; /* red for high context usage */
+}
+
+/* Tooltip layout */
+.zen-pill.context-usage-pill {
+  position: relative;
+  overflow: visible; /* Need overflow visible so tooltip doesn't get clipped */
+  user-select: none;
+}
+
+/* Tooltip popup container */
+.context-tooltip-details {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  width: 250px;
+  background: #2b2b2a;
+  color: #f5f5f4;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 9999;
+  text-align: left;
+  font-family: inherit;
+}
+
+.context-tooltip-details::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 6px;
+  border-style: solid;
+  border-color: #2b2b2a transparent transparent transparent;
+}
+
+.zen-pill.context-usage-pill:hover .context-tooltip-details {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+.tooltip-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 8px;
+  letter-spacing: 0.02em;
+}
+
+.tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.76rem;
+  margin-bottom: 4px;
+  color: #d1d1cf;
+}
+
+.tooltip-row.indent {
+  padding-left: 10px;
+  color: #a1a19f;
+  font-size: 0.72rem;
+}
+
+.tooltip-row strong {
+  color: #fff;
+}
+
+.tooltip-divider {
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  margin: 8px 0;
+}
+
+.tooltip-breakdown-title {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #a1a19f;
+  margin-bottom: 6px;
+}
+
+.tooltip-row.footer {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: #fff;
+  border-top: 1px dashed rgba(255, 255, 255, 0.2);
+  padding-top: 6px;
+}
+
+/* Context budget banner notices */
+.chat-context-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-bottom: 4px;
+  width: 100%;
+}
+
+.chat-context-banner.doc-persistence-notice {
+  background: rgba(188, 108, 37, 0.08);
+  border: 1px solid rgba(188, 108, 37, 0.2);
+  color: #a0522d;
+}
+
+.chat-context-banner.blocking-warning {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  color: #dc2626;
+}
+
+.chat-context-banner.informational-warning {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  color: #d97706;
+}
+
+.chat-context-banner .banner-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.chat-context-banner .banner-text {
+  flex-grow: 1;
+}
+
+.chat-context-banner .banner-close-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.chat-context-banner .banner-close-btn:hover {
+  opacity: 1;
 }

@@ -1,0 +1,39 @@
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 2px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.provenance {
+  font-size: 0.68rem;
+  color: rgba(40, 30, 20, 0.65);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.ocrBadge,
+.tablesBadge {
+  flex-shrink: 0;
+  font-size: 0.65rem;
+  padding: 1px 6px;
+  border-radius: 999px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.ocrBadge {
+  background: rgba(188, 108, 37, 0.1);
+  color: var(--primary-color, #b56a37);
+}
+
+.tablesBadge {
+  background: rgba(200, 140, 40, 0.15);
+  color: #a06a1a;
+}

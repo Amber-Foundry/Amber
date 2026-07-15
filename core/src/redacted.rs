@@ -223,7 +223,13 @@ fn migrate_legacy_redacted_vaults(
     for row in rows {
         let (id, name, icon, description) =
             row.map_err(|err| format!("Failed decoding legacy redacted vault row: {err}"))?;
-        if resolve_vault_effective_privacy(conn, &id)? != "redacted" {
+        if resolve_vault_effective_privacy(conn, &id).unwrap_or_else(|err| {
+            eprintln!(
+                "[redacted] skipping vault {id} during legacy migrate (vault privacy): {err}"
+            );
+            String::new()
+        }) != "redacted"
+        {
             continue;
         }
 
@@ -290,13 +296,21 @@ fn migrate_legacy_redacted_nodes(conn: &Connection, key: &SessionKey) -> Result<
     for row in rows {
         let (id, vault_id, sub_vault_id, title, summary, detail, source, source_type, privacy_tier) =
             row.map_err(|err| format!("Failed decoding legacy redacted node row: {err}"))?;
-        if resolve_node_effective_privacy(
+        let effective = match resolve_node_effective_privacy(
             conn,
             &vault_id,
             sub_vault_id.as_deref(),
             privacy_tier.as_deref(),
-        )? != "redacted"
-        {
+        ) {
+            Ok(tier) => tier,
+            Err(err) => {
+                eprintln!(
+                    "[redacted] skipping node {id} during legacy migrate (vault privacy): {err}"
+                );
+                continue;
+            }
+        };
+        if effective != "redacted" {
             continue;
         }
 
@@ -328,7 +342,11 @@ fn migrate_legacy_redacted_nodes(conn: &Connection, key: &SessionKey) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{decrypt_json, derive_session_key, encrypt_json, NodeSecretPayload};
+    use super::{
+        decrypt_json, derive_session_key, encrypt_json, migrate_legacy_redacted_records,
+        NodeSecretPayload,
+    };
+    use rusqlite::Connection;
 
     #[test]
     fn derived_session_key_is_stable_for_same_input() {
@@ -372,5 +390,62 @@ mod tests {
         assert_eq!(decrypted.detail, payload.detail);
         assert_eq!(decrypted.source, payload.source);
         assert_eq!(decrypted.source_type, payload.source_type);
+    }
+
+    #[test]
+    fn migrate_legacy_skips_nodes_with_missing_vault() {
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite: {err}"));
+        conn.execute_batch(
+            "CREATE TABLE vaults (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                icon TEXT,
+                description TEXT,
+                privacy_tier TEXT NOT NULL DEFAULT 'open',
+                deleted_at TEXT,
+                encrypted_payload TEXT,
+                updated_at TEXT
+             );
+             CREATE TABLE sub_vaults (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT,
+                name TEXT,
+                icon TEXT,
+                description TEXT,
+                privacy_tier TEXT,
+                deleted_at TEXT,
+                encrypted_payload TEXT,
+                updated_at TEXT
+             );
+             CREATE TABLE nodes (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                sub_vault_id TEXT,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                detail TEXT,
+                source TEXT,
+                source_type TEXT,
+                privacy_tier TEXT,
+                deleted_at TEXT,
+                encrypted_payload TEXT,
+                updated_at TEXT
+             );",
+        )
+        .unwrap_or_else(|err| panic!("failed to create schema: {err}"));
+
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, title, summary, detail, encrypted_payload)
+             VALUES ('node_orphan', 'vault_root_graph', 'Orphan', 'summary', 'detail', '');",
+            [],
+        )
+        .unwrap_or_else(|err| panic!("failed to insert orphan node: {err}"));
+
+        let key = derive_session_key("passphrase", "cmVkYWN0ZWQtc2FsdA==")
+            .unwrap_or_else(|err| panic!("key derive failed: {err}"));
+
+        migrate_legacy_redacted_records(&conn, &key)
+            .unwrap_or_else(|err| panic!("migrate should skip missing vault nodes: {err}"));
     }
 }

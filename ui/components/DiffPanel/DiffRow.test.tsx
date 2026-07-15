@@ -171,9 +171,7 @@ describe("DiffRow Component", () => {
 
     render(<DiffRow item={item} onCommitItem={vi.fn()} />);
 
-    expect(
-      screen.getByText("⚠️ Security Warning: Mismatched Vault Sensitivity!")
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Security Warning: Mismatched Vault Sensitivity!/)).toBeInTheDocument();
     expect(
       screen.getByText("Custom warning: writing to high-sensitivity work vault!")
     ).toBeInTheDocument();

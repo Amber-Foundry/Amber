@@ -344,9 +344,11 @@ pub struct ImportJobStatus {
     pub id: String,
     pub status: String,
     pub source_name: String,
+    pub target_vault_id: Option<String>,
     pub changeset_id: Option<String>,
     pub node_count: i32,
     pub total_pages: i32,
+    pub current_page: i32,
     pub digital_pages: i32,
     pub ocr_pages: i32,
     pub hybrid_pages: i32,
@@ -356,6 +358,22 @@ pub struct ImportJobStatus {
     pub extraction_path: Option<String>,
     pub rasterization_dpi: i32,
     pub error: Option<String>,
+}
+
+/// Literal PDF extraction text for the Job Log "View Extraction" surface.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../ui/types/generated/")]
+pub struct ImportExtractionPreview {
+    pub job_id: String,
+    pub source_name: String,
+    pub markdown: String,
+    pub status: String,
+    pub total_pages: i32,
+    pub digital_pages: i32,
+    pub ocr_pages: i32,
+    pub hybrid_pages: i32,
+    pub changeset_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]
@@ -439,6 +457,9 @@ mod tests {
         }
         if let Err(err) = ImportStartJobInput::export() {
             panic!("failed to export ImportStartJobInput: {err}");
+        }
+        if let Err(err) = ImportExtractionPreview::export() {
+            panic!("failed to export ImportExtractionPreview: {err}");
         }
     }
 }

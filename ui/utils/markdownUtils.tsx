@@ -10,6 +10,7 @@ import PlantUmlBlock from "../components/PlantUmlBlock";
 import LatexBlock from "../components/LatexBlock";
 import { getAllNodes } from "../services/nodes";
 import "katex/dist/katex.min.css";
+import { AlertIcon, ArrowUpRightIcon } from "../components/icons";
 import {
   TbBrandPython,
   TbBrandJavascript,
@@ -280,7 +281,10 @@ function WikiLinkBadge({
         }
         disabled={isLoading}
       >
-        <span className="wikilink-badge-icon">{isBroken ? "⚠️" : "↗"}</span> {children}
+        <span className="wikilink-badge-icon">
+          {isBroken ? <AlertIcon size={12} /> : <ArrowUpRightIcon size={12} />}
+        </span>{" "}
+        {children}
       </button>
 
       {modal &&

@@ -103,6 +103,20 @@ export function onboardingSetComplete(isComplete: boolean) {
   return settingsSet("onboarding_complete", JSON.stringify(isComplete));
 }
 
+export type ChatPdfExtraction = {
+  sourceName: string;
+  pageCount: number;
+  text: string;
+  ocrConfidence: number | null;
+  needsOcrModels: boolean;
+  promptInjectionFlagged: boolean;
+  pageTokenEstimates: number[];
+};
+
+export function chatExtractPdfText(filePath: string) {
+  return invokeTyped<ChatPdfExtraction>("chat_extract_pdf_text", { filePath });
+}
+
 export function chatGetHistory(sessionId: string) {
   return invokeTyped<ChatMessage[]>("chat_get_history", { sessionId });
 }
@@ -256,6 +270,10 @@ export function listLlmModels(provider: string, endpoint: string) {
   return invokeTyped<string[]>("llm_list_models", { provider, endpoint });
 }
 
+export function getModelContextLimit(provider: string, endpoint: string, model: string) {
+  return invokeTyped<number | null>("get_model_context_limit", { provider, endpoint, model });
+}
+
 export function chatWithLlm(
   nodeIds: string[],
   scope: string,
@@ -265,7 +283,10 @@ export function chatWithLlm(
   userPrompt: string,
   chartsEnabled: boolean,
   isRedactedUnlocked: boolean,
-  sessionId: string
+  sessionId: string,
+  attachedDocument?: string | null,
+  maxAssemblerTokens?: number | null,
+  maxHistoryTokens?: number | null
 ) {
   return invoke<string>("llm_chat", {
     nodeIds,
@@ -277,6 +298,9 @@ export function chatWithLlm(
     chartsEnabled,
     isRedactedUnlocked,
     sessionId,
+    attachedDocument,
+    maxAssemblerTokens,
+    maxHistoryTokens,
   })
     .then((ok) => ({ ok }) as IpcResult<string>)
     .catch((error) => ({ err: String(error) }) as IpcResult<string>);

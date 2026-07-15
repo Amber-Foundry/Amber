@@ -11,6 +11,7 @@ import DiffRow from "./DiffPanel/DiffRow";
 import { parseSQLiteDate, parseJSON } from "../utils/parse";
 import "../style/components/DiffPanel.css";
 import "../style/components/DiffPanelActions.css";
+import { FolderIcon, ArrowLeftIcon } from "./icons";
 
 interface DiffPanelProps {
   onClose: () => void;
@@ -543,7 +544,7 @@ export default function DiffPanel({
                             }}
                           >
                             <span>
-                              📂 backups/mindvault-pre-changeset-
+                              <FolderIcon size={14} /> backups/mindvault-pre-changeset-
                               {Math.floor(
                                 parseSQLiteDate(cs.reviewedAt || cs.createdAt).getTime() / 1000
                               )}
@@ -562,7 +563,7 @@ export default function DiffPanel({
                 <>
                   <div style={{ marginBottom: "12px" }}>
                     <button className="category-filter-btn" onClick={() => onSelectChangeset(null)}>
-                      ← Back to Changesets
+                      <ArrowLeftIcon size={14} /> Back to Changesets
                     </button>
                   </div>
 

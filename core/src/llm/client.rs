@@ -45,6 +45,126 @@ impl UniversalClient {
     fn normalized_endpoint(&self) -> &str {
         self.endpoint.trim_end_matches('/')
     }
+
+    pub async fn get_context_limit(&self) -> Result<Option<usize>, crate::AppError> {
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        match self.provider {
+            LlmProvider::Ollama => {
+                let url = format!("{}/api/show", self.normalized_endpoint());
+                let payload = OllamaShowRequest {
+                    name: self.model.clone(),
+                };
+                let response = http
+                    .post(url)
+                    .json(&payload)
+                    .send()
+                    .await
+                    .map_err(|err| format!("Failed calling Ollama show endpoint: {err}"))?;
+
+                if !response.status().is_success() {
+                    return Ok(None);
+                }
+
+                let parsed: OllamaShowResponse = response
+                    .json()
+                    .await
+                    .map_err(|err| format!("Failed parsing Ollama show response: {err}"))?;
+
+                if let Some(params) = parsed.parameters {
+                    for line in params.lines() {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 2 && parts[0] == "num_ctx" {
+                            if let Ok(limit) = parts[1].parse::<usize>() {
+                                return Ok(Some(limit));
+                            }
+                        }
+                    }
+                }
+                Ok(Some(8192))
+            }
+            LlmProvider::LmStudio => {
+                let url = format!("{}/api/v1/models", self.normalized_endpoint());
+                let response = http.get(url).send().await.map_err(|err| {
+                    format!("Failed calling LM Studio API models endpoint: {err}")
+                })?;
+
+                if !response.status().is_success() {
+                    return Ok(None);
+                }
+
+                let parsed: LmStudioApiModelsResponse = response.json().await.map_err(|err| {
+                    format!("Failed parsing LM Studio API models response: {err}")
+                })?;
+
+                // Try to find the model matching the selected key exactly
+                for m in &parsed.models {
+                    if m.key == self.model {
+                        if let Some(instance) = m.loaded_instances.first() {
+                            if let Some(ctx) = instance.config.context_length {
+                                return Ok(Some(ctx));
+                            }
+                        }
+                    }
+                }
+
+                // Resilient fallback: find ANY active loaded instance in LM Studio
+                for m in &parsed.models {
+                    if let Some(instance) = m.loaded_instances.first() {
+                        if let Some(ctx) = instance.config.context_length {
+                            return Ok(Some(ctx));
+                        }
+                    }
+                }
+
+                Ok(None)
+            }
+            LlmProvider::Anthropic => {
+                if self.endpoint.trim().is_empty() {
+                    return Ok(None);
+                }
+                let url = format!("https://api.anthropic.com/v1/models/{}", self.model.trim());
+                let response = http
+                    .get(&url)
+                    .header("x-api-key", self.endpoint.trim())
+                    .header("anthropic-version", "2023-06-01")
+                    .send()
+                    .await
+                    .map_err(|err| format!("Failed calling Anthropic models endpoint: {err}"))?;
+
+                if !response.status().is_success() {
+                    return Ok(None);
+                }
+
+                let parsed: AnthropicModelResponse = response
+                    .json()
+                    .await
+                    .map_err(|err| format!("Failed parsing Anthropic model response: {err}"))?;
+
+                Ok(parsed.max_input_tokens)
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct AnthropicModelResponse {
+    max_input_tokens: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct OllamaShowRequest {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct OllamaShowResponse {
+    parameters: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +210,27 @@ struct LmStudioModel {
     id: String,
 }
 
+#[derive(Deserialize)]
+struct LmStudioApiModelsResponse {
+    models: Vec<LmStudioApiModel>,
+}
+
+#[derive(Deserialize)]
+struct LmStudioApiModel {
+    key: String,
+    loaded_instances: Vec<LmStudioLoadedInstance>,
+}
+
+#[derive(Deserialize)]
+struct LmStudioLoadedInstance {
+    config: LmStudioInstanceConfig,
+}
+
+#[derive(Deserialize)]
+struct LmStudioInstanceConfig {
+    context_length: Option<usize>,
+}
+
 #[derive(Serialize)]
 struct LmStudioChatRequest {
     model: String,
@@ -115,13 +256,18 @@ struct LmStudioChoice {
 
 #[derive(Deserialize)]
 struct LmStudioChoiceMessage {
-    content: String,
+    content: Option<String>,
+    reasoning_content: Option<String>,
 }
 
 #[async_trait]
 impl LlmClient for UniversalClient {
     async fn list_models(&self) -> Result<Vec<String>, crate::AppError> {
-        let http = reqwest::Client::new();
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         match self.provider {
             LlmProvider::Ollama => {
                 let url = format!("{}/api/tags", self.normalized_endpoint());
@@ -194,7 +340,11 @@ impl LlmClient for UniversalClient {
         system_prompt: &str,
         messages: &[LlmMessage],
     ) -> Result<String, crate::AppError> {
-        let http = reqwest::Client::new();
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         match self.provider {
             LlmProvider::Ollama => {
                 let url = format!("{}/api/chat", self.normalized_endpoint());
@@ -280,7 +430,13 @@ impl LlmClient for UniversalClient {
                     .into_iter()
                     .next()
                     .ok_or_else(|| "LM Studio returned no chat choices".to_string())?;
-                Ok(first.message.content)
+                let text = first
+                    .message
+                    .content
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| first.message.reasoning_content.filter(|s| !s.is_empty()))
+                    .unwrap_or_default();
+                Ok(text)
             }
             LlmProvider::Anthropic => {
                 if self.endpoint.trim().is_empty() {
@@ -399,7 +555,13 @@ impl LlmClient for UniversalClient {
                     .into_iter()
                     .next()
                     .ok_or_else(|| format!("{provider_name} returned no chat choices"))?;
-                Ok(first.message.content)
+                let text = first
+                    .message
+                    .content
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| first.message.reasoning_content.filter(|s| !s.is_empty()))
+                    .unwrap_or_default();
+                Ok(text)
             }
         }
     }

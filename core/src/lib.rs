@@ -28,11 +28,16 @@ use ipc_types::{
     NodeUpdateInput, OnboardingNodeCommitInput, OnboardingProposedNode, Tag, TagCreateInput, Vault,
     VaultCreateInput, VaultUpdateInput,
 };
-pub use ipc_types::{EmbeddingReembedInput, EmbeddingStatus, ImportJobStatus, ImportStartJobInput};
+pub use ipc_types::{
+    EmbeddingReembedInput, EmbeddingStatus, ImportExtractionPreview, ImportJobStatus,
+    ImportStartJobInput,
+};
 
 // MARK: Internal Types and Constants
 
 /// Default `max_tokens` for context assembly (`debug_assemble_context`, `llm_chat`).
+/// Note: `llm_chat` diverges dynamically depending on the model context budget,
+/// whereas `debug_assemble_context` retains this static default.
 /// Keep in sync with `CONTEXT_MAX_TOKENS` in `ui/constants/contextBudget.ts`.
 const DEFAULT_ASSEMBLER_MAX_TOKENS: usize = 8000;
 
@@ -742,6 +747,17 @@ fn run_seed_data(conn: &mut Connection) -> Result<(), String> {
     )
     .map_err(|err| format!("Failed inserting Root Graph vault: {err}"))?;
 
+    // Soft-deleted Root Graph blocks INSERT OR IGNORE while privacy queries require deleted_at IS NULL.
+    tx.execute(
+        "UPDATE vaults
+         SET deleted_at = NULL,
+             name = COALESCE(NULLIF(name, ''), 'Root Graph'),
+             updated_at = datetime('now')
+         WHERE id = 'vault_root_graph';",
+        [],
+    )
+    .map_err(|err| format!("Failed restoring Root Graph vault: {err}"))?;
+
     tx.execute(
         "INSERT OR IGNORE INTO vaults (id, name, icon, description, privacy_tier, priority_profile, sort_order, meta)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
@@ -1342,7 +1358,7 @@ fn validate_import_start_input(
         }
     }
     if let Some(vault_id) = input.target_vault_id.as_deref() {
-        let exists: Option<i64> = conn
+        let exists_vault: Option<i64> = conn
             .query_row(
                 "SELECT 1 FROM vaults WHERE id = ?1 AND deleted_at IS NULL LIMIT 1;",
                 [vault_id],
@@ -1350,7 +1366,18 @@ fn validate_import_start_input(
             )
             .optional()
             .map_err(|err| format!("Failed validating target vault: {err}"))?;
-        if exists.is_none() {
+        let exists_subvault: Option<i64> = if exists_vault.is_none() {
+            conn.query_row(
+                "SELECT 1 FROM sub_vaults WHERE id = ?1 AND deleted_at IS NULL LIMIT 1;",
+                [vault_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| format!("Failed validating target subvault: {err}"))?
+        } else {
+            None
+        };
+        if exists_vault.is_none() && exists_subvault.is_none() {
             return Err(format!("Target vault not found: {vault_id}"));
         }
     }
@@ -1758,6 +1785,15 @@ pub fn run() {
                 }
             });
             chat::purge_temporary_session(&conn)?;
+            chat::purge_empty_sessions(&conn)
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+            // Clean up any stale active import jobs on startup
+            let _ = conn.execute(
+                "UPDATE import_jobs 
+                 SET status = 'failed', error = 'Interrupted due to application restart' 
+                 WHERE status IN ('pending', 'extracting');",
+                [],
+            );
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -1772,7 +1808,10 @@ pub fn run() {
             import_start_job,
             import_get_status,
             import_list_jobs,
+            import_get_extraction_preview,
             import_cancel_job,
+            import_browse_pdf,
+            ocr_download_models,
             chat_get_history,
             chat_append_message,
             chat_clear_history,
@@ -1816,7 +1855,9 @@ pub fn run() {
             debug_assemble_context,
             llm_count_tokens,
             llm_list_models,
+            get_model_context_limit,
             llm_chat,
+            chat_extract_pdf_text,
             onboarding_extract_proposals,
             onboarding_commit,
             save_markdown_file,
@@ -1876,29 +1917,38 @@ pub(crate) fn resolve_vault_effective_privacy(
     let mut strictest = "open".to_string();
 
     while let Some(id) = current_id {
-        let record = conn
-            .query_row(
-                "SELECT parent_vault_id, privacy_tier
-                 FROM (
-                    SELECT id, NULL AS parent_vault_id, privacy_tier
-                    FROM vaults
-                    WHERE deleted_at IS NULL
-                    UNION ALL
-                    SELECT id, vault_id AS parent_vault_id, COALESCE(privacy_tier, 'open') AS privacy_tier
-                    FROM sub_vaults
-                    WHERE deleted_at IS NULL
-                 )
-                 WHERE id = ?1
-                 LIMIT 1;",
-                [id.as_str()],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, String>(1)?,
-                    ))
-                },
-            )
-            .map_err(|err| format!("Failed resolving vault privacy for {vault_id}: {err}"))?;
+        let record = match conn.query_row(
+            "SELECT parent_vault_id, privacy_tier
+             FROM (
+                SELECT id, NULL AS parent_vault_id, privacy_tier
+                FROM vaults
+                WHERE deleted_at IS NULL
+                UNION ALL
+                SELECT id, vault_id AS parent_vault_id, COALESCE(privacy_tier, 'open') AS privacy_tier
+                FROM sub_vaults
+                WHERE deleted_at IS NULL
+             )
+             WHERE id = ?1
+             LIMIT 1;",
+            [id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                ))
+            },
+        ) {
+            Ok(record) => record,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                eprintln!(
+                    "[privacy] vault or subvault '{id}' missing or deleted; treating chain as '{strictest}'"
+                );
+                return Ok(strictest);
+            }
+            Err(err) => {
+                return Err(format!("Failed resolving vault privacy for {vault_id}: {err}"));
+            }
+        };
 
         strictest =
             privacy::get_effective_privacy(Some(record.1.as_str()), None, Some(strictest.as_str()))
@@ -2818,6 +2868,8 @@ fn import_start_job(
 
         let conn = open_connection(&state.db_path)?;
         let file_path = validate_import_start_input(&conn, &input)?;
+        let (parent_for_fk, write_target) =
+            ingest::resolve_import_vault_ids(&conn, input.target_vault_id.as_deref())?;
 
         let import_job = Arc::clone(&state.import_job);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -2852,7 +2904,8 @@ fn import_start_job(
                 &ingest::CreateImportJobParams {
                     import_type: "pdf".to_string(),
                     source_name,
-                    target_vault_id: input.target_vault_id.clone(),
+                    // FK to vaults(id): always store parent vault when a subvault was selected.
+                    target_vault_id: parent_for_fk.clone(),
                     rasterization_dpi,
                 },
             )?;
@@ -2869,7 +2922,8 @@ fn import_start_job(
 
         let db_path = state.db_path.clone();
         let config = ingest_config_from_input(&input);
-        let worker_target_vault_id = input.target_vault_id.clone();
+        // Selected vault or subvault id — used as the write target when finalizing.
+        let worker_target_vault_id = write_target.clone();
         let worker_model = config.model.clone();
         let app_handle_worker = app_handle.clone();
         let import_job_worker = Arc::clone(&import_job);
@@ -2902,8 +2956,10 @@ fn import_start_job(
                 let mut last_emit = Instant::now() - Duration::from_millis(250);
                 let mut pending_progress: Option<ingest::ImportJobProgress> = None;
                 while let Ok(progress) = progress_rx.recv() {
-                    let is_final = progress.current_page == progress.total_pages
-                        || progress.status == "staged";
+                    // Flush immediately when a page completes or pages are done (LLM phase).
+                    // Do not treat mid-job ticks as staged — only finalize sets staged.
+                    let is_final =
+                        progress.current_page == progress.total_pages && progress.total_pages > 0;
                     pending_progress = Some(progress);
                     if is_final || last_write.elapsed() >= Duration::from_millis(250) {
                         if let Some(ref pending) = pending_progress {
@@ -3053,12 +3109,76 @@ fn import_list_jobs(
 }
 
 #[tauri::command]
-fn import_cancel_job(state: tauri::State<'_, AppState>) -> IpcResponse<()> {
-    into_ipc(with_import_job_lock(&state.import_job, |slot| {
-        if let Some(handle) = slot.as_ref() {
-            handle.cancel.store(true, Ordering::Relaxed);
+fn import_get_extraction_preview(
+    state: tauri::State<'_, AppState>,
+    job_id: String,
+) -> IpcResponse<ImportExtractionPreview> {
+    into_ipc((|| {
+        let conn = open_connection(&state.db_path)?;
+        let preview = ingest::get_import_extraction_preview(&conn, &job_id)?
+            .ok_or_else(|| format!("Import job not found: {job_id}"))?;
+        if preview.markdown.trim().is_empty() {
+            return Err("Extraction preview not available for this job".to_string());
         }
-    }))
+        Ok(preview)
+    })())
+}
+
+#[tauri::command]
+fn import_cancel_job(state: tauri::State<'_, AppState>) -> IpcResponse<()> {
+    into_ipc((|| -> Result<(), String> {
+        let has_active = with_import_job_lock(&state.import_job, |slot| {
+            if let Some(handle) = slot.as_ref() {
+                handle.cancel.store(true, Ordering::Relaxed);
+                true
+            } else {
+                false
+            }
+        })?;
+
+        if !has_active {
+            let conn = open_connection(&state.db_path)?;
+            conn.execute(
+                "UPDATE import_jobs 
+                 SET status = 'failed', error = 'Cancelled by user' 
+                 WHERE status IN ('pending', 'extracting');",
+                [],
+            )
+            .map_err(|err| format!("Failed to cancel stuck jobs in database: {err}"))?;
+        }
+        Ok(())
+    })())
+}
+
+#[tauri::command]
+async fn import_browse_pdf() -> IpcResponse<Option<String>> {
+    let path = rfd::AsyncFileDialog::new()
+        .add_filter("PDF", &["pdf"])
+        .pick_file()
+        .await;
+
+    match path {
+        Some(handle) => IpcResponse::Ok {
+            ok: Some(handle.path().to_string_lossy().into_owned()),
+        },
+        None => IpcResponse::Ok { ok: None },
+    }
+}
+
+#[tauri::command]
+async fn ocr_download_models() -> IpcResponse<()> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        ocr::download_ocr_models_if_needed().map_err(|err| err.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => IpcResponse::Ok { ok: () },
+        Ok(Err(err)) => IpcResponse::Err { err },
+        Err(join_err) => IpcResponse::Err {
+            err: format!("Failed to spawn OCR download task: {join_err}"),
+        },
+    }
 }
 
 #[tauri::command]
@@ -4534,6 +4654,25 @@ async fn llm_list_models(provider: String, endpoint: String) -> IpcResponse<Vec<
     into_ipc(llm::client::LlmClient::list_models(&client).await)
 }
 
+#[tauri::command]
+async fn get_model_context_limit(
+    provider: String,
+    endpoint: String,
+    model: String,
+) -> IpcResponse<Option<usize>> {
+    let parsed_provider = match provider.trim().to_lowercase().as_str() {
+        "ollama" => llm::client::LlmProvider::Ollama,
+        "lmstudio" => llm::client::LlmProvider::LmStudio,
+        "anthropic" => llm::client::LlmProvider::Anthropic,
+        "openai" => llm::client::LlmProvider::OpenAi,
+        "google" => llm::client::LlmProvider::Google,
+        "xai" => llm::client::LlmProvider::XAi,
+        _ => return IpcResponse::Ok { ok: None },
+    };
+    let client = llm::client::UniversalClient::new(parsed_provider, endpoint, model);
+    into_ipc(client.get_context_limit().await.map_err(|e| e.to_string()))
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn llm_chat(
@@ -4547,9 +4686,14 @@ async fn llm_chat(
     is_redacted_unlocked: bool,
     state: tauri::State<'_, AppState>,
     session_id: &str,
+    attached_document: Option<String>,
+    max_assembler_tokens: Option<usize>,
+    max_history_tokens: Option<usize>,
 ) -> Result<String, String> {
     let db_path = state.db_path.clone();
-    let persona_instruction = "You are MindVault's personalized, context-aware memory assistant.";
+    // Kept in signature for Tauri IPC contract; history is loaded from DB instead.
+    let _ = user_prompt;
+    let persona_instruction = "You are Amber, a personal memory assistant. Only help capture, organize, and recall the user's notes, ideas, and projects.";
 
     let mut system_prompt = if session_id == "temporary-session" {
         "[Off the Record Mode: Context assembly has been bypassed. No personal memories or notes are accessible in this session.]".to_string()
@@ -4560,7 +4704,7 @@ async fn llm_chat(
             node_ids,
             llm::assembler::AssemblerConfig {
                 scope,
-                max_tokens: DEFAULT_ASSEMBLER_MAX_TOKENS,
+                max_tokens: max_assembler_tokens.unwrap_or(DEFAULT_ASSEMBLER_MAX_TOKENS),
                 is_unlocked: is_redacted_unlocked,
             },
         )?
@@ -4621,6 +4765,17 @@ async fn llm_chat(
         system_prompt = format!("{persona_instruction}\n\n{system_prompt}");
     }
 
+    if let Some(attached_doc) = attached_document.filter(|s| !s.is_empty()) {
+        system_prompt = format!(
+            "{}\n\n[AUXILIARY DOCUMENT]\n\
+             The user attached this document for reference. Use it to answer their questions and cite it when relevant.\n\
+             <attached_document>\n\
+             {}\n\
+             </attached_document>",
+            system_prompt, attached_doc
+        );
+    }
+
     let parsed_provider = match provider.trim().to_lowercase().as_str() {
         "ollama" => llm::client::LlmProvider::Ollama,
         "lmstudio" => llm::client::LlmProvider::LmStudio,
@@ -4632,11 +4787,237 @@ async fn llm_chat(
     };
 
     let client = llm::client::UniversalClient::new(parsed_provider, endpoint, model);
-    let messages = [llm::client::LlmMessage {
-        role: "user".to_string(),
-        content: user_prompt,
-    }];
+
+    // Load recent conversation history (token-budgeted) so the model sees previous turns without overflowing
+    let messages: Vec<llm::client::LlmMessage> = {
+        let conn = open_connection(&db_path)?;
+        let history =
+            chat::get_recent_chat_history(&conn, session_id, max_history_tokens.unwrap_or(4000))
+                .map_err(|e| e.to_string())?;
+        history
+            .into_iter()
+            .map(|msg| llm::client::LlmMessage {
+                role: msg.role,
+                content: msg.content,
+            })
+            .collect()
+    };
+
     llm::client::LlmClient::complete(&client, &system_prompt, &messages).await
+}
+
+#[derive(Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPdfExtraction {
+    pub source_name: String,
+    pub page_count: usize,
+    pub text: String,
+    pub ocr_confidence: Option<f32>,
+    pub needs_ocr_models: bool,
+    pub prompt_injection_flagged: bool,
+    pub page_token_estimates: Vec<usize>,
+}
+
+#[tauri::command]
+async fn chat_extract_pdf_text(file_path: String) -> IpcResponse<ChatPdfExtraction> {
+    use crate::ocr::engine::OcrEngine;
+
+    into_ipc((|| -> Result<ChatPdfExtraction, String> {
+        let path = Path::new(&file_path);
+        let source_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Attached Document")
+            .to_string();
+
+        let rasterizer = ocr::PdfRasterizer::new()
+            .map_err(|e| format!("Failed to initialize PDF rasterizer: {e}"))?;
+        let document = rasterizer
+            .load_document_from_file(path)
+            .map_err(|e| format!("Failed to load PDF file: {e}"))?;
+        let page_infos = ocr::PdfRasterizer::scan_loaded_document(&document)
+            .map_err(|e| format!("Failed to scan PDF pages: {e}"))?;
+
+        let total_pages = page_infos.len();
+        if total_pages == 0 {
+            return Err("PDF document contains no pages.".to_string());
+        }
+
+        let mut has_ocr_or_hybrid = false;
+        for p in &page_infos {
+            if p.page_type == ocr::PdfPageType::Ocr || p.page_type == ocr::PdfPageType::Hybrid {
+                has_ocr_or_hybrid = true;
+                break;
+            }
+        }
+
+        let ocr_models_available = ocr::ocr_models_exist();
+        let needs_ocr_models = has_ocr_or_hybrid && !ocr_models_available;
+
+        let mut cached_ocr_engine: Option<ocr::BundledOcrEngine> = None;
+        let mut total_ocr_confidence_sum = 0.0;
+        let mut ocr_pass_count = 0;
+        let mut page_token_estimates = Vec::new();
+
+        let rasterizer_config = ocr::PdfRasterizerConfig { dpi: 150 };
+
+        let mut page_markdowns = Vec::new();
+
+        for (i, p) in page_infos.iter().enumerate() {
+            let (raw_blocks, page_width, page_height) = match p.page_type {
+                ocr::PdfPageType::Digital => {
+                    let raw_blocks =
+                        ocr::PdfRasterizer::extract_digital_blocks_from_document(&document, i)
+                            .map_err(|e| {
+                                format!("Failed extracting digital blocks on page {}: {e}", i + 1)
+                            })?;
+                    (raw_blocks, p.width_pts, p.height_pts)
+                }
+                ocr::PdfPageType::Ocr => {
+                    if !ocr_models_available {
+                        (Vec::new(), p.width_pts, p.height_pts)
+                    } else {
+                        if cached_ocr_engine.is_none() {
+                            cached_ocr_engine = Some(
+                                ocr::BundledOcrEngine::new()
+                                    .map_err(|e| format!("Failed initializing OCR engine: {e}"))?,
+                            );
+                        }
+                        let ocr_engine = cached_ocr_engine
+                            .as_mut()
+                            .ok_or_else(|| "OCR engine not initialized".to_string())?;
+                        let page_img = rasterizer
+                            .render_loaded_page(&document, i, &rasterizer_config)
+                            .map_err(|e| format!("Failed rendering page {} for OCR: {e}", i + 1))?;
+                        let (image_width, image_height) =
+                            (page_img.width() as f32, page_img.height() as f32);
+                        let ocr_output = ocr_engine.recognize(&page_img).map_err(|e| {
+                            format!("OCR recognition failed on page {}: {e}", i + 1)
+                        })?;
+
+                        total_ocr_confidence_sum += ocr_output.avg_confidence;
+                        ocr_pass_count += 1;
+
+                        let raw_blocks = crate::ingest::coords::normalize_blocks_to_pdf_points(
+                            ocr_output
+                                .blocks
+                                .into_iter()
+                                .map(|b| {
+                                    ingest::layout::RawLayoutBlock::new(b.text, b.bbox)
+                                        .with_confidence(b.confidence)
+                                })
+                                .collect(),
+                            image_width,
+                            image_height,
+                            p.width_pts,
+                            p.height_pts,
+                        );
+                        (raw_blocks, p.width_pts, p.height_pts)
+                    }
+                }
+                ocr::PdfPageType::Hybrid => {
+                    let digital_blocks =
+                        ocr::PdfRasterizer::extract_digital_blocks_from_document(&document, i)
+                            .map_err(|e| {
+                                format!("Failed extracting digital blocks on page {}: {e}", i + 1)
+                            })?;
+                    let page_area = p.width_pts * p.height_pts;
+
+                    let run_ocr = if !ocr_models_available {
+                        false
+                    } else {
+                        if digital_blocks.len() < 2 {
+                            true
+                        } else {
+                            let text_area: f32 = digital_blocks
+                                .iter()
+                                .map(|block| block.bbox.width.max(0.0) * block.bbox.height.max(0.0))
+                                .sum();
+                            text_area / page_area.max(1.0) < 0.01
+                        }
+                    };
+
+                    if run_ocr {
+                        if cached_ocr_engine.is_none() {
+                            cached_ocr_engine = Some(
+                                ocr::BundledOcrEngine::new()
+                                    .map_err(|e| format!("Failed initializing OCR engine: {e}"))?,
+                            );
+                        }
+                        let ocr_engine = cached_ocr_engine
+                            .as_mut()
+                            .ok_or_else(|| "OCR engine not initialized".to_string())?;
+                        let page_img = rasterizer
+                            .render_loaded_page(&document, i, &rasterizer_config)
+                            .map_err(|e| format!("Failed rendering page {} for OCR: {e}", i + 1))?;
+                        let (image_width, image_height) =
+                            (page_img.width() as f32, page_img.height() as f32);
+                        let ocr_output = ocr_engine.recognize(&page_img).map_err(|e| {
+                            format!("OCR recognition failed on page {}: {e}", i + 1)
+                        })?;
+
+                        total_ocr_confidence_sum += ocr_output.avg_confidence;
+                        ocr_pass_count += 1;
+
+                        let ocr_blocks = crate::ingest::coords::normalize_blocks_to_pdf_points(
+                            ocr_output
+                                .blocks
+                                .into_iter()
+                                .map(|b| {
+                                    ingest::layout::RawLayoutBlock::new(b.text, b.bbox)
+                                        .with_confidence(b.confidence)
+                                })
+                                .collect(),
+                            image_width,
+                            image_height,
+                            p.width_pts,
+                            p.height_pts,
+                        );
+
+                        let raw_blocks = crate::ingest::job::merge_hybrid_raw_blocks(
+                            digital_blocks,
+                            ocr_blocks,
+                            crate::ingest::HybridMergeStrategy::OcrPreferred,
+                        );
+                        (raw_blocks, p.width_pts, p.height_pts)
+                    } else {
+                        (digital_blocks, p.width_pts, p.height_pts)
+                    }
+                }
+            };
+
+            let layout_blocks = ingest::layout::analyze_layout(raw_blocks, page_width, page_height);
+            let page_ingest_blocks = crate::ingest::assemble_markdown_blocks(&layout_blocks, i);
+
+            let mut page_markdown = crate::ingest::join_ingest_blocks(&page_ingest_blocks);
+            if p.page_type != ocr::PdfPageType::Digital && !ocr_models_available {
+                page_markdown.push_str("\n\n* [Warning: OCR models not installed. Scanned text could not be extracted from this page.] *\n");
+            }
+
+            let page_token_est = crate::llm::assembler::count_tokens(&page_markdown);
+            page_token_estimates.push(page_token_est);
+            page_markdowns.push(page_markdown);
+        }
+
+        let assembled_markdown = page_markdowns.join("\n\n--- PAGE_BREAK ---\n\n");
+        let prompt_injection_flagged = ingest::security::scan_prompt_injection(&assembled_markdown);
+
+        let ocr_confidence = if ocr_pass_count > 0 {
+            Some((total_ocr_confidence_sum / (ocr_pass_count as f32)).clamp(0.0, 1.0))
+        } else {
+            None
+        };
+
+        Ok(ChatPdfExtraction {
+            source_name,
+            page_count: total_pages,
+            text: assembled_markdown,
+            ocr_confidence,
+            needs_ocr_models,
+            prompt_injection_flagged,
+            page_token_estimates,
+        })
+    })())
 }
 
 #[tauri::command]
@@ -5013,6 +5394,93 @@ mod tests {
         let result = super::validate_import_start_input(&conn, &input);
         assert!(result.is_err());
         let _ = std::fs::remove_file(txt_path);
+    }
+
+    #[test]
+    fn validate_import_start_input_accepts_subvault_id() {
+        let pdf_path = std::env::temp_dir().join("amber_import_subvault_validate.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4")
+            .unwrap_or_else(|err| panic!("failed to write temp pdf: {err}"));
+
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite connection: {err}"));
+        conn.execute_batch(
+            "CREATE TABLE vaults (id TEXT PRIMARY KEY, deleted_at TEXT);
+             CREATE TABLE sub_vaults (id TEXT PRIMARY KEY, vault_id TEXT, deleted_at TEXT);
+             INSERT INTO vaults (id, deleted_at) VALUES ('vault_parent', NULL);
+             INSERT INTO sub_vaults (id, vault_id, deleted_at) VALUES ('sub_year3', 'vault_parent', NULL);",
+        )
+        .unwrap_or_else(|err| panic!("failed to seed vault tables: {err}"));
+
+        let input = super::ImportStartJobInput {
+            file_path: pdf_path.to_string_lossy().to_string(),
+            target_vault_id: Some("sub_year3".to_string()),
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        };
+
+        let result = super::validate_import_start_input(&conn, &input);
+        assert!(
+            result.is_ok(),
+            "expected subvault id to be accepted: {result:?}"
+        );
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn validate_import_start_input_rejects_missing_vault() {
+        let pdf_path = std::env::temp_dir().join("amber_import_missing_vault.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4")
+            .unwrap_or_else(|err| panic!("failed to write temp pdf: {err}"));
+
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite connection: {err}"));
+        conn.execute_batch(
+            "CREATE TABLE vaults (id TEXT PRIMARY KEY, deleted_at TEXT);
+             CREATE TABLE sub_vaults (id TEXT PRIMARY KEY, vault_id TEXT, deleted_at TEXT);",
+        )
+        .unwrap_or_else(|err| panic!("failed to seed vault tables: {err}"));
+
+        let input = super::ImportStartJobInput {
+            file_path: pdf_path.to_string_lossy().to_string(),
+            target_vault_id: Some("vault_does_not_exist".to_string()),
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        };
+
+        let result = super::validate_import_start_input(&conn, &input);
+        assert!(result.is_err());
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn resolve_vault_effective_privacy_missing_vault_is_open() {
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite connection: {err}"));
+        conn.execute_batch(
+            "CREATE TABLE vaults (
+                id TEXT PRIMARY KEY,
+                privacy_tier TEXT NOT NULL DEFAULT 'open',
+                deleted_at TEXT
+             );
+             CREATE TABLE sub_vaults (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT,
+                privacy_tier TEXT,
+                deleted_at TEXT
+             );",
+        )
+        .unwrap_or_else(|err| panic!("failed to create privacy tables: {err}"));
+
+        let tier = super::resolve_vault_effective_privacy(&conn, "vault_root_graph")
+            .unwrap_or_else(|err| panic!("expected missing vault to resolve without error: {err}"));
+        assert_eq!(tier, "open");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import type { EmbeddingStatus } from "../types/generated";
 import styles from "../style/components/EmbeddingSettings.module.css";
+import { AlertIcon } from "./icons";
 
 type EmbeddingSettingsProps = {
   status: EmbeddingStatus | null;
@@ -92,6 +93,7 @@ export default function EmbeddingSettings({
   }
 
   const coverageClamped = Math.min(100, Math.max(0, embeddingStatus.coveragePercent));
+  const coverageFormatted = coverageClamped.toFixed(2);
   const modelChanged = embeddingStatus.model !== model;
 
   return (
@@ -106,7 +108,7 @@ export default function EmbeddingSettings({
           aria-label="Embedding fallback warning"
         >
           <span className={styles["embedding-jaccard-warning-icon"]} aria-hidden="true">
-            ⚠
+            <AlertIcon size={16} />
           </span>
           <span>
             Using text overlap for dedup — embedding model not available. Download a model for
@@ -133,7 +135,7 @@ export default function EmbeddingSettings({
           <span id={coverageLabelId} className={styles["embedding-settings-label"]}>
             Coverage
           </span>
-          <span className={styles["embedding-coverage-pct"]}>{coverageClamped}%</span>
+          <span className={styles["embedding-coverage-pct"]}>{coverageFormatted}%</span>
         </div>
         <div
           className={styles["embedding-progress-track"]}

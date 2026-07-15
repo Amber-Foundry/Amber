@@ -11,26 +11,13 @@ import {
   getVaultDisplayLabel,
   getVaultEffectivePrivacy,
 } from "../utils/privacy";
+import { isImportChunkNode } from "../utils/importDocument";
 import { PrivacyBadge } from "./PrivacyBadge";
+import { VaultIcon } from "./VaultIcon";
+import { VAULT_ICON_KEYS } from "./VaultIconUtils";
+import ImportProvenanceBadges from "./ImportProvenanceBadges";
 
-const VAULT_ICON_CHOICES = [
-  "💳",
-  "🪙",
-  "💪",
-  "📚",
-  "👤",
-  "💼",
-  "🏠",
-  "📱",
-  "💻",
-  "📝",
-  "🧠",
-  "💰",
-  "🔑",
-  "🎨",
-  "🚀",
-  "📂",
-];
+const VAULT_ICON_CHOICES = VAULT_ICON_KEYS;
 
 type NodeListProps = {
   selectedVaultId: string | null;
@@ -165,6 +152,9 @@ function NodeList({
   const nodesByContainer = useMemo(() => {
     const map = new Map<string, Node[]>();
     for (const node of nodes) {
+      if (isImportChunkNode(node)) {
+        continue;
+      }
       const containerId = node.subVaultId ?? node.vaultId;
       const list = map.get(containerId) ?? [];
       list.push(node);
@@ -190,9 +180,11 @@ function NodeList({
     return nodesByContainer.get(selectedVault.id) ?? [];
   }, [nodesByContainer, selectedVault]);
 
-  const backButtonLabel = selectedVault?.parentVaultId
-    ? `← Back to ${getVaultDisplayLabel(selectedVault.parentVaultId, vaultById, isRedactedUnlocked)}`
-    : "← Back to Vaults";
+  const parentVaultId = selectedVault?.parentVaultId;
+  const backButtonHasParent = Boolean(parentVaultId);
+  const backButtonLabel = backButtonHasParent
+    ? `Back to ${getVaultDisplayLabel(parentVaultId as string, vaultById, isRedactedUnlocked)}`
+    : "Back to Vaults";
 
   const normalizedQuery = resolvedQuery.trim().toLowerCase();
 
@@ -352,8 +344,39 @@ function NodeList({
           </span>
           <span className="vault-card-meta">
             <PrivacyBadge tier={effectiveTier} />
-            {isLocked && <span className="privacy-lock-icon">🔒</span>}
-            <span className="vault-card-chevron">›</span>
+            {isLocked && (
+              <span className="privacy-lock-icon">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect width="18" height="11" x="3" y="11" rx="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+              </span>
+            )}
+            <span className="vault-card-chevron">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </span>
           </span>
         </button>
 
@@ -385,6 +408,7 @@ function NodeList({
                     </strong>
                     <PrivacyBadge tier={effectiveTier} />
                   </span>
+                  {!isNodeRedactedLocked && <ImportProvenanceBadges node={node} allNodes={nodes} />}
                   <p>{getPrivacyDisplaySummary(summaryText, effectiveTier, isRedactedUnlocked)}</p>
                 </button>
               );
@@ -408,6 +432,20 @@ function NodeList({
           onBack();
         }}
       >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M19 12H5" />
+          <path d="m12 19-7-7 7-7" />
+        </svg>
         {backButtonLabel}
       </button>
       <input
@@ -459,6 +497,9 @@ function NodeList({
                       </strong>
                       <PrivacyBadge tier={effectiveTier} />
                     </span>
+                    {!isNodeRedactedLocked && (
+                      <ImportProvenanceBadges node={node} allNodes={nodes} />
+                    )}
                     <p>
                       {getPrivacyDisplaySummary(summaryText, effectiveTier, isRedactedUnlocked)}
                     </p>
@@ -521,17 +562,18 @@ function NodeList({
                 </label>
 
                 <div className="settings-field">
-                  <span>Emoji / Icon</span>
+                  <span>Icon</span>
                   <div className="emoji-picker-container">
                     <div className="emoji-picker-grid">
-                      {VAULT_ICON_CHOICES.map((emoji) => (
+                      {VAULT_ICON_CHOICES.map((key) => (
                         <button
-                          key={emoji}
+                          key={key}
                           type="button"
-                          className={`emoji-choice-btn ${createModalIcon === emoji ? "selected" : ""}`}
-                          onClick={() => setCreateModalIcon(emoji)}
+                          className={`emoji-choice-btn ${createModalIcon === key ? "selected" : ""}`}
+                          onClick={() => setCreateModalIcon(key)}
+                          aria-label={`Select ${key} icon`}
                         >
-                          {emoji}
+                          <VaultIcon icon={key} name="" size={18} />
                         </button>
                       ))}
                     </div>
@@ -539,8 +581,8 @@ function NodeList({
                       type="text"
                       value={createModalIcon}
                       onChange={(e) => setCreateModalIcon(e.target.value)}
-                      placeholder="Or type a custom emoji/text"
-                      maxLength={10}
+                      placeholder="Or type a custom icon key"
+                      maxLength={24}
                       className="settings-input custom-emoji-input"
                     />
                   </div>
