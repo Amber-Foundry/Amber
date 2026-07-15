@@ -550,13 +550,20 @@ function ChatPanel({
       setContextTooSmall(false);
       const manualLimit = getChatContextLimit();
       setResolvedDocBudget(manualLimit);
-      setResolvedVaultBudget(8000);
 
       const systemReserve = 500;
       const outputReserve = 1500;
+      const vaultBudget = boundedBudget(
+        totalContext - systemReserve - outputReserve,
+        totalContext - systemReserve - outputReserve - manualLimit,
+        1000,
+        totalContext
+      );
+      setResolvedVaultBudget(vaultBudget);
+
       const remainingForHistory = Math.max(
         0,
-        totalContext - systemReserve - outputReserve - manualLimit - 8000
+        totalContext - systemReserve - outputReserve - manualLimit - vaultBudget
       );
       setResolvedHistoryBudget(
         boundedBudget(remainingForHistory, remainingForHistory, 1000, totalContext)
