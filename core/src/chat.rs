@@ -266,19 +266,15 @@ pub fn get_recent_chat_history(
             "Failed querying chat history".to_string()
         })?;
 
-    let mut all_messages = Vec::new();
-    for row in rows {
-        all_messages.push(row.map_err(|err| {
-            eprintln!("Database error decoding chat history row: {err}");
-            "Failed decoding chat history row".to_string()
-        })?);
-    }
-
     let mut selected_messages = Vec::new();
     let mut accumulated_tokens = 0;
 
-    for msg in all_messages {
-        let msg_tokens = msg.content.len() / 4;
+    for row in rows {
+        let msg = row.map_err(|err| {
+            eprintln!("Database error decoding chat history row: {err}");
+            "Failed decoding chat history row".to_string()
+        })?;
+        let msg_tokens = msg.content.chars().count() / 4;
         if accumulated_tokens + msg_tokens > max_tokens {
             break;
         }
@@ -714,6 +710,24 @@ mod tests {
         // If max_tokens is 1, we can hold nothing (m3 requires 2 tokens)
         let history = get_recent_chat_history(&conn, sess_id, 1)?;
         assert_eq!(history.len(), 0);
+
+        // Multi-byte UTF-8 character estimation check (e.g. Chinese characters where each is 3 bytes)
+        // 8 characters = 24 bytes.
+        // Under byte-count estimation: 24 / 4 = 6 tokens (would exceed max_tokens 2).
+        // Under character-count estimation: 8 / 4 = 2 tokens (fits max_tokens 2).
+        let sess_utf8 = "test_session_utf8";
+        create_session(&conn, sess_utf8.to_string(), Some("Test UTF8".to_string()))?;
+        append_message(
+            &conn,
+            "utf8_msg".to_string(),
+            "user".to_string(),
+            "测试测试测试测试".to_string(), // 8 Chinese characters, 24 bytes
+            sess_utf8,
+        )?;
+
+        let history_utf8 = get_recent_chat_history(&conn, sess_utf8, 2)?;
+        assert_eq!(history_utf8.len(), 1);
+        assert_eq!(history_utf8[0].id, "utf8_msg");
 
         Ok(())
     }
