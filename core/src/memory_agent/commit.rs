@@ -246,7 +246,7 @@ fn create_import_document_spine(
                     COALESCE(avg_ocr_confidence, 0.0), COALESCE(tables_detected_unpreserved, 0),
                     extraction_path
              FROM import_jobs
-             WHERE changeset_id = ?1 AND status = 'staged'
+             WHERE changeset_id = ?1
              LIMIT 1;",
             [changeset_id],
             |row| {
