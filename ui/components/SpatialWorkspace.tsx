@@ -20,7 +20,8 @@ import {
 } from "../utils/privacy";
 import { isImportChunkNode } from "../utils/importDocument";
 import ImportProvenanceBadges from "./ImportProvenanceBadges";
-import { VaultIcon, VAULT_ICON_KEYS } from "./VaultIcon";
+import { VaultIcon } from "./VaultIcon";
+import { VAULT_ICON_KEYS } from "./VaultIconUtils";
 import type { Vault, Node, Door } from "../types/generated";
 import "../style/components/SpatialWorkspace.css";
 

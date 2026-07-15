@@ -610,7 +610,7 @@ function ChatPanel({
       setResolvedVaultBudget(8000);
       setResolvedHistoryBudget(4000);
     }
-  }, [messages, sessionId, selectedNodeIds, currentProvider, currentModel]);
+  }, [sessionId, selectedNodeIds, currentProvider, currentModel]);
 
   useEffect(() => {
     const timer = setTimeout(() => {

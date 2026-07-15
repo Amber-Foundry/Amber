@@ -13,7 +13,8 @@ import {
   getVaultEffectivePrivacy as getRecursiveVaultEffectivePrivacy,
 } from "../utils/privacy";
 import { getImportDocumentId, isImportChunkNode } from "../utils/importDocument";
-import { VaultIcon, VAULT_ICON_KEYS, resolveVaultIconKey } from "./VaultIcon";
+import { VaultIcon } from "./VaultIcon";
+import { VAULT_ICON_KEYS, resolveVaultIconKey } from "./VaultIconUtils";
 
 const VAULT_ICON_CHOICES = VAULT_ICON_KEYS;
 

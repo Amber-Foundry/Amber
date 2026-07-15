@@ -13,7 +13,8 @@ import {
 } from "../utils/privacy";
 import { isImportChunkNode } from "../utils/importDocument";
 import { PrivacyBadge } from "./PrivacyBadge";
-import { VaultIcon, VAULT_ICON_KEYS } from "./VaultIcon";
+import { VaultIcon } from "./VaultIcon";
+import { VAULT_ICON_KEYS } from "./VaultIconUtils";
 import ImportProvenanceBadges from "./ImportProvenanceBadges";
 
 const VAULT_ICON_CHOICES = VAULT_ICON_KEYS;

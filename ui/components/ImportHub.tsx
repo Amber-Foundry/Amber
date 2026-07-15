@@ -287,6 +287,24 @@ export default function ImportHub({
     }
   }, [beginImport, importBusy, isReady]);
 
+  const dragDropStateRef = useRef({
+    selectedFramework,
+    selectedVault,
+    importBusy,
+    starting,
+    beginImport,
+  });
+
+  useEffect(() => {
+    dragDropStateRef.current = {
+      selectedFramework,
+      selectedVault,
+      importBusy,
+      starting,
+      beginImport,
+    };
+  }, [selectedFramework, selectedVault, importBusy, starting, beginImport]);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
@@ -294,8 +312,14 @@ export default function ImportHub({
     void getCurrentWindow()
       .onDragDropEvent((event) => {
         if (event.payload.type !== "drop") return;
-        if (!selectedFramework || !selectedVault || importBusy || starting) {
-          if (importBusy) setStartError(BUSY_IMPORT_MESSAGE);
+        const state = dragDropStateRef.current;
+        if (
+          !state.selectedFramework ||
+          !state.selectedVault ||
+          state.importBusy ||
+          state.starting
+        ) {
+          if (state.importBusy) setStartError(BUSY_IMPORT_MESSAGE);
           return;
         }
         const pdfPath = event.payload.paths.find(isPdfPath);
@@ -303,7 +327,7 @@ export default function ImportHub({
           setStartError("Only PDF files are supported for import.");
           return;
         }
-        void beginImport(pdfPath);
+        void state.beginImport(pdfPath);
       })
       .then((fn) => {
         if (cancelled) {
@@ -320,7 +344,7 @@ export default function ImportHub({
       cancelled = true;
       unlisten?.();
     };
-  }, [beginImport, importBusy, selectedFramework, selectedVault, starting]);
+  }, []);
 
   return (
     <div className="pane pane-left">
