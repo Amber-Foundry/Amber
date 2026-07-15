@@ -474,12 +474,18 @@ pub fn purge_empty_sessions(db: &Connection) -> Result<(), String> {
     db.execute(
         "DELETE FROM sessions
          WHERE id != 'temporary-session'
-           AND id NOT IN (SELECT DISTINCT session_id FROM session_messages)
-           AND id NOT IN (
-               SELECT id FROM sessions
-               WHERE id NOT IN (SELECT DISTINCT session_id FROM session_messages)
-                 AND id != 'temporary-session'
-               ORDER BY started_at DESC, rowid DESC
+           AND NOT EXISTS (
+               SELECT 1 FROM session_messages sm
+               WHERE sm.session_id = sessions.id
+           )
+           AND id != (
+               SELECT id FROM sessions s2
+               WHERE s2.id != 'temporary-session'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM session_messages sm2
+                     WHERE sm2.session_id = s2.id
+                 )
+               ORDER BY s2.started_at DESC, s2.rowid DESC
                LIMIT 1
            );",
         [],
