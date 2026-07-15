@@ -18,6 +18,10 @@ import {
   getVaultEffectivePrivacy,
   shouldOmitSpatialConnector,
 } from "../utils/privacy";
+import { isImportChunkNode } from "../utils/importDocument";
+import ImportProvenanceBadges from "./ImportProvenanceBadges";
+import { VaultIcon } from "./VaultIcon";
+import { VAULT_ICON_KEYS } from "./VaultIconUtils";
 import type { Vault, Node, Door } from "../types/generated";
 import "../style/components/SpatialWorkspace.css";
 
@@ -53,24 +57,7 @@ const CURATED_PALETTE = [
   { id: "rose", name: "Rose Crypt", hsl: "hsl(354, 70%, 45%)" },
 ];
 
-const VAULT_ICON_CHOICES = [
-  "💳",
-  "🪙",
-  "💪",
-  "📚",
-  "👤",
-  "💼",
-  "🏠",
-  "📱",
-  "💻",
-  "📝",
-  "🧠",
-  "💰",
-  "🔑",
-  "🎨",
-  "🚀",
-  "📂",
-];
+const VAULT_ICON_CHOICES = VAULT_ICON_KEYS;
 
 function getVaultTheme(name: string) {
   const lowercaseName = name.toLowerCase();
@@ -82,7 +69,7 @@ function getVaultTheme(name: string) {
   ) {
     return {
       class: "theme-credentials",
-      emoji: "🔐",
+      emoji: "key",
       accent: "#b56a37",
     };
   }
@@ -94,7 +81,7 @@ function getVaultTheme(name: string) {
   ) {
     return {
       class: "theme-work",
-      emoji: "💼",
+      emoji: "briefcase",
       accent: "#3182ce",
     };
   }
@@ -107,7 +94,7 @@ function getVaultTheme(name: string) {
   ) {
     return {
       class: "theme-education",
-      emoji: "🎓",
+      emoji: "book",
       accent: "#805ad5",
     };
   }
@@ -120,7 +107,7 @@ function getVaultTheme(name: string) {
   ) {
     return {
       class: "theme-coding",
-      emoji: "💻",
+      emoji: "laptop",
       accent: "#38a169",
     };
   }
@@ -132,7 +119,7 @@ function getVaultTheme(name: string) {
   ) {
     return {
       class: "theme-personal",
-      emoji: "👤",
+      emoji: "user",
       accent: "#b56a37",
     };
   }
@@ -144,37 +131,15 @@ function getVaultTheme(name: string) {
   ) {
     return {
       class: "theme-finance",
-      emoji: "🪙",
+      emoji: "coins",
       accent: "#b56a37",
     };
   }
   return {
     class: "theme-default",
-    emoji: "📂",
+    emoji: "folder",
     accent: "#b56a37",
   };
-}
-
-function getVaultEmoji(icon: string | null | undefined, name: string): string {
-  const iconKey = (icon || "").trim().toLowerCase();
-
-  if (iconKey) {
-    if (iconKey === "key" || iconKey === "credentials") return "💳";
-    if (iconKey === "coins" || iconKey === "finance" || iconKey === "money") return "🪙";
-    if (iconKey === "heart" || iconKey === "health" || iconKey === "fitness") return "💪";
-    if (iconKey === "book" || iconKey === "learning" || iconKey === "read") return "📚";
-    if (iconKey === "user" || iconKey === "personal") return "👤";
-    if (iconKey === "briefcase" || iconKey === "work" || iconKey === "project") return "💼";
-    if (iconKey === "home" || iconKey === "vault 1") return "🏠";
-    if (iconKey === "mobile" || iconKey === "phone" || iconKey === "cse") return "📱";
-    if (iconKey === "classes" || iconKey === "computer" || iconKey === "laptop") return "💻";
-
-    if (iconKey.length <= 2) {
-      return icon!.trim();
-    }
-  }
-
-  return getVaultTheme(name).emoji;
 }
 
 export default function SpatialWorkspace({
@@ -853,7 +818,37 @@ export default function SpatialWorkspace({
             aria-label={badge.label}
           >
             <span className="spatial-node-badge-icon" aria-hidden="true">
-              {badge.key === "pinned" ? "•" : badge.key === "context" ? "◌" : "↗"}
+              {badge.key === "pinned" ? (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="12" cy="12" r="5" />
+                </svg>
+              ) : badge.key === "context" ? (
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <circle cx="12" cy="12" r="8" />
+                </svg>
+              ) : (
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M7 17 17 7M9 7h8v8" />
+                </svg>
+              )}
             </span>
           </span>
         ))}
@@ -899,7 +894,37 @@ export default function SpatialWorkspace({
             aria-label={badge.label}
           >
             <span className="spatial-node-badge-icon" aria-hidden="true">
-              {badge.key === "pinned" ? "•" : badge.key === "context" ? "◌" : "↗"}
+              {badge.key === "pinned" ? (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="12" cy="12" r="5" />
+                </svg>
+              ) : badge.key === "context" ? (
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <circle cx="12" cy="12" r="8" />
+                </svg>
+              ) : (
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M7 17 17 7M9 7h8v8" />
+                </svg>
+              )}
             </span>
           </span>
         ))}
@@ -964,7 +989,10 @@ export default function SpatialWorkspace({
   // Compute nodes list for a specific vault and optional subvault
   const getNodesFor = (vaultId: string, subvaultId: string | null) => {
     return nodes.filter(
-      (n) => n.vaultId === vaultId && (subvaultId ? n.subVaultId === subvaultId : !n.subVaultId)
+      (n) =>
+        !isImportChunkNode(n) &&
+        n.vaultId === vaultId &&
+        (subvaultId ? n.subVaultId === subvaultId : !n.subVaultId)
     );
   };
 
@@ -1002,7 +1030,9 @@ export default function SpatialWorkspace({
       const containerGap = 10;
       const subvaultHeaderHeight = 28;
 
-      const vaultNodes = nodes.filter((n) => n.vaultId === vaultId && !n.subVaultId);
+      const vaultNodes = nodes.filter(
+        (n) => n.vaultId === vaultId && !n.subVaultId && !isImportChunkNode(n)
+      );
       const subVaultsList = vaults.filter((sv) => sv.parentVaultId === vaultId);
 
       if (!nodeId) {
@@ -1027,7 +1057,7 @@ export default function SpatialWorkspace({
       let currentOffset = paddingTop + headerHeight + vaultNodes.length * rowHeight;
       for (const sv of subVaultsList) {
         currentOffset += containerGap; // Margin inside subvault card
-        const svNodes = nodes.filter((n) => n.subVaultId === sv.id);
+        const svNodes = nodes.filter((n) => n.subVaultId === sv.id && !isImportChunkNode(n));
 
         if (sv.id === subvaultId) {
           const svNodeIndex = svNodes.findIndex((n) => n.id === nodeId);
@@ -1056,6 +1086,8 @@ export default function SpatialWorkspace({
       // Source node
       const srcNode = nodes.find((n) => n.id === door.sourceNodeId);
       if (!srcNode) return;
+      // Hide import-spine edges (section/next involving chunk nodes) — they clutter vault cards
+      if (isImportChunkNode(srcNode)) return;
 
       const srcContainerId = srcNode.subVaultId ?? srcNode.vaultId;
       const srcContainerTier =
@@ -1077,6 +1109,7 @@ export default function SpatialWorkspace({
       if (door.targetNodeId) {
         const tgtNode = nodes.find((n) => n.id === door.targetNodeId);
         if (tgtNode) {
+          if (isImportChunkNode(tgtNode)) return;
           tgtCardPos = cardPositions[tgtNode.vaultId];
           const tgtContainerId = tgtNode.subVaultId ?? tgtNode.vaultId;
           const tgtContainerTier =
@@ -1173,7 +1206,7 @@ export default function SpatialWorkspace({
         normalizedLabel && normalizedLabel.toLowerCase() !== "wikilink" ? normalizedLabel : "";
 
       // Calculate dynamic label and badge metrics
-      const labelText = isLocked ? "🔒 Locked" : sanitizeSvgText(visibleLabel);
+      const labelText = isLocked ? "Locked" : sanitizeSvgText(visibleLabel);
       const badgeWidth = Math.max(80, labelText.length * 6.5 + 16);
       const badgeX = -badgeWidth / 2;
 
@@ -1240,7 +1273,37 @@ export default function SpatialWorkspace({
               aria-pressed={isLeftPanePinned}
               disabled={selectedVaultRequiresUnlock}
             >
-              {isLeftPanePinned ? "📌" : "📍"}
+              {isLeftPanePinned ? (
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 17v5" />
+                  <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+                </svg>
+              ) : (
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0" />
+                  <circle cx="12" cy="10" r="3" />
+                </svg>
+              )}
             </button>
           )}
         </div>
@@ -1316,7 +1379,7 @@ export default function SpatialWorkspace({
                     className={`spatial-badge-text ${path.isLocked ? "spatial-badge-text-locked" : ""}`}
                     y={1}
                   >
-                    {path.isLocked ? "🔒 Locked" : sanitizeSvgText(path.label)}
+                    {path.isLocked ? "Locked" : sanitizeSvgText(path.label)}
                   </text>
                 </g>
               )}
@@ -1327,9 +1390,13 @@ export default function SpatialWorkspace({
                   transform={`translate(${path.middlePoint.x}, ${path.middlePoint.y})`}
                 >
                   <circle cx={0} cy={0} r={10} fill="white" stroke="#a3a09a" strokeWidth={1} />
-                  <text y={2.5} style={{ fontSize: "9px", textAnchor: "middle" }}>
-                    🔒
-                  </text>
+                  <path
+                    d="M-3 -1 v-2 a3 3 0 0 1 6 0 v2"
+                    fill="none"
+                    stroke="#a3a09a"
+                    strokeWidth={1.2}
+                  />
+                  <rect x={-3.5} y={-1} width={7} height={5} rx={1} fill="#a3a09a" />
                 </g>
               )}
             </g>
@@ -1406,7 +1473,11 @@ export default function SpatialWorkspace({
               <div className="spatial-card-header">
                 <div className="spatial-card-title-area" onClick={() => onFocusVault?.(vault.id)}>
                   <span className="spatial-card-emoji">
-                    {isVaultRedactedLocked ? "⬛" : getVaultEmoji(vault.icon, vault.name)}
+                    {isVaultRedactedLocked ? (
+                      <VaultIcon icon="folder" name={vault.name} />
+                    ) : (
+                      <VaultIcon icon={vault.icon} name={vault.name} />
+                    )}
                   </span>
                   {editingItemId === vault.id ? (
                     <input
@@ -1450,7 +1521,20 @@ export default function SpatialWorkspace({
                         setEditValue(vault.name);
                       }}
                     >
-                      ✏️
+                      <svg
+                        width="15"
+                        height="15"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 20h9" />
+                        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z" />
+                      </svg>
                     </button>
                   )}
 
@@ -1459,7 +1543,24 @@ export default function SpatialWorkspace({
                     onClick={(e) => handleArmDelete(e, vault.id)}
                     title="Click twice to delete vault card"
                   >
-                    {deleteArmedId === vault.id ? "Confirm?" : "🗑️"}
+                    {deleteArmedId === vault.id ? (
+                      "Confirm?"
+                    ) : (
+                      <svg
+                        width="15"
+                        height="15"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M3 6h18" />
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                      </svg>
+                    )}
                   </button>
                 </div>
               </div>
@@ -1530,37 +1631,53 @@ export default function SpatialWorkspace({
                     >
                       <div className="spatial-node-title-area">
                         <span className="spatial-node-dot" />
-                        {editingItemId === node.id ? (
-                          <input
-                            className="spatial-node-title-input"
-                            autoFocus
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={() => handleRenameSave(node.id, "node")}
-                            onKeyDown={(e) => handleRenameKeyDown(e, node.id, "node")}
-                          />
-                        ) : (
-                          <span
-                            className={`spatial-node-title ${isRedacted ? "spatial-redacted-label" : ""}`}
-                            onDoubleClick={() => {
-                              if (!isNodeEditable) return;
-                              setEditingItemId(node.id);
-                              setEditingItemType("node");
-                              setEditValue(node.title);
-                            }}
-                          >
-                            {getPrivacyDisplayLabel(
-                              node.title,
-                              nodeEffectiveTier,
-                              isRedactedUnlocked
-                            )}
-                          </span>
-                        )}
+                        <div className="spatial-node-title-stack">
+                          {editingItemId === node.id ? (
+                            <input
+                              className="spatial-node-title-input"
+                              autoFocus
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onBlur={() => handleRenameSave(node.id, "node")}
+                              onKeyDown={(e) => handleRenameKeyDown(e, node.id, "node")}
+                            />
+                          ) : (
+                            <span
+                              className={`spatial-node-title ${isRedacted ? "spatial-redacted-label" : ""}`}
+                              onDoubleClick={() => {
+                                if (!isNodeEditable) return;
+                                setEditingItemId(node.id);
+                                setEditingItemType("node");
+                                setEditValue(node.title);
+                              }}
+                            >
+                              {getPrivacyDisplayLabel(
+                                node.title,
+                                nodeEffectiveTier,
+                                isRedactedUnlocked
+                              )}
+                            </span>
+                          )}
+                          {!isRedacted && <ImportProvenanceBadges node={node} allNodes={nodes} />}
+                        </div>
                       </div>
 
                       <div className="spatial-node-right-area">
                         {isNodeLocked && (
-                          <span style={{ fontSize: "0.75rem", marginRight: "4px" }}>🔒</span>
+                          <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                          >
+                            <rect width="18" height="11" x="3" y="11" rx="2" />
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                          </svg>
                         )}
                       </div>
 
@@ -1575,7 +1692,20 @@ export default function SpatialWorkspace({
                               setEditValue(node.title);
                             }}
                           >
-                            ✏️
+                            <svg
+                              width="15"
+                              height="15"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path d="M12 20h9" />
+                              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z" />
+                            </svg>
                           </button>
                         )}
                         {isNodeEditable && (
@@ -1586,7 +1716,24 @@ export default function SpatialWorkspace({
                               handleArmDelete(e, node.id);
                             }}
                           >
-                            {deleteArmedId === node.id ? "Ok?" : "🗑️"}
+                            {deleteArmedId === node.id ? (
+                              "Ok?"
+                            ) : (
+                              <svg
+                                width="15"
+                                height="15"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M3 6h18" />
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                              </svg>
+                            )}
                           </button>
                         )}
                       </div>
@@ -1632,21 +1779,49 @@ export default function SpatialWorkspace({
                             onKeyDown={(e) => handleRenameKeyDown(e, subvault.id, "subvault")}
                           />
                         ) : (
-                          <span>
-                            {subvaultRedactedLocked
-                              ? "⬛ [REDACTED]"
-                              : `${getVaultEmoji(subvault.icon, subvault.name)} ${getPrivacyDisplayLabel(
+                          <span className="spatial-subvault-label">
+                            {subvaultRedactedLocked ? (
+                              <>
+                                <VaultIcon icon="folder" name={subvault.name} /> [REDACTED]
+                              </>
+                            ) : (
+                              <>
+                                <VaultIcon icon={subvault.icon} name={subvault.name} />{" "}
+                                {getPrivacyDisplayLabel(
                                   subvault.name,
                                   subvaultEffectiveTier,
                                   isRedactedUnlocked
-                                )}`}
+                                )}
+                              </>
+                            )}
                           </span>
                         )}
                       </div>
 
                       <div className="spatial-card-actions">
-                        {subvaultRedactedLocked && <span>⬛</span>}
-                        {subvaultContentLocked && <span>🔒</span>}
+                        {subvaultRedactedLocked && (
+                          <span className="spatial-status-icon" title="Redacted">
+                            <VaultIcon icon="folder" name={subvault.name} size={14} />
+                          </span>
+                        )}
+                        {subvaultContentLocked && (
+                          <span className="spatial-status-icon" title="Locked">
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              aria-hidden="true"
+                            >
+                              <rect width="18" height="11" x="3" y="11" rx="2" />
+                              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                            </svg>
+                          </span>
+                        )}
                         {subvaultEditable && (
                           <button
                             className="spatial-card-action-btn"
@@ -1657,7 +1832,20 @@ export default function SpatialWorkspace({
                               setEditValue(subvault.name);
                             }}
                           >
-                            ✏️
+                            <svg
+                              width="15"
+                              height="15"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path d="M12 20h9" />
+                              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z" />
+                            </svg>
                           </button>
                         )}
                         {subvaultEditable && (
@@ -1668,7 +1856,24 @@ export default function SpatialWorkspace({
                               handleArmDelete(e, subvault.id);
                             }}
                           >
-                            {deleteArmedId === subvault.id ? "Ok?" : "🗑️"}
+                            {deleteArmedId === subvault.id ? (
+                              "Ok?"
+                            ) : (
+                              <svg
+                                width="15"
+                                height="15"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M3 6h18" />
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                              </svg>
+                            )}
                           </button>
                         )}
                       </div>
@@ -1738,7 +1943,20 @@ export default function SpatialWorkspace({
 
                             <div className="spatial-node-right-area">
                               {isNodeLocked && (
-                                <span style={{ fontSize: "0.75rem", marginRight: "4px" }}>🔒</span>
+                                <svg
+                                  width="14"
+                                  height="14"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  aria-hidden="true"
+                                >
+                                  <rect width="18" height="11" x="3" y="11" rx="2" />
+                                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                </svg>
                               )}
                             </div>
 
@@ -1753,7 +1971,20 @@ export default function SpatialWorkspace({
                                     setEditValue(node.title);
                                   }}
                                 >
-                                  ✏️
+                                  <svg
+                                    width="15"
+                                    height="15"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    aria-hidden="true"
+                                  >
+                                    <path d="M12 20h9" />
+                                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z" />
+                                  </svg>
                                 </button>
                               )}
                               {isNodeEditable && (
@@ -1764,7 +1995,24 @@ export default function SpatialWorkspace({
                                     handleArmDelete(e, node.id);
                                   }}
                                 >
-                                  {deleteArmedId === node.id ? "Ok?" : "🗑️"}
+                                  {deleteArmedId === node.id ? (
+                                    "Ok?"
+                                  ) : (
+                                    <svg
+                                      width="15"
+                                      height="15"
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="2"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      aria-hidden="true"
+                                    >
+                                      <path d="M3 6h18" />
+                                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                    </svg>
+                                  )}
                                 </button>
                               )}
                             </div>
@@ -1913,11 +2161,61 @@ export default function SpatialWorkspace({
                     void handleOpenVaultRequest(vault);
                   }}
                 >
-                  {isVaultRedactedLocked
-                    ? "unlock vault →"
-                    : selectedVaultId === vault.id && isLeftPanePinned
-                      ? "close vault ←"
-                      : "open vault →"}
+                  {isVaultRedactedLocked ? (
+                    <span className="spatial-card-open-vault-label">
+                      unlock vault{" "}
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M5 12h14" />
+                        <path d="m12 5 7 7-7 7" />
+                      </svg>
+                    </span>
+                  ) : selectedVaultId === vault.id && isLeftPanePinned ? (
+                    <span className="spatial-card-open-vault-label">
+                      close vault{" "}
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M19 12H5" />
+                        <path d="m12 19-7-7 7-7" />
+                      </svg>
+                    </span>
+                  ) : (
+                    <span className="spatial-card-open-vault-label">
+                      open vault{" "}
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M5 12h14" />
+                        <path d="m12 5 7 7-7 7" />
+                      </svg>
+                    </span>
+                  )}
                 </button>
               </div>
             </div>
@@ -1965,17 +2263,18 @@ export default function SpatialWorkspace({
                 </label>
 
                 <div className="settings-field">
-                  <span>Emoji / Icon</span>
+                  <span>Icon</span>
                   <div className="emoji-picker-container">
                     <div className="emoji-picker-grid">
-                      {VAULT_ICON_CHOICES.map((emoji) => (
+                      {VAULT_ICON_CHOICES.map((key) => (
                         <button
-                          key={emoji}
+                          key={key}
                           type="button"
-                          className={`emoji-choice-btn ${vaultCreateIcon === emoji ? "selected" : ""}`}
-                          onClick={() => setVaultCreateIcon(emoji)}
+                          className={`emoji-choice-btn ${vaultCreateIcon === key ? "selected" : ""}`}
+                          onClick={() => setVaultCreateIcon(key)}
+                          aria-label={`Select ${key} icon`}
                         >
-                          {emoji}
+                          <VaultIcon icon={key} name="" size={18} />
                         </button>
                       ))}
                     </div>
@@ -1983,8 +2282,8 @@ export default function SpatialWorkspace({
                       type="text"
                       value={vaultCreateIcon}
                       onChange={(e) => setVaultCreateIcon(e.target.value)}
-                      placeholder="Or type a custom emoji/text"
-                      maxLength={10}
+                      placeholder="Or type a custom icon key"
+                      maxLength={24}
                       className="settings-input custom-emoji-input"
                     />
                   </div>
@@ -2035,7 +2334,22 @@ export default function SpatialWorkspace({
               className="redacted-lock-screen sidebar-auth-modal spatial-redacted-auth-modal"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="redacted-lock-icon">🔓</div>
+              <div className="redacted-lock-icon">
+                <svg
+                  width="28"
+                  height="28"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect width="18" height="11" x="3" y="11" rx="2" />
+                  <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+                </svg>
+              </div>
               <h3 className="redacted-lock-title">{redactedAuthTitle}</h3>
               <p className="redacted-lock-copy">{redactedAuthSubtitle}</p>
               <input
@@ -2079,7 +2393,22 @@ export default function SpatialWorkspace({
 
       {/* Exquisite premium bottom pill control bar matching Image 2 mockup */}
       <div className="spatial-bottom-bar-pill">
-        <span className="spatial-pill-search-icon">🔍</span>
+        <span className="spatial-pill-search-icon">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
+        </span>
         <input
           className="spatial-pill-search-input"
           placeholder="Search nodes..."
@@ -2106,10 +2435,43 @@ export default function SpatialWorkspace({
       {/* Glassmorphic Sliding Error Toast */}
       {errorMsg && (
         <div className="spatial-error-toast">
-          <span className="spatial-error-toast-icon">⚠️</span>
+          <span className="spatial-error-toast-icon">
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3z" />
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+            </svg>
+          </span>
           <span className="spatial-error-toast-text">{errorMsg}</span>
-          <button className="spatial-error-toast-close" onClick={() => setErrorMsg(null)}>
-            ✕
+          <button
+            className="spatial-error-toast-close"
+            onClick={() => setErrorMsg(null)}
+            aria-label="Dismiss"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M18 6 6 18" />
+              <path d="m6 6 12 12" />
+            </svg>
           </button>
         </div>
       )}

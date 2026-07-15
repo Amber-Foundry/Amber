@@ -1,10 +1,50 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::embed::EmbedEngine;
 use crate::memory_agent::parser::CandidateNode;
 
 fn import_session_id(job_id: &str) -> String {
     format!("import-{job_id}")
+}
+
+/// Resolve a user-selected import target into `(parent_vault_id_for_fk, write_target_id)`.
+///
+/// `import_jobs.target_vault_id` and `sessions.vault_id` FK to `vaults(id)` only, so subvault
+/// selections must store the parent for those rows while still writing nodes to the subvault.
+pub fn resolve_import_vault_ids(
+    conn: &Connection,
+    selected: Option<&str>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let Some(id) = selected.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok((None, None));
+    };
+
+    let in_vaults: bool = conn
+        .query_row(
+            "SELECT 1 FROM vaults WHERE id = ?1 AND deleted_at IS NULL LIMIT 1;",
+            [id],
+            |_| Ok(true),
+        )
+        .optional()
+        .map_err(|err| format!("Failed validating target vault: {err}"))?
+        .unwrap_or(false);
+    if in_vaults {
+        return Ok((Some(id.to_string()), Some(id.to_string())));
+    }
+
+    let parent: Option<String> = conn
+        .query_row(
+            "SELECT vault_id FROM sub_vaults WHERE id = ?1 AND deleted_at IS NULL LIMIT 1;",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| format!("Failed validating target subvault: {err}"))?;
+
+    match parent {
+        Some(parent_id) => Ok((Some(parent_id), Some(id.to_string()))),
+        None => Err(format!("Target vault not found: {id}")),
+    }
 }
 
 fn ensure_import_session(
@@ -27,6 +67,9 @@ fn ensure_import_session(
 /// Build and persist a pending changeset from import extraction candidates.
 ///
 /// Returns `Ok(None)` when `candidates` is empty (no changeset row is created).
+///
+/// `target_vault_id` may be a parent vault or a subvault id. Session / FK rows use the parent;
+/// proposed nodes write to the selected target.
 pub fn finalize_import_changeset(
     conn: &mut Connection,
     job_id: &str,
@@ -39,15 +82,19 @@ pub fn finalize_import_changeset(
         return Ok(None);
     }
 
+    let (parent_for_fk, write_target) = resolve_import_vault_ids(conn, target_vault_id)?;
+
     let tx = conn
         .transaction()
         .map_err(|err| format!("Failed to start import changeset transaction: {err}"))?;
-    let session_id = ensure_import_session(&tx, job_id, target_vault_id)?;
-    let pending = crate::memory_agent::changeset::build_changeset(
+    let session_id = ensure_import_session(&tx, job_id, parent_for_fk.as_deref())?;
+    let pending = crate::memory_agent::changeset::build_changeset_with_write_vault(
         &tx,
         candidates,
         &session_id,
+        write_target.as_deref(),
         embed_engine,
+        true, // import always ADD — never UPDATE/MERGE against existing nodes
     )?;
     let item_count = pending.items.len() as i32;
     let changeset_id =
@@ -199,7 +246,69 @@ mod tests {
     }
 
     #[test]
-    fn finalize_import_changeset_custom_vault_falls_back_to_root_graph() {
+    fn resolve_import_vault_ids_maps_subvault_to_parent() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sub_vaults (id, vault_id, deleted_at) VALUES ('sub_year3', 'vault_custom_user', NULL);",
+            [],
+        )
+        .unwrap_or_else(|err| panic!("failed to insert subvault: {err}"));
+
+        let (parent, write) = resolve_import_vault_ids(&conn, Some("sub_year3"))
+            .unwrap_or_else(|err| panic!("expected resolve to succeed: {err}"));
+        assert_eq!(parent.as_deref(), Some("vault_custom_user"));
+        assert_eq!(write.as_deref(), Some("sub_year3"));
+
+        let (parent2, write2) = resolve_import_vault_ids(&conn, Some("vault_learning"))
+            .unwrap_or_else(|err| panic!("expected resolve to succeed: {err}"));
+        assert_eq!(parent2.as_deref(), Some("vault_learning"));
+        assert_eq!(write2.as_deref(), Some("vault_learning"));
+    }
+
+    #[test]
+    fn finalize_import_changeset_subvault_writes_to_subvault_session_uses_parent() {
+        let mut conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sub_vaults (id, vault_id, deleted_at) VALUES ('sub_year3', 'vault_custom_user', NULL);",
+            [],
+        )
+        .unwrap_or_else(|err| panic!("failed to insert subvault: {err}"));
+
+        let candidates = vec![sample_candidate(None)];
+        let (changeset_id, _) = finalize_import_changeset(
+            &mut conn,
+            "job-sub",
+            Some("sub_year3"),
+            &candidates,
+            None,
+            None,
+        )
+        .unwrap_or_else(|err| panic!("expected finalize to succeed: {err}"))
+        .unwrap_or_else(|| panic!("expected changeset id"));
+
+        let session_vault: String = conn
+            .query_row(
+                "SELECT vault_id FROM sessions WHERE id = 'import-job-sub';",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|err| panic!("expected import session: {err}"));
+        assert_eq!(session_vault, "vault_custom_user");
+
+        let proposed_data: String = conn
+            .query_row(
+                "SELECT proposed_data FROM changeset_items WHERE changeset_id = ?1 LIMIT 1;",
+                [&changeset_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|err| panic!("expected changeset item: {err}"));
+        let proposed: ProposedNodeData = serde_json::from_str(&proposed_data)
+            .unwrap_or_else(|err| panic!("expected proposed JSON: {err}"));
+        assert_eq!(proposed.vault_id.as_deref(), Some("sub_year3"));
+    }
+
+    #[test]
+    fn finalize_import_changeset_custom_vault_uses_session_target() {
         let mut conn = setup_test_db();
         let candidates = vec![sample_candidate(None)];
         let (changeset_id, _) = finalize_import_changeset(
@@ -222,6 +331,40 @@ mod tests {
             .unwrap_or_else(|err| panic!("expected changeset item: {err}"));
         let proposed: ProposedNodeData = serde_json::from_str(&proposed_data)
             .unwrap_or_else(|err| panic!("expected proposed JSON: {err}"));
-        assert_eq!(proposed.vault_id.as_deref(), Some("vault_root_graph"));
+        assert_eq!(proposed.vault_id.as_deref(), Some("vault_custom_user"));
+    }
+
+    #[test]
+    fn finalize_import_changeset_force_add_despite_similar_existing_node() {
+        let mut conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, sub_vault_id, node_type, title, summary, detail, version, is_archived, deleted_at)
+             VALUES ('node_existing', 'vault_learning', NULL, 'fact', 'Imported fact', 'From PDF extraction', 'old detail', 1, 0, NULL);",
+            [],
+        )
+        .unwrap_or_else(|err| panic!("failed to insert existing node: {err}"));
+
+        let candidates = vec![sample_candidate(None)];
+        let (changeset_id, item_count) = finalize_import_changeset(
+            &mut conn,
+            "job-force-add",
+            Some("vault_learning"),
+            &candidates,
+            None,
+            None,
+        )
+        .unwrap_or_else(|err| panic!("expected finalize to succeed: {err}"))
+        .unwrap_or_else(|| panic!("expected changeset id"));
+
+        assert_eq!(item_count, 1);
+        let (item_type, target_node_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT item_type, target_node_id FROM changeset_items WHERE changeset_id = ?1 LIMIT 1;",
+                [&changeset_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or_else(|err| panic!("expected changeset item: {err}"));
+        assert_eq!(item_type, "add");
+        assert!(target_node_id.is_none());
     }
 }

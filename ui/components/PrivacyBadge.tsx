@@ -1,8 +1,10 @@
-const TIER_ICONS: Record<string, string> = {
-  open: "🌐",
-  local_only: "🏠",
-  locked: "🔒",
-  redacted: "⬛",
+import { GlobeIcon, HomeIcon, LockIcon, SquareIcon } from "./icons";
+
+const TIER_ICONS: Record<string, React.ReactNode> = {
+  open: <GlobeIcon size={14} />,
+  local_only: <HomeIcon size={14} />,
+  locked: <LockIcon size={14} />,
+  redacted: <SquareIcon size={14} />,
 };
 
 export function PrivacyBadge({ tier, className }: { tier: string; className?: string }) {

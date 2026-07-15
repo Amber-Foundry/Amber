@@ -549,6 +549,13 @@
   justify-content: space-between;
 }
 
+.document-sections-summary {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: rgba(40, 30, 20, 0.65);
+}
+
 .connections-header h4 {
   margin: 0;
   font-size: 0.9rem;
@@ -1100,7 +1107,7 @@
 }
 
 .wikilink-badge::before {
-  content: "🚪";
+  content: "\1F6AA";
   font-size: 0.82rem;
   filter: sepia(0.65) saturate(1.2);
 }

@@ -6,3 +6,5 @@ export const CONTEXT_MAX_TOKENS = 8000 as const;
 
 /** Privacy tier passed to the assembler (`cloud` vs `local` filtering). */
 export type ContextAssemblerScope = "local" | "cloud";
+
+// Old registry logic replaced by modelRegistry.ts

@@ -15,6 +15,11 @@ import {
   preprocessWikiLinks,
   ExistingNodesContext,
 } from "../utils/markdownUtils";
+import {
+  lookupModel,
+  getContextBudgetCeiling,
+  AUTO_WINDOW_FRACTION,
+} from "../constants/modelRegistry";
 import type { ContextAssemblerScope } from "../constants/contextBudget";
 import type { Vault } from "../ipc";
 import {
@@ -39,9 +44,35 @@ import {
   getLlmMode,
   setLlmMode,
   getApiKey,
+  getChatContextAuto,
+  getChatContextLimit,
+  getLocalModelContextOverrides,
 } from "../utils/settings";
 import { useUIStore } from "../utils/store";
-import { chatConvertTemporaryToMemory } from "../ipc";
+import { chatConvertTemporaryToMemory, chatExtractPdfText, getModelContextLimit } from "../ipc";
+import { browseImportPdf, startOcrModelDownload } from "../services/import";
+import {
+  FileIcon,
+  AlertIcon,
+  ArrowUpIcon,
+  ChevronDownIcon,
+  GlobeIcon,
+  FolderIcon,
+  MessageIcon,
+  InboxIcon,
+  GraduationIcon,
+  GearIcon,
+  ComputerIcon,
+  CloudIcon,
+  ZapIcon,
+  BrainIcon,
+  HourglassIcon,
+  EyeOffIcon,
+  BarChartIcon,
+  TrendingUpIcon,
+  CloseIcon,
+  SparklesIcon,
+} from "./icons";
 
 // Memoized individual message bubble — prevents re-rendering existing messages
 // when unrelated parent state (e.g. input text) changes. Each bubble only
@@ -335,6 +366,21 @@ async function resolveLlmConfig(): Promise<{
   return { provider, endpoint, model };
 }
 
+type AttachedDoc = {
+  id: string;
+  filePath: string;
+  sourceName: string;
+  pageCount: number;
+  text: string;
+  ocrConfidence: number | null;
+  needsOcrModels: boolean;
+  promptInjectionFlagged: boolean;
+  pageTokenEstimates: number[];
+  isOverridden: boolean;
+  includedPageCount: number;
+  isTruncated: boolean;
+};
+
 type ChatPanelProps = {
   selectedNodeIds: string[];
   scope: ContextAssemblerScope;
@@ -349,6 +395,65 @@ type ChatPanelProps = {
   visible?: boolean;
   activeSessionId?: string | null;
   onActivateSession?: (sessionId: string) => void;
+};
+
+const computeAttachedDocsBudget = (docs: AttachedDoc[], maxTokens = 6000): AttachedDoc[] => {
+  if (docs.length === 0) return [];
+
+  const processed = docs.map((d) => ({
+    ...d,
+    includedPageCount: d.pageCount,
+    isTruncated: false,
+  }));
+
+  let remainingBudget = maxTokens;
+  const activeIndices = new Set(processed.keys());
+
+  const includedPages = processed.map((d) => d.pageCount);
+
+  let iterations = 0;
+  while (activeIndices.size > 0 && iterations < 10) {
+    iterations++;
+    const share = Math.floor(remainingBudget / activeIndices.size);
+    let budgetReleased = false;
+
+    for (const idx of Array.from(activeIndices)) {
+      const fullDocTokens = processed[idx].pageTokenEstimates.reduce((a, b) => a + b, 0);
+      if (fullDocTokens <= share) {
+        remainingBudget -= fullDocTokens;
+        includedPages[idx] = processed[idx].pageCount;
+        activeIndices.delete(idx);
+        budgetReleased = true;
+      }
+    }
+
+    if (!budgetReleased) {
+      for (const idx of Array.from(activeIndices)) {
+        let acc = 0;
+        let pCount = 0;
+        for (const pageTokens of processed[idx].pageTokenEstimates) {
+          if (acc + pageTokens <= share) {
+            acc += pageTokens;
+            pCount++;
+          } else {
+            break;
+          }
+        }
+        if (pCount === 0 && processed[idx].pageCount > 0) {
+          pCount = 1;
+        }
+        includedPages[idx] = pCount;
+        processed[idx].isTruncated = pCount < processed[idx].pageCount;
+      }
+      break;
+    }
+  }
+
+  return processed.map((d, idx) => ({
+    ...d,
+    includedPageCount: includedPages[idx],
+    isTruncated: includedPages[idx] < d.pageCount,
+  }));
 };
 
 function ChatPanel({
@@ -367,6 +472,14 @@ function ChatPanel({
   onActivateSession,
 }: ChatPanelProps) {
   const [isOffTheRecord, setIsOffTheRecord] = useState(false);
+  const [sessionAttachments, setSessionAttachments] = useState<Record<string, AttachedDoc[]>>({});
+  const [isAttaching, setIsAttaching] = useState(false);
+  const [isDownloadingOcr, setIsDownloadingOcr] = useState(false);
+  const [extractingName, setExtractingName] = useState<string | null>(null);
+  const [currentProvider, setCurrentProvider] = useState(() => getLlmProvider());
+  const [currentModel, setCurrentModel] = useState(() => getLlmModel());
+  const [currentMode, setCurrentMode] = useState(() => getLlmMode());
+
   const MAX_RENDERED_MESSAGES = 60;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -377,6 +490,267 @@ function ChatPanel({
   const [editingContent, setEditingContent] = useState("");
   const [existingNodeIds, setExistingNodeIds] = useState<Set<string> | null>(null);
   const sessionId = isOffTheRecord ? "temporary-session" : activeSessionId || "default-session";
+  const [resolvedDocBudget, setResolvedDocBudget] = useState(6000);
+  const [resolvedVaultBudget, setResolvedVaultBudget] = useState(8000);
+  const [resolvedHistoryBudget, setResolvedHistoryBudget] = useState(4000);
+  const [contextTooSmall, setContextTooSmall] = useState(false);
+  const [totalContextLimit, setTotalContextLimit] = useState(8000);
+  const [docNoticeSessions, setDocNoticeSessions] = useState<Record<string, boolean>>({});
+
+  const boundedBudget = (
+    desired: number,
+    available: number,
+    floor = 1000,
+    ceiling = 32000
+  ): number => {
+    if (available < floor) return 0;
+    return Math.min(available, Math.max(floor, Math.min(desired, ceiling)));
+  };
+
+  const recalculateBudgetLimit = useCallback(async () => {
+    let totalContext = 8000;
+    try {
+      const { provider, endpoint, model } = await resolveLlmConfig();
+
+      const isLiveQueryProvider = ["ollama", "lmstudio", "anthropic"].includes(provider);
+      if (isLiveQueryProvider) {
+        const limitRes = await getModelContextLimit(provider, endpoint, model);
+        if (limitRes && "ok" in limitRes && limitRes.ok !== null) {
+          totalContext = limitRes.ok;
+        } else {
+          // If live query fails, check for user-entered override (for local models)
+          const isLocal = ["ollama", "lmstudio"].includes(provider);
+          if (isLocal) {
+            const overrides = getLocalModelContextOverrides();
+            if (overrides[model]) {
+              totalContext = overrides[model];
+            } else {
+              // Silent fallback: try lookup in modelRegistry, otherwise fall back to 8,000
+              totalContext = lookupModel(model, provider).contextWindow;
+            }
+          } else {
+            // Anthropic fallback if query failed/offline
+            totalContext = lookupModel(model, provider).contextWindow;
+          }
+        }
+      } else {
+        // Other cloud providers (OpenAI, Google, xAI, etc.): lookup registry
+        totalContext = lookupModel(model, provider).contextWindow;
+      }
+      setTotalContextLimit(totalContext);
+    } catch (err) {
+      console.error("Failed to query model context limit:", err);
+      setTotalContextLimit(8000);
+    }
+
+    const ceiling = getContextBudgetCeiling(currentModel, currentProvider);
+
+    const isAuto = getChatContextAuto();
+    if (!isAuto) {
+      setContextTooSmall(false);
+      const manualLimit = getChatContextLimit();
+      setResolvedDocBudget(manualLimit);
+
+      const systemReserve = 500;
+      const outputReserve = 1500;
+      const vaultBudget = boundedBudget(
+        totalContext - systemReserve - outputReserve,
+        totalContext - systemReserve - outputReserve - manualLimit,
+        1000,
+        totalContext
+      );
+      setResolvedVaultBudget(vaultBudget);
+
+      const remainingForHistory = Math.max(
+        0,
+        totalContext - systemReserve - outputReserve - manualLimit - vaultBudget
+      );
+      setResolvedHistoryBudget(
+        boundedBudget(remainingForHistory, remainingForHistory, 1000, totalContext)
+      );
+      return;
+    }
+
+    try {
+      const systemReserve = 500;
+      const outputReserve = 1500;
+
+      // Calculate max net budget for allocation under safety ceiling
+      const netBudget = Math.max(0, ceiling - systemReserve - outputReserve);
+
+      // History gets up to 40% of the net budget, with a minimum desired of 1000 tokens (bounded by netBudget)
+      const desiredHistory = Math.min(netBudget, Math.max(1000, Math.floor(netBudget * 0.4)));
+      const historyBudget = boundedBudget(desiredHistory, desiredHistory, 1000, ceiling);
+      setResolvedHistoryBudget(historyBudget);
+
+      // Remaining context budget for docs and vault
+      const availableContext = Math.max(0, netBudget - historyBudget);
+
+      const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
+
+      if (isSingleConsumer) {
+        const docBudget = boundedBudget(availableContext, availableContext, 1000, ceiling);
+        setResolvedDocBudget(docBudget);
+        setResolvedVaultBudget(0);
+        setContextTooSmall(docBudget === 0);
+      } else {
+        const docBudget = boundedBudget(
+          availableContext * 0.5,
+          availableContext * 0.5,
+          1000,
+          ceiling
+        );
+        if (docBudget === 0) {
+          setContextTooSmall(true);
+          setResolvedDocBudget(0);
+          setResolvedVaultBudget(boundedBudget(availableContext, availableContext, 1000, ceiling));
+        } else {
+          setContextTooSmall(false);
+          setResolvedDocBudget(docBudget);
+          setResolvedVaultBudget(docBudget);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to recalculate context budget:", err);
+      setContextTooSmall(false);
+      setResolvedDocBudget(6000);
+      setResolvedVaultBudget(8000);
+      setResolvedHistoryBudget(4000);
+    }
+  }, [sessionId, selectedNodeIds, currentProvider, currentModel]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void recalculateBudgetLimit();
+    }, 0);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [recalculateBudgetLimit]);
+
+  const attachedDocs = useMemo(
+    () => sessionAttachments[sessionId] || [],
+    [sessionAttachments, sessionId]
+  );
+
+  const attachedDocsRef = useRef<AttachedDoc[]>([]);
+  useEffect(() => {
+    attachedDocsRef.current = attachedDocs;
+  }, [attachedDocs]);
+
+  const handleAttachPdf = async () => {
+    setIsAttaching(true);
+    setStatus("");
+    try {
+      const filePath = await browseImportPdf();
+      if (!filePath) {
+        setIsAttaching(false);
+        return;
+      }
+
+      if (attachedDocs.some((d) => d.filePath === filePath)) {
+        setStatus("Document is already attached.");
+        setIsAttaching(false);
+        return;
+      }
+
+      const filename = filePath.split(/[/\\]/).pop() || "document.pdf";
+      setExtractingName(filename);
+      const res = await chatExtractPdfText(filePath);
+      if ("err" in res) {
+        setStatus(`Extraction failed: ${res.err}`);
+        setExtractingName(null);
+        setIsAttaching(false);
+        return;
+      }
+
+      const doc = res.ok;
+      const newDoc: AttachedDoc = {
+        id: crypto.randomUUID(),
+        filePath,
+        sourceName: doc.sourceName,
+        pageCount: doc.pageCount,
+        text: doc.text,
+        ocrConfidence: doc.ocrConfidence,
+        needsOcrModels: doc.needsOcrModels,
+        promptInjectionFlagged: doc.promptInjectionFlagged,
+        pageTokenEstimates: doc.pageTokenEstimates,
+        isOverridden: false,
+        includedPageCount: doc.pageCount,
+        isTruncated: false,
+      };
+
+      setSessionAttachments((prev) => ({
+        ...prev,
+        [sessionId]: [...(prev[sessionId] || []), newDoc],
+      }));
+      setExtractingName(null);
+      setStatus("");
+    } catch (err) {
+      console.error(err);
+      setExtractingName(null);
+      setStatus("Failed to attach PDF.");
+    } finally {
+      setIsAttaching(false);
+    }
+  };
+
+  const handleRemoveAttachment = (id: string) => {
+    setSessionAttachments((prev) => ({
+      ...prev,
+      [sessionId]: (prev[sessionId] || []).filter((d) => d.id !== id),
+    }));
+  };
+
+  const handleOverrideAttachment = (id: string) => {
+    setSessionAttachments((prev) => ({
+      ...prev,
+      [sessionId]: (prev[sessionId] || []).map((d) =>
+        d.id === id ? { ...d, isOverridden: true } : d
+      ),
+    }));
+  };
+
+  const handleDownloadOcr = async () => {
+    setIsDownloadingOcr(true);
+    setStatus("Downloading OCR models...");
+    try {
+      await startOcrModelDownload();
+      setStatus("OCR models downloaded. Re-processing attachments...");
+      const updated: AttachedDoc[] = [];
+      for (const doc of attachedDocs) {
+        if (doc.needsOcrModels) {
+          const res = await chatExtractPdfText(doc.filePath);
+          if ("ok" in res) {
+            const fresh = res.ok;
+            updated.push({
+              ...doc,
+              text: fresh.text,
+              ocrConfidence: fresh.ocrConfidence,
+              needsOcrModels: fresh.needsOcrModels,
+              promptInjectionFlagged: fresh.promptInjectionFlagged,
+              pageTokenEstimates: fresh.pageTokenEstimates,
+            });
+          } else {
+            updated.push(doc);
+          }
+        } else {
+          updated.push(doc);
+        }
+      }
+      setSessionAttachments((prev) => ({
+        ...prev,
+        [sessionId]: updated,
+      }));
+      setStatus("");
+    } catch (err) {
+      console.error(err);
+      setStatus("Failed to download OCR models.");
+    } finally {
+      setIsDownloadingOcr(false);
+    }
+  };
 
   const handleToggleOtr = useCallback(async () => {
     const next = !isOffTheRecord;
@@ -432,9 +806,6 @@ function ChatPanel({
   const [agentMode, setAgentMode] = useState<"Recall/Chat" | "Ingest/Memory" | "Onboarding">(
     "Recall/Chat"
   );
-  const [currentProvider, setCurrentProvider] = useState(() => getLlmProvider());
-  const [currentModel, setCurrentModel] = useState(() => getLlmModel());
-  const [currentMode, setCurrentMode] = useState(() => getLlmMode());
   const chartsEnabled = useUIStore((state) => state.chat.chartsEnabled);
   const setChatChartsEnabled = useUIStore((state) => state.setChatChartsEnabled);
   const [showChartsConfirmModal, setShowChartsConfirmModal] = useState(false);
@@ -603,12 +974,13 @@ function ChatPanel({
       setCurrentProvider(getLlmProvider());
       setCurrentModel(getLlmModel());
       setCurrentMode(getLlmMode());
+      void recalculateBudgetLimit();
     }
     window.addEventListener("mindvault:llm-settings-changed", handleSettingsChange);
     return () => {
       window.removeEventListener("mindvault:llm-settings-changed", handleSettingsChange);
     };
-  }, []);
+  }, [recalculateBudgetLimit]);
 
   useEffect(() => {
     let active = true;
@@ -677,7 +1049,6 @@ function ChatPanel({
     };
   }, [sessionId]);
 
-  const canSend = useMemo(() => input.trim().length > 0 && !isSending, [input, isSending]);
   const visibleMessages = useMemo(() => {
     if (messages.length <= MAX_RENDERED_MESSAGES) {
       return messages;
@@ -707,6 +1078,26 @@ function ChatPanel({
           executionPrompt = `[Agent Mode: Onboarding] Act as the Onboarding Agent. Conduct an interview and ask clarifying questions to help build initial context for the user:\n\n${promptText}`;
         }
 
+        const processed = computeAttachedDocsBudget(attachedDocsRef.current, resolvedDocBudget);
+        const safeDocs = processed.filter((d) => !d.promptInjectionFlagged || d.isOverridden);
+        let attachedText: string | null = null;
+        if (safeDocs.length > 0) {
+          const docTexts = safeDocs.map((d) => {
+            const pages = d.text.split("\n\n--- PAGE_BREAK ---\n\n");
+            const slicedPages = pages.slice(0, d.includedPageCount).join("\n\n");
+
+            const header = `--- START OF ATTACHED FILE: ${d.sourceName} ---`;
+            const footer = `--- END OF ATTACHED FILE: ${d.sourceName} ---`;
+
+            const truncationNote = d.isTruncated
+              ? `[TRUNCATION WARNING: This document was truncated to pages 1 to ${d.includedPageCount} of ${d.pageCount} due to context token limits. You ONLY have access to these first ${d.includedPageCount} pages. Do NOT assume that content beyond page ${d.includedPageCount} does not exist or was not included. If the user asks about amendments, sections, or details beyond page ${d.includedPageCount}, you must explicitly state that you cannot verify it because the document has been truncated and you only have access up to page ${d.includedPageCount}.]`
+              : `[Pages: 1 to ${d.pageCount} (Full document included)]`;
+
+            return `${header}\n${truncationNote}\n\n${slicedPages}\n${footer}`;
+          });
+          attachedText = docTexts.join("\n\n");
+        }
+
         const aiResponse = await chatWithScope(
           selectedNodeIds,
           scope,
@@ -716,7 +1107,10 @@ function ChatPanel({
           executionPrompt,
           chartsEnabled,
           isRedactedUnlocked,
-          sessionId
+          sessionId,
+          attachedText,
+          resolvedVaultBudget,
+          resolvedHistoryBudget
         );
 
         const aiMsgId = crypto.randomUUID();
@@ -757,12 +1151,191 @@ function ChatPanel({
       setStatus,
       setIsSending,
       setMessages,
+      resolvedDocBudget,
+      resolvedVaultBudget,
+      resolvedHistoryBudget,
     ]
   );
 
   useEffect(() => {
     executeLlmResponseRef.current = executeLlmResponse;
   }, [executeLlmResponse]);
+
+  const budgetedDocs = useMemo(
+    () => computeAttachedDocsBudget(attachedDocs, resolvedDocBudget),
+    [attachedDocs, resolvedDocBudget]
+  );
+
+  const attachedDocTokens = useMemo(() => {
+    let sum = 0;
+    for (const doc of budgetedDocs) {
+      const includedCount = doc.includedPageCount;
+      sum += doc.pageTokenEstimates.slice(0, includedCount).reduce((a, b) => a + b, 0);
+    }
+    return sum;
+  }, [budgetedDocs]);
+
+  const historyTokens = useMemo(() => {
+    let chatCharacters = 0;
+    for (const msg of messages) {
+      chatCharacters += msg.content.length;
+    }
+    return Math.floor(chatCharacters / 4);
+  }, [messages]);
+
+  const systemReserve = 500;
+
+  const totalUsed = useMemo(() => {
+    const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
+    const vaultTokens = isSingleConsumer ? 0 : resolvedVaultBudget;
+    const cappedHistory = Math.min(historyTokens, resolvedHistoryBudget);
+    return systemReserve + cappedHistory + attachedDocTokens + vaultTokens;
+  }, [
+    historyTokens,
+    resolvedHistoryBudget,
+    attachedDocTokens,
+    sessionId,
+    selectedNodeIds,
+    resolvedVaultBudget,
+  ]);
+
+  const contextPercentage = useMemo(() => {
+    if (totalContextLimit <= 0) return 0;
+    return Math.min(100, Math.round((totalUsed / totalContextLimit) * 100));
+  }, [totalUsed, totalContextLimit]);
+
+  const strokeDashoffset = useMemo(() => {
+    const circumference = 50.26; // 2 * pi * 8
+    const percentage = contextPercentage;
+    return circumference * (1 - percentage / 100);
+  }, [contextPercentage]);
+
+  const progressColorClass = useMemo(() => {
+    if (contextPercentage >= 90) return "danger";
+    if (contextPercentage >= 75) return "warning";
+    return "";
+  }, [contextPercentage]);
+
+  const isDeadEnd = useMemo(() => {
+    const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
+    const vaultTokens = isSingleConsumer ? 0 : resolvedVaultBudget;
+
+    // Safety cap ceiling or user-configured manual context limit
+    const activeLimit = getChatContextAuto()
+      ? getContextBudgetCeiling(currentModel, currentProvider)
+      : totalContextLimit;
+
+    const cappedHistory = Math.min(historyTokens, resolvedHistoryBudget);
+    const netSpaceForPrompt =
+      activeLimit - systemReserve - 1500 - attachedDocTokens - vaultTokens - cappedHistory;
+    return netSpaceForPrompt < 1000; // less than 1000 tokens left for prompt + history
+  }, [
+    sessionId,
+    selectedNodeIds,
+    resolvedVaultBudget,
+    attachedDocTokens,
+    totalContextLimit,
+    systemReserve,
+    currentModel,
+    currentProvider,
+    historyTokens,
+    resolvedHistoryBudget,
+  ]);
+
+  const canSend = useMemo(
+    () => input.trim().length > 0 && !isSending && !isDeadEnd,
+    [input, isSending, isDeadEnd]
+  );
+
+  const formatTokens = (val: number): string => {
+    if (val >= 1000) {
+      return `${(val / 1000).toFixed(1)}k`;
+    }
+    return `${val}`;
+  };
+
+  const anyNeedsOcr = budgetedDocs.some((d) => d.needsOcrModels);
+
+  const attachmentChipsJsx =
+    budgetedDocs.length > 0 || isAttaching || contextTooSmall ? (
+      <div className="chat-attachment-chips">
+        {contextTooSmall && (
+          <div className="chat-attachment-chip context-warning">
+            <span className="chip-ocr-warn">
+              <AlertIcon size={12} /> Model context window is too small (insufficient headroom) for
+              attachments.
+            </span>
+          </div>
+        )}
+        {budgetedDocs.map((doc) => (
+          <div
+            key={doc.id}
+            className={`chat-attachment-chip${doc.promptInjectionFlagged && !doc.isOverridden ? " flagged" : ""}`}
+          >
+            <span className="chip-icon">
+              <FileIcon size={14} />
+            </span>
+            <span className="chip-name">{doc.sourceName}</span>
+            <span className="chip-pages">
+              {doc.isTruncated
+                ? `pp. 1–${doc.includedPageCount} of ${doc.pageCount}`
+                : `${doc.pageCount} pg`}
+            </span>
+            {doc.isTruncated && (
+              <span
+                className="chip-truncated"
+                title="Document was truncated to fit the token budget"
+              >
+                <AlertIcon size={12} /> Truncated
+              </span>
+            )}
+            {doc.needsOcrModels && (
+              <span className="chip-ocr-warn" title="OCR models needed for full extraction">
+                <AlertIcon size={12} /> OCR
+              </span>
+            )}
+            {doc.promptInjectionFlagged && !doc.isOverridden && (
+              <span className="chip-injection-warn">
+                <AlertIcon size={12} /> Hidden instructions detected
+                <button
+                  type="button"
+                  className="chip-override-btn"
+                  onClick={() => handleOverrideAttachment(doc.id)}
+                  title="Keep this attachment despite the warning"
+                >
+                  Keep
+                </button>
+              </span>
+            )}
+            <button
+              type="button"
+              className="chip-remove-btn"
+              onClick={() => handleRemoveAttachment(doc.id)}
+              aria-label={`Remove ${doc.sourceName}`}
+            >
+              <CloseIcon size={14} />
+            </button>
+          </div>
+        ))}
+        {isAttaching && extractingName && (
+          <div className="chat-attachment-chip loading">
+            <span className="chip-spinner" />
+            <span className="chip-name">{extractingName}</span>
+            <span className="chip-loading-text">Extracting...</span>
+          </div>
+        )}
+        {anyNeedsOcr && (
+          <button
+            type="button"
+            className="chip-download-ocr-btn"
+            onClick={() => void handleDownloadOcr()}
+            disabled={isDownloadingOcr}
+          >
+            {isDownloadingOcr ? "Downloading OCR..." : "Download OCR Models"}
+          </button>
+        )}
+      </div>
+    ) : null;
 
   async function executeSendMessage(promptText: string) {
     if (isSending || !promptText.trim()) return;
@@ -932,13 +1505,39 @@ function ChatPanel({
           <h1 className="zen-greeting">
             Good {timeOfDay}, <span className="zen-username">{userName}</span>
           </h1>
+          {attachmentChipsJsx}
           <div className="zen-search-wrapper">
+            <button
+              type="button"
+              className="chat-attach-btn"
+              onClick={() => void handleAttachPdf()}
+              disabled={isAttaching || isSending || contextTooSmall}
+              title={
+                contextTooSmall
+                  ? "Model context window is too small for attachments"
+                  : "Attach a PDF document"
+              }
+              aria-label="Attach PDF"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
             <textarea
               ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleInputKeyDown}
-              placeholder="Ask MindVault..."
+              placeholder="Ask Amber..."
               className="zen-search-input"
               autoFocus
               disabled={isSending}
@@ -951,7 +1550,7 @@ function ChatPanel({
               disabled={!input.trim() || isSending}
               aria-label="Send query"
             >
-              ➔
+              <ArrowUpIcon size={18} />
             </button>
           </div>
 
@@ -966,10 +1565,14 @@ function ChatPanel({
                   toggleDropdown("vault");
                 }}
               >
-                <span className="zen-pill-icon">📁</span>
+                <span className="zen-pill-icon">
+                  <FolderIcon size={16} />
+                </span>
                 <span className="zen-pill-label">Vault:</span>
                 <span className="zen-pill-value">{selectedVaultName}</span>
-                <span className="zen-pill-chevron">▾</span>
+                <span className="zen-pill-chevron">
+                  <ChevronDownIcon size={14} />
+                </span>
               </button>
               {activeDropdown === "vault" && (
                 <div className="zen-dropdown">
@@ -979,7 +1582,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${!selectedVaultId ? "selected" : ""}`}
                     onClick={() => handleSelectVault(null)}
                   >
-                    <span className="item-icon">🌐</span>
+                    <span className="item-icon">
+                      <GlobeIcon size={16} />
+                    </span>
                     <span className="item-text">Root Graph (Global Context)</span>
                   </button>
                   {vaults.map((v) => (
@@ -989,7 +1594,9 @@ function ChatPanel({
                       className={`zen-dropdown-item ${selectedVaultId === v.id ? "selected" : ""}`}
                       onClick={() => handleSelectVault(v.id)}
                     >
-                      <span className="item-icon">📁</span>
+                      <span className="item-icon">
+                        <FolderIcon size={16} />
+                      </span>
                       <span className="item-text">{v.name}</span>
                       <span className="item-badge">{v.privacyTier.replace("_", " ")}</span>
                     </button>
@@ -1008,10 +1615,14 @@ function ChatPanel({
                   toggleDropdown("mode");
                 }}
               >
-                <span className="zen-pill-icon">✦</span>
+                <span className="zen-pill-icon">
+                  <SparklesIcon size={16} />
+                </span>
                 <span className="zen-pill-label">Mode:</span>
                 <span className="zen-pill-value">{agentMode}</span>
-                <span className="zen-pill-chevron">▾</span>
+                <span className="zen-pill-chevron">
+                  <ChevronDownIcon size={14} />
+                </span>
               </button>
               {activeDropdown === "mode" && (
                 <div className="zen-dropdown animate-fade-in">
@@ -1021,7 +1632,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${agentMode === "Recall/Chat" ? "selected" : ""}`}
                     onClick={() => handleSelectMode("Recall/Chat")}
                   >
-                    <span className="item-icon">💬</span>
+                    <span className="item-icon">
+                      <MessageIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Recall/Chat</div>
                       <div className="item-desc">
@@ -1034,7 +1647,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${agentMode === "Ingest/Memory" ? "selected" : ""}`}
                     onClick={() => handleSelectMode("Ingest/Memory")}
                   >
-                    <span className="item-icon">📥</span>
+                    <span className="item-icon">
+                      <InboxIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Ingest/Memory</div>
                       <div className="item-desc">
@@ -1047,7 +1662,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${agentMode === "Onboarding" ? "selected" : ""}`}
                     onClick={() => handleSelectMode("Onboarding")}
                   >
-                    <span className="item-icon">🎓</span>
+                    <span className="item-icon">
+                      <GraduationIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Onboarding</div>
                       <div className="item-desc">
@@ -1069,10 +1686,14 @@ function ChatPanel({
                   toggleDropdown("model");
                 }}
               >
-                <span className="zen-pill-icon">⚙</span>
+                <span className="zen-pill-icon">
+                  <GearIcon size={16} />
+                </span>
                 <span className="zen-pill-label">Model:</span>
                 <span className="zen-pill-value">{activeModelDisplay}</span>
-                <span className="zen-pill-chevron">▾</span>
+                <span className="zen-pill-chevron">
+                  <ChevronDownIcon size={14} />
+                </span>
               </button>
               {activeDropdown === "model" && (
                 <div className="zen-dropdown models-dropdown">
@@ -1083,7 +1704,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${currentMode === "local" ? "selected" : ""}`}
                     onClick={() => handleSelectModeSettings("local")}
                   >
-                    <span className="item-icon">💻</span>
+                    <span className="item-icon">
+                      <ComputerIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Local Models</div>
                       <div className="item-desc">
@@ -1097,7 +1720,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${currentMode === "cloud" ? "selected" : ""}`}
                     onClick={() => handleSelectModeSettings("cloud")}
                   >
-                    <span className="item-icon">☁️</span>
+                    <span className="item-icon">
+                      <CloudIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Cloud Models</div>
                       <div className="item-desc">
@@ -1111,7 +1736,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${currentMode === "hybrid" ? "selected" : ""}`}
                     onClick={() => handleSelectModeSettings("hybrid")}
                   >
-                    <span className="item-icon">⚡</span>
+                    <span className="item-icon">
+                      <ZapIcon size={16} />
+                    </span>
                     <div className="item-details">
                       <div className="item-title">Hybrid Mode</div>
                       <div className="item-desc">
@@ -1131,7 +1758,9 @@ function ChatPanel({
                 onClick={() => void handleForceExtract()}
                 disabled={isExtracting || isSending}
               >
-                <span className="zen-pill-icon">{isExtracting ? "⏳" : "🧠"}</span>
+                <span className="zen-pill-icon">
+                  {isExtracting ? <HourglassIcon size={16} /> : <BrainIcon size={16} />}
+                </span>
                 <span className="zen-pill-label">{isExtracting ? "Extracting..." : "Extract"}</span>
               </button>
             </div>
@@ -1147,7 +1776,10 @@ function ChatPanel({
                     : "Enable Off the Record (private brainstorm)"
                 }
               >
-                {isOffTheRecord ? "🕶️ Off the Record" : "🧠 Mind Sync Active"}
+                <span className="otr-banner-icon">
+                  {isOffTheRecord ? <EyeOffIcon size={16} /> : <BrainIcon size={16} />}
+                </span>
+                {isOffTheRecord ? "Off the Record" : "Mind Sync Active"}
               </button>
             </div>
 
@@ -1158,7 +1790,9 @@ function ChatPanel({
                 className={`zen-pill charts-pill ${chartsEnabled ? "active" : ""}`}
                 onClick={handleToggleCharts}
               >
-                <span className="zen-pill-icon">{chartsEnabled ? "📊" : "📈"}</span>
+                <span className="zen-pill-icon">
+                  {chartsEnabled ? <BarChartIcon size={16} /> : <TrendingUpIcon size={16} />}
+                </span>
                 <span className="zen-pill-label">Charts:</span>
                 <span className="zen-pill-value">{chartsEnabled ? "ON" : "OFF"}</span>
               </button>
@@ -1170,7 +1804,9 @@ function ChatPanel({
           <div className="charts-modal-overlay" onClick={() => setShowChartsConfirmModal(false)}>
             <div className="charts-modal-card" onClick={(e) => e.stopPropagation()}>
               <div className="charts-modal-header">
-                <span className="charts-modal-icon">⚠️</span>
+                <span className="charts-modal-icon">
+                  <AlertIcon size={20} />
+                </span>
                 <h3 className="charts-modal-title">Enable Experimental Charts?</h3>
               </div>
               <div className="charts-modal-body">
@@ -1273,10 +1909,14 @@ function ChatPanel({
                 toggleDropdown("vault");
               }}
             >
-              <span className="zen-pill-icon">📁</span>
+              <span className="zen-pill-icon">
+                <FolderIcon size={16} />
+              </span>
               <span className="zen-pill-label">Vault:</span>
               <span className="zen-pill-value">{selectedVaultName}</span>
-              <span className="zen-pill-chevron">▾</span>
+              <span className="zen-pill-chevron">
+                <ChevronDownIcon size={16} />
+              </span>
             </button>
             {activeDropdown === "vault" && (
               <div className="zen-dropdown">
@@ -1286,7 +1926,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${!selectedVaultId ? "selected" : ""}`}
                   onClick={() => handleSelectVault(null)}
                 >
-                  <span className="item-icon">🌐</span>
+                  <span className="item-icon">
+                    <GlobeIcon size={16} />
+                  </span>
                   <span className="item-text">Root Graph (Global Context)</span>
                 </button>
                 {vaults.map((v) => (
@@ -1296,7 +1938,9 @@ function ChatPanel({
                     className={`zen-dropdown-item ${selectedVaultId === v.id ? "selected" : ""}`}
                     onClick={() => handleSelectVault(v.id)}
                   >
-                    <span className="item-icon">📁</span>
+                    <span className="item-icon">
+                      <FolderIcon size={16} />
+                    </span>
                     <span className="item-text">{v.name}</span>
                     <span className="item-badge">{v.privacyTier.replace("_", " ")}</span>
                   </button>
@@ -1315,10 +1959,14 @@ function ChatPanel({
                 toggleDropdown("mode");
               }}
             >
-              <span className="zen-pill-icon">✦</span>
+              <span className="zen-pill-icon">
+                <SparklesIcon size={16} />
+              </span>
               <span className="zen-pill-label">Mode:</span>
               <span className="zen-pill-value">{agentMode}</span>
-              <span className="zen-pill-chevron">▾</span>
+              <span className="zen-pill-chevron">
+                <ChevronDownIcon size={16} />
+              </span>
             </button>
             {activeDropdown === "mode" && (
               <div className="zen-dropdown animate-fade-in">
@@ -1328,7 +1976,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${agentMode === "Recall/Chat" ? "selected" : ""}`}
                   onClick={() => handleSelectMode("Recall/Chat")}
                 >
-                  <span className="item-icon">💬</span>
+                  <span className="item-icon">
+                    <MessageIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Recall/Chat</div>
                     <div className="item-desc">
@@ -1341,7 +1991,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${agentMode === "Ingest/Memory" ? "selected" : ""}`}
                   onClick={() => handleSelectMode("Ingest/Memory")}
                 >
-                  <span className="item-icon">📥</span>
+                  <span className="item-icon">
+                    <InboxIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Ingest/Memory</div>
                     <div className="item-desc">
@@ -1354,7 +2006,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${agentMode === "Onboarding" ? "selected" : ""}`}
                   onClick={() => handleSelectMode("Onboarding")}
                 >
-                  <span className="item-icon">🎓</span>
+                  <span className="item-icon">
+                    <GraduationIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Onboarding</div>
                     <div className="item-desc">Trigger Onboarding Agent interview for context</div>
@@ -1374,10 +2028,14 @@ function ChatPanel({
                 toggleDropdown("model");
               }}
             >
-              <span className="zen-pill-icon">⚙</span>
+              <span className="zen-pill-icon">
+                <GearIcon size={16} />
+              </span>
               <span className="zen-pill-label">Model:</span>
               <span className="zen-pill-value">{activeModelDisplay}</span>
-              <span className="zen-pill-chevron">▾</span>
+              <span className="zen-pill-chevron">
+                <ChevronDownIcon size={16} />
+              </span>
             </button>
             {activeDropdown === "model" && (
               <div className="zen-dropdown models-dropdown">
@@ -1388,7 +2046,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${currentMode === "local" ? "selected" : ""}`}
                   onClick={() => handleSelectModeSettings("local")}
                 >
-                  <span className="item-icon">💻</span>
+                  <span className="item-icon">
+                    <ComputerIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Local Models</div>
                     <div className="item-desc">Secure, offline models via Ollama or LM Studio</div>
@@ -1400,7 +2060,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${currentMode === "cloud" ? "selected" : ""}`}
                   onClick={() => handleSelectModeSettings("cloud")}
                 >
-                  <span className="item-icon">☁️</span>
+                  <span className="item-icon">
+                    <CloudIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Cloud Models</div>
                     <div className="item-desc">
@@ -1414,7 +2076,9 @@ function ChatPanel({
                   className={`zen-dropdown-item ${currentMode === "hybrid" ? "selected" : ""}`}
                   onClick={() => handleSelectModeSettings("hybrid")}
                 >
-                  <span className="item-icon">⚡</span>
+                  <span className="item-icon">
+                    <ZapIcon size={16} />
+                  </span>
                   <div className="item-details">
                     <div className="item-title">Hybrid Mode</div>
                     <div className="item-desc">Run both Cloud and Local models simultaneously</div>
@@ -1422,6 +2086,97 @@ function ChatPanel({
                 </button>
               </div>
             )}
+          </div>
+          {/* Pill 3.5: Context Usage */}
+          <div className="zen-pill-container context-usage-pill-container">
+            <div className="zen-pill context-usage-pill">
+              <span className="zen-pill-icon" style={{ display: "flex", alignItems: "center" }}>
+                <svg width="18" height="18" viewBox="0 0 20 20" className="context-progress-ring">
+                  <circle
+                    cx="10"
+                    cy="10"
+                    r="8"
+                    className="progress-ring-bg"
+                    strokeWidth="2.5"
+                    fill="transparent"
+                  />
+                  <circle
+                    cx="10"
+                    cy="10"
+                    r="8"
+                    className={`progress-ring-fg ${progressColorClass}`}
+                    strokeWidth="2.5"
+                    fill="transparent"
+                    strokeDasharray={50.26}
+                    strokeDashoffset={strokeDashoffset}
+                  />
+                </svg>
+              </span>
+              <span className="zen-pill-label">Context:</span>
+              <span className="zen-pill-value">{contextPercentage}%</span>
+
+              {/* Tooltip detail breakdown on hover */}
+              <div className="context-tooltip-details">
+                <div className="tooltip-title">Context Window Details</div>
+                <div className="tooltip-row">
+                  <span>Current Usage:</span>
+                  <strong>{formatTokens(totalUsed)}</strong>
+                </div>
+                <div className="tooltip-row">
+                  <span>Total Budget:</span>
+                  <strong>{formatTokens(totalContextLimit)}</strong>
+                </div>
+                {getChatContextAuto() && (
+                  <div className="tooltip-row" style={{ fontSize: "11px", opacity: 0.85 }}>
+                    <span>Auto Cap (safety margin):</span>
+                    <strong>
+                      {formatTokens(getContextBudgetCeiling(currentModel, currentProvider))} (
+                      {Math.round(AUTO_WINDOW_FRACTION * 100)}% of {formatTokens(totalContextLimit)}{" "}
+                      window)
+                    </strong>
+                  </div>
+                )}
+                <div className="tooltip-row">
+                  <span>Percent Used:</span>
+                  <strong>{contextPercentage}%</strong>
+                </div>
+                <hr className="tooltip-divider" />
+                <div className="tooltip-breakdown-title">Estimated Breakdown:</div>
+                <div className="tooltip-row indent">
+                  <span>System Prompt & reserves:</span>
+                  <span>{formatTokens(systemReserve)}</span>
+                </div>
+                <div className="tooltip-row indent">
+                  <span>Chat History:</span>
+                  <span>{formatTokens(historyTokens)}</span>
+                </div>
+                {attachedDocTokens > 0 && (
+                  <div className="tooltip-row indent">
+                    <span>Documents:</span>
+                    <span>{formatTokens(attachedDocTokens)}</span>
+                  </div>
+                )}
+                {selectedNodeIds.length > 0 && resolvedVaultBudget > 0 && (
+                  <div className="tooltip-row indent">
+                    <span>Vault Knowledge:</span>
+                    <span>{formatTokens(resolvedVaultBudget)}</span>
+                  </div>
+                )}
+                <div className="tooltip-row footer">
+                  <span>Remaining Headroom:</span>
+                  <strong>
+                    {formatTokens(
+                      Math.max(
+                        0,
+                        (getChatContextAuto()
+                          ? getContextBudgetCeiling(currentModel, currentProvider)
+                          : totalContextLimit) - totalUsed
+                      )
+                    )}
+                  </strong>
+                </div>
+              </div>
+            </div>
           </div>
           {/* Pill 4: Extract Memory */}
           <div className="zen-pill-container">
@@ -1431,14 +2186,18 @@ function ChatPanel({
               onClick={() => void handleForceExtract()}
               disabled={isExtracting || isSending}
             >
-              <span className="zen-pill-icon">{isExtracting ? "⏳" : "🧠"}</span>
+              <span className="zen-pill-icon">
+                {isExtracting ? <HourglassIcon size={16} /> : <BrainIcon size={16} />}
+              </span>
               <span className="zen-pill-label">{isExtracting ? "Extracting..." : "Extract"}</span>
             </button>
           </div>
           {/* Pill 5: Off the Record Banner */}
           {isOffTheRecord && (
             <div className="otr-convert-banner">
-              <span className="otr-banner-label">🕶️ Off the Record</span>
+              <span className="otr-banner-label">
+                <EyeOffIcon size={16} /> Off the Record
+              </span>
               <button
                 type="button"
                 className="convert-memory-btn"
@@ -1458,21 +2217,89 @@ function ChatPanel({
               className={`zen-pill charts-pill ${chartsEnabled ? "active" : ""}`}
               onClick={handleToggleCharts}
             >
-              <span className="zen-pill-icon">{chartsEnabled ? "📊" : "📈"}</span>
+              <span className="zen-pill-icon">
+                {chartsEnabled ? <BarChartIcon size={16} /> : <TrendingUpIcon size={16} />}
+              </span>
               <span className="zen-pill-label">Charts:</span>
               <span className="zen-pill-value">{chartsEnabled ? "ON" : "OFF"}</span>
             </button>
           </div>
         </div>
 
+        {attachmentChipsJsx}
+
+        {budgetedDocs.length > 0 && !docNoticeSessions[sessionId] && (
+          <div className="chat-context-banner doc-persistence-notice">
+            <span className="banner-icon">
+              <MessageIcon size={14} />
+            </span>
+            <span className="banner-text">
+              This document will be included in every message for the rest of this chat.
+            </span>
+            <button
+              type="button"
+              className="banner-close-btn"
+              onClick={() => setDocNoticeSessions((prev) => ({ ...prev, [sessionId]: true }))}
+              aria-label="Dismiss notice"
+            >
+              <CloseIcon size={12} />
+            </button>
+          </div>
+        )}
+
+        {isDeadEnd ? (
+          <div className="chat-context-banner blocking-warning">
+            <span className="banner-icon">
+              <AlertIcon size={14} />
+            </span>
+            <span className="banner-text">
+              Context full, cannot send. Reduce attachments or clear history.
+            </span>
+          </div>
+        ) : historyTokens > resolvedHistoryBudget ? (
+          <div className="chat-context-banner informational-warning">
+            <span className="banner-icon">
+              <GearIcon size={14} />
+            </span>
+            <span className="banner-text">
+              Older messages will be dropped to fit this model's context.
+            </span>
+          </div>
+        ) : null}
+
         {/* High-rounded input area matching search bar styles */}
         <div className="chat-input-wrapper">
+          <button
+            type="button"
+            className="chat-attach-btn"
+            onClick={() => void handleAttachPdf()}
+            disabled={isAttaching || isSending || contextTooSmall}
+            title={
+              contextTooSmall
+                ? "Model context window is too small for attachments"
+                : "Attach a PDF document"
+            }
+            aria-label="Attach PDF"
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+            </svg>
+          </button>
           <textarea
             ref={inputRef}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleInputKeyDown}
-            placeholder="Ask MindVault..."
+            placeholder="Ask Amber..."
             disabled={isSending}
             rows={1}
           />
@@ -1483,7 +2310,7 @@ function ChatPanel({
             disabled={!canSend}
             aria-label="Send query"
           >
-            ➔
+            <ArrowUpIcon size={18} />
           </button>
         </div>
       </div>
@@ -1492,7 +2319,9 @@ function ChatPanel({
         <div className="charts-modal-overlay" onClick={() => setShowChartsConfirmModal(false)}>
           <div className="charts-modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="charts-modal-header">
-              <span className="charts-modal-icon">⚠️</span>
+              <span className="charts-modal-icon">
+                <AlertIcon size={20} />
+              </span>
               <h3 className="charts-modal-title">Enable Experimental Charts?</h3>
             </div>
             <div className="charts-modal-body">

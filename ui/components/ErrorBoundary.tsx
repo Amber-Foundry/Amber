@@ -16,7 +16,7 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error("MindVault crashed:", error, info);
+    console.error("Amber crashed:", error, info);
   }
 
   render() {

@@ -335,6 +335,7 @@ fn assert_import_jobs_metadata_columns_exist(
         ("rasterization_dpi", "INTEGER"),
         ("tables_detected_unpreserved", "INTEGER"),
         ("extraction_path", "TEXT"),
+        ("current_page", "INTEGER"),
     ];
 
     for (col_name, expected_type) in required_columns {
