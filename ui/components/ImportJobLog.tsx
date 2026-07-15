@@ -324,8 +324,9 @@ export default function ImportJobLog({
           role="dialog"
           aria-modal="true"
           aria-label="Extraction preview"
+          onClick={closePreview}
         >
-          <div className={ImportJobLogStyles.previewModal}>
+          <div className={ImportJobLogStyles.previewModal} onClick={(e) => e.stopPropagation()}>
             <div className={ImportJobLogStyles.previewHeader}>
               <div>
                 <h3 className={ImportJobLogStyles.previewTitle}>
