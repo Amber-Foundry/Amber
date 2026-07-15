@@ -9,6 +9,7 @@ import {
 } from "../services/import";
 import { listVaults } from "../services/vaults";
 import { toAppError } from "../services/ipcResult";
+import { getImportJobParams } from "../utils/settings";
 import ImportJobLogStyles from "../style/components/ImportJobLog.module.css";
 import type { ImportStartJobInput } from "../types/generated/ImportStartJobInput";
 import {
@@ -44,7 +45,7 @@ export default function ImportJobLog({
   const [vaultNameById, setVaultNameById] = useState<Map<string, string>>(() => new Map());
   const [jobParams, setJobParams] = useState<Record<string, ImportStartJobInput>>(() => {
     try {
-      return JSON.parse(localStorage.getItem("mindvault.import.job_params") || "{}");
+      return getImportJobParams();
     } catch {
       return {};
     }
@@ -64,7 +65,7 @@ export default function ImportJobLog({
       if (mountedRef.current) {
         setJobs(result);
         try {
-          const parsed = JSON.parse(localStorage.getItem("mindvault.import.job_params") || "{}");
+          const parsed = getImportJobParams();
           setJobParams(parsed);
         } catch {
           // Ignore

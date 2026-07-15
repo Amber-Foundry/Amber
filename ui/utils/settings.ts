@@ -1,5 +1,6 @@
 import { settingsGet, settingsSet } from "../ipc.ts";
 import { unwrapIpcResult } from "../services/ipcResult.ts";
+import type { ImportStartJobInput } from "../types/generated/ImportStartJobInput";
 
 const LLM_PROVIDER_KEY = "mindvault.llm.provider";
 const OLLAMA_ENDPOINT_KEY = "mindvault.llm.ollama.endpoint";
@@ -126,6 +127,30 @@ export function setImportExtractionMode(mode: ImportExtractionMode): void {
   window.localStorage.setItem(IMPORT_EXTRACTION_MODE_KEY, next);
   void settingsSet(IMPORT_EXTRACTION_MODE_KEY, next).catch((err) => {
     console.error("Failed to persist import extraction mode in SQLite:", err);
+  });
+}
+
+const IMPORT_JOB_PARAMS_KEY = "mindvault.import.job_params";
+
+type ImportJobParamsMap = Record<string, ImportStartJobInput>;
+
+export function getImportJobParams(): ImportJobParamsMap {
+  const value = window.localStorage.getItem(IMPORT_JOB_PARAMS_KEY);
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+export function setImportJobParam(jobId: string, input: ImportStartJobInput): void {
+  const current = getImportJobParams();
+  current[jobId] = input;
+  const strVal = JSON.stringify(current);
+  window.localStorage.setItem(IMPORT_JOB_PARAMS_KEY, strVal);
+  void settingsSet(IMPORT_JOB_PARAMS_KEY, strVal).catch((err) => {
+    console.error("Failed to persist import job params in SQLite:", err);
   });
 }
 
@@ -335,6 +360,7 @@ void (async () => {
     CHAT_CONTEXT_AUTO_KEY,
     CHAT_CONTEXT_LIMIT_KEY,
     LOCAL_CONTEXT_OVERRIDES_KEY,
+    IMPORT_JOB_PARAMS_KEY,
     "mindvault.llm.ollama.model",
     "mindvault.llm.lmstudio.model",
     "mindvault.llm.openai.model",

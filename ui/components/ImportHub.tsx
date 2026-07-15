@@ -8,6 +8,7 @@ import ImportHubStyles from "../style/components/ImportHub.module.css";
 import {
   getImportExtractionMode,
   setImportExtractionMode,
+  setImportJobParam,
   type ImportExtractionMode,
 } from "../utils/settings";
 import { ROOT_GRAPH_VAULT_ID } from "../utils/importJobStatus";
@@ -225,13 +226,7 @@ export default function ImportHub({
           useLlmExtraction: selectedFramework === "ai",
         });
         const job = await startImportJob(input);
-        try {
-          const paramsMap = JSON.parse(localStorage.getItem("mindvault.import.job_params") || "{}");
-          paramsMap[job.id] = input;
-          localStorage.setItem("mindvault.import.job_params", JSON.stringify(paramsMap));
-        } catch (e) {
-          console.error("Failed to store import job params: ", e);
-        }
+        setImportJobParam(job.id, input);
         setImportBusy(true);
         setJobLogRefreshKey((key) => key + 1);
       } catch (error) {
@@ -255,13 +250,7 @@ export default function ImportHub({
       setStartError(null);
       try {
         const job = await startImportJob(input);
-        try {
-          const paramsMap = JSON.parse(localStorage.getItem("mindvault.import.job_params") || "{}");
-          paramsMap[job.id] = input;
-          localStorage.setItem("mindvault.import.job_params", JSON.stringify(paramsMap));
-        } catch (e) {
-          console.error("Failed to store import job params: ", e);
-        }
+        setImportJobParam(job.id, input);
         setImportBusy(true);
         setJobLogRefreshKey((key) => key + 1);
       } catch (error) {
