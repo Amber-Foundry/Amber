@@ -274,7 +274,8 @@ pub fn get_recent_chat_history(
             eprintln!("Database error decoding chat history row: {err}");
             "Failed decoding chat history row".to_string()
         })?;
-        let msg_tokens = msg.content.chars().count() / 4;
+        let count = msg.content.chars().count();
+        let msg_tokens = count.div_ceil(4);
         if accumulated_tokens + msg_tokens > max_tokens {
             break;
         }
@@ -728,6 +729,28 @@ mod tests {
         let history_utf8 = get_recent_chat_history(&conn, sess_utf8, 2)?;
         assert_eq!(history_utf8.len(), 1);
         assert_eq!(history_utf8[0].id, "utf8_msg");
+
+        // Ceiling division check for short messages (e.g., "Hi" = 2 characters)
+        // Under integer division `2 / 4`, this would be 0 tokens.
+        // Under ceiling division `(2 + 3) / 4`, this is 1 token.
+        let sess_ceil = "test_session_ceil";
+        create_session(&conn, sess_ceil.to_string(), Some("Test Ceil".to_string()))?;
+        append_message(
+            &conn,
+            "short_msg".to_string(),
+            "user".to_string(),
+            "Hi".to_string(), // 2 characters
+            sess_ceil,
+        )?;
+
+        // With max_tokens = 0, we can hold nothing (short_msg requires 1 token)
+        let history_ceil_0 = get_recent_chat_history(&conn, sess_ceil, 0)?;
+        assert_eq!(history_ceil_0.len(), 0);
+
+        // With max_tokens = 1, we can hold the message
+        let history_ceil_1 = get_recent_chat_history(&conn, sess_ceil, 1)?;
+        assert_eq!(history_ceil_1.len(), 1);
+        assert_eq!(history_ceil_1[0].id, "short_msg");
 
         Ok(())
     }
