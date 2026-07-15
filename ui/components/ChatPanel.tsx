@@ -510,9 +510,7 @@ function ChatPanel({
   const recalculateBudgetLimit = useCallback(async () => {
     let totalContext = 8000;
     try {
-      const provider = currentProvider;
-      const endpoint = provider === "lmstudio" ? getLmStudioEndpoint() : getOllamaEndpoint();
-      const model = currentModel;
+      const { provider, endpoint, model } = await resolveLlmConfig();
 
       const isLiveQueryProvider = ["ollama", "lmstudio", "anthropic"].includes(provider);
       if (isLiveQueryProvider) {
