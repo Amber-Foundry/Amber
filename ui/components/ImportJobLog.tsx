@@ -149,6 +149,8 @@ export default function ImportJobLog({
     try {
       await cancelImportJob();
       await refreshJobs();
+    } catch (error) {
+      console.error("Failed to cancel import job:", error);
     } finally {
       if (mountedRef.current) setCancelling(false);
     }
