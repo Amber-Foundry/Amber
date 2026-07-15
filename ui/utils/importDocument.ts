@@ -31,11 +31,17 @@ export function parseNodeMeta(node: Pick<Node, "meta">): ImportMeta {
 }
 
 export function isImportDocumentNode(node: Pick<Node, "meta" | "sourceType">): boolean {
+  if (node.sourceType !== "pdf_import") {
+    return false;
+  }
   const meta = parseNodeMeta(node);
   return (meta.import_role ?? meta.importRole) === "document";
 }
 
 export function isImportChunkNode(node: Pick<Node, "meta" | "sourceType">): boolean {
+  if (node.sourceType !== "pdf_import") {
+    return false;
+  }
   const meta = parseNodeMeta(node);
   const role = meta.import_role ?? meta.importRole;
   if (role === "document") {
@@ -45,7 +51,7 @@ export function isImportChunkNode(node: Pick<Node, "meta" | "sourceType">): bool
     return true;
   }
   const chunkIndex = meta.chunk_index ?? meta.chunkIndex;
-  return node.sourceType === "pdf_import" && chunkIndex != null;
+  return chunkIndex != null;
 }
 
 export function isPdfImportNode(node: Pick<Node, "meta" | "sourceType">): boolean {
@@ -55,12 +61,18 @@ export function isPdfImportNode(node: Pick<Node, "meta" | "sourceType">): boolea
   return isImportDocumentNode(node) || isImportChunkNode(node);
 }
 
-export function getImportDocumentId(node: Pick<Node, "meta">): string | null {
+export function getImportDocumentId(node: Pick<Node, "meta" | "sourceType">): string | null {
+  if (node.sourceType !== "pdf_import") {
+    return null;
+  }
   const meta = parseNodeMeta(node);
   return meta.document_id ?? meta.documentId ?? null;
 }
 
-export function getImportChunkIndex(node: Pick<Node, "meta">): number | null {
+export function getImportChunkIndex(node: Pick<Node, "meta" | "sourceType">): number | null {
+  if (node.sourceType !== "pdf_import") {
+    return null;
+  }
   const meta = parseNodeMeta(node);
   const value = meta.chunk_index ?? meta.chunkIndex;
   return typeof value === "number" ? value : null;
@@ -121,6 +133,9 @@ export function getImportOcrConfidence(
   node: Pick<Node, "id" | "meta" | "sourceType">,
   allNodes: Node[] = []
 ): number | null {
+  if (node.sourceType !== "pdf_import") {
+    return null;
+  }
   const own = readOcrConfidence(parseNodeMeta(node));
   if (own != null) {
     return own;
@@ -143,6 +158,9 @@ export function importHasUnstructuredTables(
   node: Pick<Node, "id" | "meta" | "sourceType">,
   allNodes: Node[] = []
 ): boolean {
+  if (node.sourceType !== "pdf_import") {
+    return false;
+  }
   if (readTablesFlag(parseNodeMeta(node))) {
     return true;
   }
