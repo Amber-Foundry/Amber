@@ -681,6 +681,10 @@ function VaultSidebar({
         listed = parent;
       }
 
+      if (matchNodes.has(listed.id)) {
+        continue;
+      }
+
       matchNodes.add(listed.id);
       count++;
       if (listed.subVaultId) {
