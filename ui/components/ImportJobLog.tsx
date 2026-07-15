@@ -127,6 +127,9 @@ export default function ImportJobLog({
       setIsDownloadingModels(true);
       startOcrModelDownload()
         .then(() => refreshJobs())
+        .catch((err) => {
+          console.error("Failed to download OCR models:", err);
+        })
         .finally(() => {
           if (mountedRef.current) {
             setIsDownloadingModels(false);
