@@ -13,7 +13,7 @@ const COLLAPSED_SECTION_LIMIT = 5;
 type ImportDocumentSpineProps = {
   documentNode: Node;
   allNodes: Node[];
-  onSelectSection: (nodeId: string) => void;
+  onSelectSection?: (nodeId: string) => void;
 };
 
 export default function ImportDocumentSpine({
@@ -60,7 +60,7 @@ export default function ImportDocumentSpine({
               <button
                 type="button"
                 className={ImportDocumentSpineStyles.sectionCard}
-                onClick={() => onSelectSection(section.id)}
+                onClick={() => onSelectSection?.(section.id)}
                 title={section.title}
               >
                 <div className={ImportDocumentSpineStyles.sectionMeta}>

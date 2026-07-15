@@ -62,7 +62,7 @@ type NodeEditorExpandedProps = {
   nodeId: string;
   onClose: () => void;
   chartsEnabled?: boolean;
-  onSelectNode: (nodeId: string) => void;
+  onSelectNode?: (nodeId: string) => void;
   isRedactedUnlocked: boolean;
   setIsRedactedUnlocked: (value: boolean) => void;
 };
@@ -1117,7 +1117,7 @@ export default function NodeEditorExpanded({
                           <button
                             type="button"
                             className="door-link-btn"
-                            onClick={() => onSelectNode(door.targetNodeId!)}
+                            onClick={() => onSelectNode?.(door.targetNodeId!)}
                             title={`Navigate to: ${targetTitle}`}
                           >
                             <strong>
@@ -1160,7 +1160,7 @@ export default function NodeEditorExpanded({
                         <button
                           type="button"
                           className="door-link-btn"
-                          onClick={() => onSelectNode(backlink.sourceNodeId)}
+                          onClick={() => onSelectNode?.(backlink.sourceNodeId)}
                           title={`Navigate to: ${sourceTitle}`}
                         >
                           <strong>
