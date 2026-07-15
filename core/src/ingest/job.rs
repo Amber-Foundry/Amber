@@ -903,7 +903,7 @@ fn is_likely_abbreviation_period(text: &str, period_idx: usize) -> bool {
 fn prepare_job_runtime() -> Result<(tokio::runtime::Handle, tokio::runtime::Runtime), OcrError> {
     // Ingest jobs run on blocking threads; always use a job-owned runtime so LLM
     // block_on never borrows the Tauri async runtime handle.
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|err| {
