@@ -265,9 +265,6 @@ function CloudSettings({
 
   useEffect(() => {
     const saved = getLlmModel(provider);
-    setTimeout(() => {
-      setSelectedModel(saved || defaultModel);
-    }, 0);
     if (!saved) {
       setLlmModel(provider, defaultModel);
     }
