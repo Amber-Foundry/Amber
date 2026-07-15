@@ -596,6 +596,16 @@ function VaultSidebar({
   const normalizedQuery = resolvedQuery.trim().toLowerCase();
   const isSearching = normalizedQuery.length > 0;
 
+  // Memoize the nodes lookup map by ID to achieve O(1) lookup time during search,
+  // rebuilding only when allNodes changes instead of on every search keystroke.
+  const nodesById = useMemo(() => {
+    const map = new Map<string, Node>();
+    for (const node of allNodes) {
+      map.set(node.id, node);
+    }
+    return map;
+  }, [allNodes]);
+
   // ---------------------------------------------------------------------------
   // Build structured tree data with search-match metadata
   // ---------------------------------------------------------------------------
@@ -657,12 +667,6 @@ function VaultSidebar({
     const matchNodes = new Set<string>();
     let count = 0;
 
-    // Create a lookup map of nodes by ID to achieve O(1) lookup time in the loop
-    const nodesById = new Map<string, Node>();
-    for (const node of allNodes) {
-      nodesById.set(node.id, node);
-    }
-
     // Find matching nodes (chunks are hidden — promote their parent document when a chunk matches)
     for (const node of allNodes) {
       const titleMatch = node.title.toLowerCase().includes(normalizedQuery);
@@ -719,7 +723,7 @@ function VaultSidebar({
       matchingNodeIds: matchNodes,
       resultCount: count,
     };
-  }, [allNodes, normalizedQuery, vaults]);
+  }, [allNodes, normalizedQuery, vaults, nodesById]);
 
   // ---------------------------------------------------------------------------
   // Helpers for determining match/dim state
