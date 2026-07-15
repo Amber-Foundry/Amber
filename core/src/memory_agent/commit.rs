@@ -388,6 +388,9 @@ fn create_import_document_spine(
 
     for chunk in &chunks {
         let mut updated = chunk.meta.clone();
+        if !updated.is_object() {
+            updated = serde_json::json!({});
+        }
         if let Some(map) = updated.as_object_mut() {
             map.insert("import_role".to_string(), serde_json::json!("chunk"));
             map.insert("document_id".to_string(), serde_json::json!(parent_id));
