@@ -4688,6 +4688,7 @@ async fn llm_chat(
     session_id: &str,
     attached_document: Option<String>,
     max_assembler_tokens: Option<usize>,
+    max_history_tokens: Option<usize>,
 ) -> Result<String, String> {
     let db_path = state.db_path.clone();
     // Kept in signature for Tauri IPC contract; history is loaded from DB instead.
@@ -4787,10 +4788,12 @@ async fn llm_chat(
 
     let client = llm::client::UniversalClient::new(parsed_provider, endpoint, model);
 
-    // Load full conversation history so the model sees previous turns
+    // Load recent conversation history (token-budgeted) so the model sees previous turns without overflowing
     let messages: Vec<llm::client::LlmMessage> = {
         let conn = open_connection(&db_path)?;
-        let history = chat::get_chat_history(&conn, session_id).map_err(|e| e.to_string())?;
+        let history =
+            chat::get_recent_chat_history(&conn, session_id, max_history_tokens.unwrap_or(4000))
+                .map_err(|e| e.to_string())?;
         history
             .into_iter()
             .map(|msg| llm::client::LlmMessage {

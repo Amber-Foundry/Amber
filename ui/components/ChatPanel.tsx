@@ -16,9 +16,11 @@ import {
   ExistingNodesContext,
 } from "../utils/markdownUtils";
 import {
-  CLOUD_MODEL_CONTEXT_REGISTRY,
-  getCloudModelContextLimit,
-} from "../constants/contextBudget";
+  lookupModel,
+  getContextBudgetCeiling,
+  AUTO_WINDOW_FRACTION,
+  ABSOLUTE_HARD_CAP,
+} from "../constants/modelRegistry";
 import type { ContextAssemblerScope } from "../constants/contextBudget";
 import type { Vault } from "../ipc";
 import {
@@ -45,6 +47,7 @@ import {
   getApiKey,
   getChatContextAuto,
   getChatContextLimit,
+  getLocalModelContextOverrides,
 } from "../utils/settings";
 import { useUIStore } from "../utils/store";
 import { chatConvertTemporaryToMemory, chatExtractPdfText, getModelContextLimit } from "../ipc";
@@ -490,8 +493,10 @@ function ChatPanel({
   const sessionId = isOffTheRecord ? "temporary-session" : activeSessionId || "default-session";
   const [resolvedDocBudget, setResolvedDocBudget] = useState(6000);
   const [resolvedVaultBudget, setResolvedVaultBudget] = useState(8000);
+  const [resolvedHistoryBudget, setResolvedHistoryBudget] = useState(4000);
   const [contextTooSmall, setContextTooSmall] = useState(false);
   const [totalContextLimit, setTotalContextLimit] = useState(8000);
+  const [docNoticeSessions, setDocNoticeSessions] = useState<Record<string, boolean>>({});
 
   const boundedBudget = (
     desired: number,
@@ -510,16 +515,30 @@ function ChatPanel({
       const endpoint = provider === "lmstudio" ? getLmStudioEndpoint() : getOllamaEndpoint();
       const model = currentModel;
 
-      const isCloud = ["openai", "anthropic", "google", "xai"].includes(provider);
-      if (isCloud) {
-        totalContext = getCloudModelContextLimit(model, provider);
-      } else {
+      const isLiveQueryProvider = ["ollama", "lmstudio", "anthropic"].includes(provider);
+      if (isLiveQueryProvider) {
         const limitRes = await getModelContextLimit(provider, endpoint, model);
         if (limitRes && "ok" in limitRes && limitRes.ok !== null) {
           totalContext = limitRes.ok;
         } else {
-          totalContext = CLOUD_MODEL_CONTEXT_REGISTRY.default;
+          // If live query fails, check for user-entered override (for local models)
+          const isLocal = ["ollama", "lmstudio"].includes(provider);
+          if (isLocal) {
+            const overrides = getLocalModelContextOverrides();
+            if (overrides[model]) {
+              totalContext = overrides[model];
+            } else {
+              // Silent fallback: try lookup in modelRegistry, otherwise fall back to 8,000
+              totalContext = lookupModel(model, provider).contextWindow;
+            }
+          } else {
+            // Anthropic fallback if query failed/offline
+            totalContext = lookupModel(model, provider).contextWindow;
+          }
         }
+      } else {
+        // Other cloud providers (OpenAI, Google, xAI, etc.): lookup registry
+        totalContext = lookupModel(model, provider).contextWindow;
       }
       setTotalContextLimit(totalContext);
     } catch (err) {
@@ -527,11 +546,24 @@ function ChatPanel({
       setTotalContextLimit(8000);
     }
 
+    const ceiling = getContextBudgetCeiling(currentModel, currentProvider);
+
     const isAuto = getChatContextAuto();
     if (!isAuto) {
       setContextTooSmall(false);
-      setResolvedDocBudget(getChatContextLimit());
+      const manualLimit = getChatContextLimit();
+      setResolvedDocBudget(manualLimit);
       setResolvedVaultBudget(8000);
+
+      const systemReserve = 500;
+      const outputReserve = 1500;
+      const remainingForHistory = Math.max(
+        0,
+        totalContext - systemReserve - outputReserve - manualLimit - 8000
+      );
+      setResolvedHistoryBudget(
+        boundedBudget(remainingForHistory, remainingForHistory, 1000, totalContext)
+      );
       return;
     }
 
@@ -544,24 +576,36 @@ function ChatPanel({
 
       const systemReserve = 500;
       const outputReserve = 1500;
-      const availableContext = Math.max(
-        0,
-        totalContext - systemReserve - outputReserve - historyTokens
-      );
+
+      // Calculate max net budget for allocation under safety ceiling
+      const netBudget = Math.max(0, ceiling - systemReserve - outputReserve);
+
+      // History gets up to 40% of the net budget, with a minimum desired of 4000 tokens
+      const desiredHistory = Math.max(4000, Math.floor(netBudget * 0.4));
+      const historyBudget = boundedBudget(historyTokens, desiredHistory, 1000, ceiling);
+      setResolvedHistoryBudget(historyBudget);
+
+      // Remaining context budget for docs and vault
+      const availableContext = Math.max(0, netBudget - historyBudget);
 
       const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
 
       if (isSingleConsumer) {
-        const docBudget = boundedBudget(availableContext, availableContext);
+        const docBudget = boundedBudget(availableContext, availableContext, 1000, ceiling);
         setResolvedDocBudget(docBudget);
         setResolvedVaultBudget(0);
         setContextTooSmall(docBudget === 0);
       } else {
-        const docBudget = boundedBudget(availableContext * 0.5, availableContext * 0.5);
+        const docBudget = boundedBudget(
+          availableContext * 0.5,
+          availableContext * 0.5,
+          1000,
+          ceiling
+        );
         if (docBudget === 0) {
           setContextTooSmall(true);
           setResolvedDocBudget(0);
-          setResolvedVaultBudget(boundedBudget(availableContext, availableContext));
+          setResolvedVaultBudget(boundedBudget(availableContext, availableContext, 1000, ceiling));
         } else {
           setContextTooSmall(false);
           setResolvedDocBudget(docBudget);
@@ -573,6 +617,7 @@ function ChatPanel({
       setContextTooSmall(false);
       setResolvedDocBudget(6000);
       setResolvedVaultBudget(8000);
+      setResolvedHistoryBudget(4000);
     }
   }, [messages, sessionId, selectedNodeIds, currentProvider, currentModel]);
 
@@ -1006,7 +1051,6 @@ function ChatPanel({
     };
   }, [sessionId]);
 
-  const canSend = useMemo(() => input.trim().length > 0 && !isSending, [input, isSending]);
   const visibleMessages = useMemo(() => {
     if (messages.length <= MAX_RENDERED_MESSAGES) {
       return messages;
@@ -1067,7 +1111,8 @@ function ChatPanel({
           isRedactedUnlocked,
           sessionId,
           attachedText,
-          resolvedVaultBudget
+          resolvedVaultBudget,
+          resolvedHistoryBudget
         );
 
         const aiMsgId = crypto.randomUUID();
@@ -1110,6 +1155,7 @@ function ChatPanel({
       setMessages,
       resolvedDocBudget,
       resolvedVaultBudget,
+      resolvedHistoryBudget,
     ]
   );
 
@@ -1144,8 +1190,16 @@ function ChatPanel({
   const totalUsed = useMemo(() => {
     const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
     const vaultTokens = isSingleConsumer ? 0 : resolvedVaultBudget;
-    return systemReserve + historyTokens + attachedDocTokens + vaultTokens;
-  }, [historyTokens, attachedDocTokens, sessionId, selectedNodeIds, resolvedVaultBudget]);
+    const cappedHistory = Math.min(historyTokens, resolvedHistoryBudget);
+    return systemReserve + cappedHistory + attachedDocTokens + vaultTokens;
+  }, [
+    historyTokens,
+    resolvedHistoryBudget,
+    attachedDocTokens,
+    sessionId,
+    selectedNodeIds,
+    resolvedVaultBudget,
+  ]);
 
   const contextPercentage = useMemo(() => {
     if (totalContextLimit <= 0) return 0;
@@ -1163,6 +1217,31 @@ function ChatPanel({
     if (contextPercentage >= 75) return "warning";
     return "";
   }, [contextPercentage]);
+
+  const isDeadEnd = useMemo(() => {
+    const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
+    const vaultTokens = isSingleConsumer ? 0 : resolvedVaultBudget;
+
+    // Safety cap ceiling or user-configured manual context limit
+    const activeLimit = getChatContextAuto()
+      ? Math.min(Math.floor(totalContextLimit * AUTO_WINDOW_FRACTION), ABSOLUTE_HARD_CAP)
+      : totalContextLimit;
+
+    const netSpaceForPrompt = activeLimit - systemReserve - 1500 - attachedDocTokens - vaultTokens;
+    return netSpaceForPrompt < 1000; // less than 1000 tokens left for prompt + history
+  }, [
+    sessionId,
+    selectedNodeIds,
+    resolvedVaultBudget,
+    attachedDocTokens,
+    totalContextLimit,
+    systemReserve,
+  ]);
+
+  const canSend = useMemo(
+    () => input.trim().length > 0 && !isSending && !isDeadEnd,
+    [input, isSending, isDeadEnd]
+  );
 
   const formatTokens = (val: number): string => {
     if (val >= 1000) {
@@ -2043,6 +2122,16 @@ function ChatPanel({
                   <span>Total Budget:</span>
                   <strong>{formatTokens(totalContextLimit)}</strong>
                 </div>
+                {getChatContextAuto() && (
+                  <div className="tooltip-row" style={{ fontSize: "11px", opacity: 0.85 }}>
+                    <span>Auto Cap (safety margin):</span>
+                    <strong>
+                      {formatTokens(getContextBudgetCeiling(currentModel, currentProvider))} (
+                      {Math.round(AUTO_WINDOW_FRACTION * 100)}% of {formatTokens(totalContextLimit)}{" "}
+                      window)
+                    </strong>
+                  </div>
+                )}
                 <div className="tooltip-row">
                   <span>Percent Used:</span>
                   <strong>{contextPercentage}%</strong>
@@ -2071,7 +2160,16 @@ function ChatPanel({
                 )}
                 <div className="tooltip-row footer">
                   <span>Remaining Headroom:</span>
-                  <strong>{formatTokens(Math.max(0, totalContextLimit - totalUsed))}</strong>
+                  <strong>
+                    {formatTokens(
+                      Math.max(
+                        0,
+                        (getChatContextAuto()
+                          ? getContextBudgetCeiling(currentModel, currentProvider)
+                          : totalContextLimit) - totalUsed
+                      )
+                    )}
+                  </strong>
                 </div>
               </div>
             </div>
@@ -2125,6 +2223,46 @@ function ChatPanel({
         </div>
 
         {attachmentChipsJsx}
+
+        {budgetedDocs.length > 0 && !docNoticeSessions[sessionId] && (
+          <div className="chat-context-banner doc-persistence-notice">
+            <span className="banner-icon">
+              <MessageIcon size={14} />
+            </span>
+            <span className="banner-text">
+              This document will be included in every message for the rest of this chat.
+            </span>
+            <button
+              type="button"
+              className="banner-close-btn"
+              onClick={() => setDocNoticeSessions((prev) => ({ ...prev, [sessionId]: true }))}
+              aria-label="Dismiss notice"
+            >
+              <CloseIcon size={12} />
+            </button>
+          </div>
+        )}
+
+        {isDeadEnd ? (
+          <div className="chat-context-banner blocking-warning">
+            <span className="banner-icon">
+              <AlertIcon size={14} />
+            </span>
+            <span className="banner-text">
+              Context full, cannot send. Reduce attachments or clear history.
+            </span>
+          </div>
+        ) : historyTokens > resolvedHistoryBudget ? (
+          <div className="chat-context-banner informational-warning">
+            <span className="banner-icon">
+              <GearIcon size={14} />
+            </span>
+            <span className="banner-text">
+              Older messages will be dropped to fit this model's context.
+            </span>
+          </div>
+        ) : null}
+
         {/* High-rounded input area matching search bar styles */}
         <div className="chat-input-wrapper">
           <button

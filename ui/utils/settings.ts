@@ -291,6 +291,33 @@ export function setChatContextLimit(val: number): void {
   window.dispatchEvent(new CustomEvent("mindvault:llm-settings-changed"));
 }
 
+const LOCAL_CONTEXT_OVERRIDES_KEY = "mindvault.llm.local_context_overrides";
+
+export function getLocalModelContextOverrides(): Record<string, number> {
+  const value = window.localStorage.getItem(LOCAL_CONTEXT_OVERRIDES_KEY);
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+export function setLocalModelContextOverride(model: string, limit: number): void {
+  const current = getLocalModelContextOverrides();
+  if (limit <= 0) {
+    delete current[model];
+  } else {
+    current[model] = limit;
+  }
+  const strVal = JSON.stringify(current);
+  window.localStorage.setItem(LOCAL_CONTEXT_OVERRIDES_KEY, strVal);
+  void settingsSet(LOCAL_CONTEXT_OVERRIDES_KEY, strVal).catch((err) => {
+    console.error("Failed to persist local context overrides in SQLite:", err);
+  });
+  window.dispatchEvent(new CustomEvent("mindvault:llm-settings-changed"));
+}
+
 // Self-executing initialization block to restore all settings from the SQLite database into localStorage at startup.
 // This resolves issues where localStorage is cleared or flaky in Tauri.
 void (async () => {
@@ -307,6 +334,7 @@ void (async () => {
     PLANTUML_CONSENT_KEY,
     CHAT_CONTEXT_AUTO_KEY,
     CHAT_CONTEXT_LIMIT_KEY,
+    LOCAL_CONTEXT_OVERRIDES_KEY,
     "mindvault.llm.ollama.model",
     "mindvault.llm.lmstudio.model",
     "mindvault.llm.openai.model",

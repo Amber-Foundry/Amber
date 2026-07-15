@@ -123,9 +123,38 @@ impl UniversalClient {
 
                 Ok(None)
             }
+            LlmProvider::Anthropic => {
+                if self.endpoint.trim().is_empty() {
+                    return Ok(None);
+                }
+                let url = format!("https://api.anthropic.com/v1/models/{}", self.model.trim());
+                let response = http
+                    .get(&url)
+                    .header("x-api-key", self.endpoint.trim())
+                    .header("anthropic-version", "2023-06-01")
+                    .send()
+                    .await
+                    .map_err(|err| format!("Failed calling Anthropic models endpoint: {err}"))?;
+
+                if !response.status().is_success() {
+                    return Ok(None);
+                }
+
+                let parsed: AnthropicModelResponse = response
+                    .json()
+                    .await
+                    .map_err(|err| format!("Failed parsing Anthropic model response: {err}"))?;
+
+                Ok(parsed.max_input_tokens)
+            }
             _ => Ok(None),
         }
     }
+}
+
+#[derive(Deserialize)]
+struct AnthropicModelResponse {
+    max_input_tokens: Option<usize>,
 }
 
 #[derive(Serialize)]

@@ -285,7 +285,8 @@ export function chatWithLlm(
   isRedactedUnlocked: boolean,
   sessionId: string,
   attachedDocument?: string | null,
-  maxAssemblerTokens?: number | null
+  maxAssemblerTokens?: number | null,
+  maxHistoryTokens?: number | null
 ) {
   return invoke<string>("llm_chat", {
     nodeIds,
@@ -299,6 +300,7 @@ export function chatWithLlm(
     sessionId,
     attachedDocument,
     maxAssemblerTokens,
+    maxHistoryTokens,
   })
     .then((ok) => ({ ok }) as IpcResult<string>)
     .catch((error) => ({ err: String(error) }) as IpcResult<string>);

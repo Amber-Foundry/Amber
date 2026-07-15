@@ -2647,3 +2647,61 @@
   border-top: 1px dashed rgba(255, 255, 255, 0.2);
   padding-top: 6px;
 }
+
+/* Context budget banner notices */
+.chat-context-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-bottom: 4px;
+  width: 100%;
+}
+
+.chat-context-banner.doc-persistence-notice {
+  background: rgba(188, 108, 37, 0.08);
+  border: 1px solid rgba(188, 108, 37, 0.2);
+  color: #a0522d;
+}
+
+.chat-context-banner.blocking-warning {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  color: #dc2626;
+}
+
+.chat-context-banner.informational-warning {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  color: #d97706;
+}
+
+.chat-context-banner .banner-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.chat-context-banner .banner-text {
+  flex-grow: 1;
+}
+
+.chat-context-banner .banner-close-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.chat-context-banner .banner-close-btn:hover {
+  opacity: 1;
+}

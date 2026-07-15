@@ -21,6 +21,8 @@ import {
   setChatContextAuto,
   getChatContextLimit,
   setChatContextLimit,
+  getLocalModelContextOverrides,
+  setLocalModelContextOverride,
 } from "../utils/settings";
 import EmbeddingSettings from "./EmbeddingSettings";
 import AdvancedLlmSettings from "./AdvancedLlmSettings";
@@ -118,6 +120,36 @@ function LocalSettings({
   selectedModel: string;
   setSelectedModel: (m: string) => void;
 }) {
+  const [prevSelectedModel, setPrevSelectedModel] = useState(selectedModel);
+  const [overrideText, setOverrideText] = useState(() => {
+    if (selectedModel) {
+      const overrides = getLocalModelContextOverrides();
+      return overrides[selectedModel]?.toString() || "";
+    }
+    return "";
+  });
+
+  if (selectedModel !== prevSelectedModel) {
+    setPrevSelectedModel(selectedModel);
+    if (selectedModel) {
+      const overrides = getLocalModelContextOverrides();
+      setOverrideText(overrides[selectedModel]?.toString() || "");
+    } else {
+      setOverrideText("");
+    }
+  }
+
+  const handleOverrideChange = (val: string) => {
+    setOverrideText(val);
+    if (!selectedModel) return;
+    const parsed = parseInt(val, 10);
+    if (isNaN(parsed) || parsed <= 0) {
+      setLocalModelContextOverride(selectedModel, 0);
+    } else {
+      setLocalModelContextOverride(selectedModel, parsed);
+    }
+  };
+
   return (
     <div className="settings-section local-settings">
       <div className="provider-toggle segmented-control">
@@ -165,6 +197,24 @@ function LocalSettings({
           ))}
         </select>
       </label>
+
+      {selectedModel && (
+        <label className="settings-field">
+          <span>Context Window Limit (Override)</span>
+          <input
+            type="number"
+            min="0"
+            step="1000"
+            value={overrideText}
+            onChange={(event) => handleOverrideChange(event.target.value)}
+            placeholder="e.g. 16384 (leave blank for model default)"
+          />
+          <span className="field-hint" style={{ marginTop: "4px", fontSize: "11px", opacity: 0.7 }}>
+            If the model limit cannot be queried from the endpoint, this override will be used
+            instead of falling back to 8,000.
+          </span>
+        </label>
+      )}
 
       <button type="button" className="settings-action save" onClick={onSave}>
         Save Configuration
@@ -753,6 +803,10 @@ function LlmSettings() {
                 id="llm-context-auto-checkbox"
               />
               <span className="checkbox-label">Auto-manage attachment context budget</span>
+              <span className="field-hint" style={{ marginTop: "4px", display: "block" }}>
+                Auto uses up to 75% of the model's context window for attachments and reserves the
+                rest for conversation and generation.
+              </span>
             </label>
 
             <label className={`settings-field range-field${chatContextAuto ? " disabled" : ""}`}>

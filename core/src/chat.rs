@@ -233,6 +233,63 @@ pub fn get_chat_history(
     Ok(messages)
 }
 
+pub fn get_recent_chat_history(
+    db: &Connection,
+    session_id: &str,
+    max_tokens: usize,
+) -> Result<Vec<ChatMessage>, crate::AppError> {
+    ensure_session(db, session_id)?;
+
+    let mut statement = db
+        .prepare(
+            "SELECT id, role, content, coalesce(created_at, datetime('now'))
+             FROM session_messages
+             WHERE session_id = ?1
+             ORDER BY created_at DESC, rowid DESC;",
+        )
+        .map_err(|err| {
+            eprintln!("Database error preparing chat history query: {err}");
+            "Failed preparing chat history query".to_string()
+        })?;
+
+    let rows = statement
+        .query_map(params![session_id], |row| {
+            Ok(ChatMessage {
+                id: row.get(0)?,
+                role: row.get(1)?,
+                content: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|err| {
+            eprintln!("Database error querying chat history: {err}");
+            "Failed querying chat history".to_string()
+        })?;
+
+    let mut all_messages = Vec::new();
+    for row in rows {
+        all_messages.push(row.map_err(|err| {
+            eprintln!("Database error decoding chat history row: {err}");
+            "Failed decoding chat history row".to_string()
+        })?);
+    }
+
+    let mut selected_messages = Vec::new();
+    let mut accumulated_tokens = 0;
+
+    for msg in all_messages {
+        let msg_tokens = msg.content.len() / 4;
+        if accumulated_tokens + msg_tokens > max_tokens {
+            break;
+        }
+        accumulated_tokens += msg_tokens;
+        selected_messages.push(msg);
+    }
+
+    selected_messages.reverse();
+    Ok(selected_messages)
+}
+
 pub fn clear_chat_history(db: &Connection, session_id: &str) -> Result<(), crate::AppError> {
     ensure_session(db, session_id)?;
 
@@ -597,6 +654,60 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(empty_new_exists, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_recent_chat_history_capping() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+        let sess_id = "test_session_cap";
+
+        create_session(&conn, sess_id.to_string(), Some("Test Cap".to_string()))?;
+
+        // Append multiple messages:
+        // m1: 40 chars = 10 tokens
+        // m2: 20 chars = 5 tokens
+        // m3: 8 chars = 2 tokens
+        append_message(
+            &conn,
+            "m1".to_string(),
+            "user".to_string(),
+            "a".repeat(40),
+            sess_id,
+        )?;
+        append_message(
+            &conn,
+            "m2".to_string(),
+            "assistant".to_string(),
+            "b".repeat(20),
+            sess_id,
+        )?;
+        append_message(
+            &conn,
+            "m3".to_string(),
+            "user".to_string(),
+            "c".repeat(8),
+            sess_id,
+        )?;
+
+        // If max_tokens is 20, we can hold all:
+        // m3 (2) + m2 (5) + m1 (10) = 17 tokens
+        let history = get_recent_chat_history(&conn, sess_id, 20)?;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].id, "m1");
+        assert_eq!(history[1].id, "m2");
+        assert_eq!(history[2].id, "m3");
+
+        // If max_tokens is 8, we can hold m3 (2) + m2 (5) = 7 tokens
+        let history = get_recent_chat_history(&conn, sess_id, 8)?;
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].id, "m2");
+        assert_eq!(history[1].id, "m3");
+
+        // If max_tokens is 1, we can hold nothing (m3 requires 2 tokens)
+        let history = get_recent_chat_history(&conn, sess_id, 1)?;
+        assert_eq!(history.len(), 0);
 
         Ok(())
     }
