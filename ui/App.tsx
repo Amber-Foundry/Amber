@@ -26,6 +26,8 @@ import { countPendingChangesetItems } from "./services/memoryAgent";
 import "./style/MonoStyles.css";
 import ChatHistoryPanel from "./components/ChatHistoryPanel";
 import { chatListSessions, chatCreateSession, getChatHistory } from "./services/chat";
+import ImportHub from "./components/ImportHub";
+import { MessageIcon, NetworkIcon } from "./components/icons";
 
 const SIDEBAR_RAIL_WIDTH = 48;
 
@@ -39,7 +41,7 @@ function App() {
   const [pendingProposalCount, setPendingProposalCount] = useState<number>(0);
   const [isDiffPanelOpen, setIsDiffPanelOpen] = useState<boolean>(false);
   const [selectedChangesetId, setSelectedChangesetId] = useState<string | null>(null);
-  const [leftPanelView, setLeftPanelView] = useState<"browse" | "history">("browse");
+  const [leftPanelView, setLeftPanelView] = useState<"browse" | "history" | "import">("browse");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -365,7 +367,7 @@ function App() {
     setRightResizing(true);
   };
 
-  function onLeftRailToggle(view: "browse" | "history") {
+  function onLeftRailToggle(view: "browse" | "history" | "import") {
     if (view === "browse" && selectedVaultRequiresUnlock) {
       return;
     }
@@ -509,7 +511,7 @@ function App() {
         {!onboardingResolved ? (
           <section className="onboarding-shell">
             <div className="onboarding-card onboarding-loading-card">
-              <h1>Loading MindVault...</h1>
+              <h1>Loading Amber...</h1>
               <p>Checking onboarding status.</p>
             </div>
           </section>
@@ -569,13 +571,13 @@ function App() {
                       className={`canvas-view-toggle-btn ${viewMode === "chat" ? "active" : ""}`}
                       onClick={() => handleSetViewMode("chat")}
                     >
-                      💬 Recall / Chat
+                      <MessageIcon size={14} /> Recall / Chat
                     </button>
                     <button
                       className={`canvas-view-toggle-btn ${viewMode === "spatial" ? "active" : ""}`}
                       onClick={() => handleSetViewMode("spatial")}
                     >
-                      🕸️ Spatial Workspace
+                      <NetworkIcon size={14} /> Spatial Workspace
                     </button>
                   </div>
                 )}
@@ -657,6 +659,13 @@ function App() {
                     <ChatHistoryPanel
                       activeSessionId={activeSessionId}
                       setActiveSessionId={setActiveSessionId}
+                    />
+                  ) : leftPanelView === "import" ? (
+                    <ImportHub
+                      onOpenImportChangeset={(changesetId) => {
+                        setSelectedChangesetId(changesetId);
+                        setIsDiffPanelOpen(true);
+                      }}
                     />
                   ) : !selectedVaultId ? (
                     <VaultSidebar
@@ -792,6 +801,28 @@ function App() {
                     >
                       <circle cx="12" cy="12" r="9" />
                       <path d="M12 7v5l3 3" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className={`icon-rail-btn ${leftPaneExpanded && leftPanelView === "import" ? "active" : ""}`}
+                    onClick={() => onLeftRailToggle("import")}
+                    title="Import"
+                    aria-label="Toggle import panel"
+                  >
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M12 3v12" />
+                      <path d="M7 10l5 5 5-5" />
+                      <path d="M4 19h16" />
                     </svg>
                   </button>
                 </nav>

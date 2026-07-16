@@ -23,6 +23,7 @@ tauri = { version = "2.11", default-features = false, features = ["wry", "test"]
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.39.0", features = ["bundled", "backup"] }
 ts-rs = "11"
 argon2 = "0.5"
@@ -38,6 +39,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # Keep ort-sys on the same release candidate; newer rc builds changed downloader features.
 ort-sys = { version = "=2.0.0-rc.9", default-features = false }
 tokenizers = { version = "0.19", default-features = false, features = ["unstable_wasm"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+sha2 = "0.10"
+pdfium-render = "0.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "=2.0.0-rc.9", default-features = false, features = [

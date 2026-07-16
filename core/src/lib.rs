@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chat::ChatMessage;
 use rusqlite::OptionalExtension;
@@ -13,9 +13,12 @@ use tauri::{Emitter, Manager};
 mod auth;
 mod chat;
 pub mod embed;
+pub mod ingest;
 pub mod ipc_types;
 pub mod llm;
 pub mod memory_agent;
+pub mod models;
+pub mod ocr;
 pub mod onboarding;
 mod priority;
 mod privacy;
@@ -25,11 +28,16 @@ use ipc_types::{
     NodeUpdateInput, OnboardingNodeCommitInput, OnboardingProposedNode, Tag, TagCreateInput, Vault,
     VaultCreateInput, VaultUpdateInput,
 };
-pub use ipc_types::{EmbeddingReembedInput, EmbeddingStatus};
+pub use ipc_types::{
+    EmbeddingReembedInput, EmbeddingStatus, ImportExtractionPreview, ImportJobStatus,
+    ImportStartJobInput,
+};
 
 // MARK: Internal Types and Constants
 
 /// Default `max_tokens` for context assembly (`debug_assemble_context`, `llm_chat`).
+/// Note: `llm_chat` diverges dynamically depending on the model context budget,
+/// whereas `debug_assemble_context` retains this static default.
 /// Keep in sync with `CONTEXT_MAX_TOKENS` in `ui/constants/contextBudget.ts`.
 const DEFAULT_ASSEMBLER_MAX_TOKENS: usize = 8000;
 
@@ -42,6 +50,14 @@ static MEMORY_AGENT_LIMITER: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 
 static EMBEDDING_LIMITER: std::sync::OnceLock<
+    governor::RateLimiter<
+        governor::state::direct::NotKeyed,
+        governor::state::InMemoryState,
+        governor::clock::DefaultClock,
+    >,
+> = std::sync::OnceLock::new();
+
+static IMPORT_LIMITER: std::sync::OnceLock<
     governor::RateLimiter<
         governor::state::direct::NotKeyed,
         governor::state::InMemoryState,
@@ -731,6 +747,17 @@ fn run_seed_data(conn: &mut Connection) -> Result<(), String> {
     )
     .map_err(|err| format!("Failed inserting Root Graph vault: {err}"))?;
 
+    // Soft-deleted Root Graph blocks INSERT OR IGNORE while privacy queries require deleted_at IS NULL.
+    tx.execute(
+        "UPDATE vaults
+         SET deleted_at = NULL,
+             name = COALESCE(NULLIF(name, ''), 'Root Graph'),
+             updated_at = datetime('now')
+         WHERE id = 'vault_root_graph';",
+        [],
+    )
+    .map_err(|err| format!("Failed restoring Root Graph vault: {err}"))?;
+
     tx.execute(
         "INSERT OR IGNORE INTO vaults (id, name, icon, description, privacy_tier, priority_profile, sort_order, meta)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
@@ -951,6 +978,7 @@ pub(crate) struct DbState {
     pub(crate) db_path: PathBuf,
     pub(crate) redacted_session_key: Mutex<Option<redacted::SessionKey>>,
     pub(crate) embed_job: Arc<Mutex<Option<embed::EmbedJobHandle>>>,
+    pub(crate) import_job: Arc<Mutex<Option<ingest::ImportJobHandle>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1003,6 +1031,25 @@ pub fn check_rate_limit(key: &str) -> Result<(), String> {
             );
         }
     }
+    if key == "import" {
+        let limiter = IMPORT_LIMITER.get_or_init(|| {
+            let quota = match governor::Quota::with_period(std::time::Duration::from_secs(5)) {
+                Some(q) => q,
+                None => {
+                    let fallback_nonzero = std::num::NonZeroU32::MIN;
+                    governor::Quota::per_second(fallback_nonzero)
+                }
+            };
+            governor::RateLimiter::direct(quota)
+        });
+
+        if limiter.check().is_err() {
+            return Err(
+                "Rate limit exceeded for import operations. Please wait before starting another import job."
+                    .to_string(),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1016,6 +1063,19 @@ where
     let mut guard = embed_job
         .lock()
         .map_err(|_| "Embedding job state lock is poisoned; restart the app.".to_string())?;
+    Ok(f(&mut guard))
+}
+
+fn with_import_job_lock<T, F>(
+    import_job: &Arc<Mutex<Option<ingest::ImportJobHandle>>>,
+    f: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&mut Option<ingest::ImportJobHandle>) -> T,
+{
+    let mut guard = import_job
+        .lock()
+        .map_err(|_| "Import job state lock is poisoned; restart the app.".to_string())?;
     Ok(f(&mut guard))
 }
 
@@ -1225,6 +1285,140 @@ fn clear_matching_embed_job(
         Err(_) => {
             eprintln!("[re-embed] embed_job lock poisoned during worker cleanup");
         }
+    }
+}
+
+fn clear_matching_import_job(
+    import_job: &Arc<Mutex<Option<ingest::ImportJobHandle>>>,
+    cancel: &Arc<AtomicBool>,
+) {
+    match import_job.lock() {
+        Ok(mut guard) => {
+            if let Some(active_handle) = guard.as_ref() {
+                if Arc::ptr_eq(&active_handle.cancel, cancel) {
+                    *guard = None;
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("[import] import_job lock poisoned during worker cleanup");
+        }
+    }
+}
+
+struct ImportJobSlotGuard {
+    import_job: Arc<Mutex<Option<ingest::ImportJobHandle>>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for ImportJobSlotGuard {
+    fn drop(&mut self) {
+        clear_matching_import_job(&self.import_job, &self.cancel);
+    }
+}
+
+fn build_import_job_status(conn: &Connection, job_id: &str) -> Result<ImportJobStatus, String> {
+    let row = ingest::get_import_job(conn, job_id)?
+        .ok_or_else(|| format!("Import job not found: {job_id}"))?;
+    Ok(ingest::import_job_row_to_status(row))
+}
+
+fn emit_import_job_status(app_handle: &tauri::AppHandle, conn: &Connection, job_id: &str) {
+    if let Ok(status) = build_import_job_status(conn, job_id) {
+        let _ = app_handle.emit("import-job-status-changed", status);
+    }
+}
+
+fn validate_import_start_input(
+    conn: &Connection,
+    input: &ImportStartJobInput,
+) -> Result<PathBuf, String> {
+    let path = PathBuf::from(input.file_path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("Import file path is required.".to_string());
+    }
+    if !path.is_file() {
+        return Err(format!("Import file does not exist: {}", path.display()));
+    }
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if ext != "pdf" {
+        return Err("Only PDF files are supported for import.".to_string());
+    }
+    if input.use_llm_extraction {
+        let provider = input.provider.as_deref().unwrap_or("").trim();
+        let model = input.model.as_deref().unwrap_or("").trim();
+        if provider.is_empty() || model.is_empty() {
+            return Err(
+                "AI extraction requires both provider and model to be configured.".to_string(),
+            );
+        }
+    }
+    if let Some(vault_id) = input.target_vault_id.as_deref() {
+        let exists_vault: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM vaults WHERE id = ?1 AND deleted_at IS NULL LIMIT 1;",
+                [vault_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| format!("Failed validating target vault: {err}"))?;
+        let exists_subvault: Option<i64> = if exists_vault.is_none() {
+            conn.query_row(
+                "SELECT 1 FROM sub_vaults WHERE id = ?1 AND deleted_at IS NULL LIMIT 1;",
+                [vault_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| format!("Failed validating target subvault: {err}"))?
+        } else {
+            None
+        };
+        if exists_vault.is_none() && exists_subvault.is_none() {
+            return Err(format!("Target vault not found: {vault_id}"));
+        }
+    }
+    Ok(path)
+}
+
+const MIN_RASTERIZATION_DPI: u16 = 72;
+const MAX_RASTERIZATION_DPI: u16 = 1200;
+const DEFAULT_RASTERIZATION_DPI: u16 = 300;
+
+fn clamp_rasterization_dpi(value: i32) -> u16 {
+    if value <= 0 {
+        DEFAULT_RASTERIZATION_DPI
+    } else {
+        (value as u32).clamp(MIN_RASTERIZATION_DPI as u32, MAX_RASTERIZATION_DPI as u32) as u16
+    }
+}
+
+fn ingest_config_from_input(input: &ImportStartJobInput) -> ingest::IngestJobConfig {
+    let rasterization_dpi = clamp_rasterization_dpi(input.rasterization_dpi);
+    let (provider, endpoint, model) = if input.use_llm_extraction {
+        (
+            input.provider.clone(),
+            input.endpoint.clone(),
+            input.model.clone(),
+        )
+    } else {
+        (None, None, None)
+    };
+    let allowed_vault_keys = input.target_vault_id.as_deref().map(|vault_id| {
+        crate::onboarding::category_key_for_vault_id(vault_id)
+            .map(|key| vec![key.to_string()])
+            .unwrap_or_default()
+    });
+    ingest::IngestJobConfig {
+        rasterization_dpi,
+        provider,
+        endpoint,
+        model,
+        allowed_vault_keys,
+        ..Default::default()
     }
 }
 
@@ -1573,6 +1767,7 @@ pub fn run() {
                 db_path: db_path.clone(),
                 redacted_session_key: Mutex::new(None),
                 embed_job: Arc::new(Mutex::new(None)),
+                import_job: Arc::new(Mutex::new(None)),
             });
 
             let bg_path = db_path;
@@ -1590,6 +1785,15 @@ pub fn run() {
                 }
             });
             chat::purge_temporary_session(&conn)?;
+            chat::purge_empty_sessions(&conn)
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+            // Clean up any stale active import jobs on startup
+            let _ = conn.execute(
+                "UPDATE import_jobs 
+                 SET status = 'failed', error = 'Interrupted due to application restart' 
+                 WHERE status IN ('pending', 'extracting');",
+                [],
+            );
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -1601,6 +1805,13 @@ pub fn run() {
             embedding_get_status,
             embedding_reembed_start,
             embedding_reembed_cancel,
+            import_start_job,
+            import_get_status,
+            import_list_jobs,
+            import_get_extraction_preview,
+            import_cancel_job,
+            import_browse_pdf,
+            ocr_download_models,
             chat_get_history,
             chat_append_message,
             chat_clear_history,
@@ -1644,7 +1855,9 @@ pub fn run() {
             debug_assemble_context,
             llm_count_tokens,
             llm_list_models,
+            get_model_context_limit,
             llm_chat,
+            chat_extract_pdf_text,
             onboarding_extract_proposals,
             onboarding_commit,
             save_markdown_file,
@@ -1704,29 +1917,38 @@ pub(crate) fn resolve_vault_effective_privacy(
     let mut strictest = "open".to_string();
 
     while let Some(id) = current_id {
-        let record = conn
-            .query_row(
-                "SELECT parent_vault_id, privacy_tier
-                 FROM (
-                    SELECT id, NULL AS parent_vault_id, privacy_tier
-                    FROM vaults
-                    WHERE deleted_at IS NULL
-                    UNION ALL
-                    SELECT id, vault_id AS parent_vault_id, COALESCE(privacy_tier, 'open') AS privacy_tier
-                    FROM sub_vaults
-                    WHERE deleted_at IS NULL
-                 )
-                 WHERE id = ?1
-                 LIMIT 1;",
-                [id.as_str()],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, String>(1)?,
-                    ))
-                },
-            )
-            .map_err(|err| format!("Failed resolving vault privacy for {vault_id}: {err}"))?;
+        let record = match conn.query_row(
+            "SELECT parent_vault_id, privacy_tier
+             FROM (
+                SELECT id, NULL AS parent_vault_id, privacy_tier
+                FROM vaults
+                WHERE deleted_at IS NULL
+                UNION ALL
+                SELECT id, vault_id AS parent_vault_id, COALESCE(privacy_tier, 'open') AS privacy_tier
+                FROM sub_vaults
+                WHERE deleted_at IS NULL
+             )
+             WHERE id = ?1
+             LIMIT 1;",
+            [id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                ))
+            },
+        ) {
+            Ok(record) => record,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                eprintln!(
+                    "[privacy] vault or subvault '{id}' missing or deleted; treating chain as '{strictest}'"
+                );
+                return Ok(strictest);
+            }
+            Err(err) => {
+                return Err(format!("Failed resolving vault privacy for {vault_id}: {err}"));
+            }
+        };
 
         strictest =
             privacy::get_effective_privacy(Some(record.1.as_str()), None, Some(strictest.as_str()))
@@ -1903,7 +2125,7 @@ pub async fn execute_memory_extraction_pipeline(
     .await?;
 
     // 6. Parse response
-    let candidates = match memory_agent::parser::parse_candidates_from_llm_output(&raw) {
+    let candidates = match memory_agent::parser::parse_candidates_from_llm_output(&raw, None) {
         Ok(c) => c,
         Err(err) => {
             eprintln!("Failed to parse candidates JSON, logging raw response and recovering gracefully: {err}");
@@ -1988,6 +2210,7 @@ pub async fn test_helper_memory_extract_force(
         db_path,
         redacted_session_key: std::sync::Mutex::new(None),
         embed_job: Arc::new(std::sync::Mutex::new(None)),
+        import_job: Arc::new(std::sync::Mutex::new(None)),
     });
     let state = app.state::<AppState>();
     memory_extract_force(provider, endpoint, model, state).await
@@ -2013,6 +2236,7 @@ pub fn test_helper_embedding_get_status(
         db_path,
         redacted_session_key: std::sync::Mutex::new(None),
         embed_job: Arc::new(std::sync::Mutex::new(None)),
+        import_job: Arc::new(std::sync::Mutex::new(None)),
     });
     let state = app.state::<AppState>();
     match embedding_get_status(state) {
@@ -2031,9 +2255,47 @@ pub fn test_helper_embedding_reembed_cancel(db_path: std::path::PathBuf) -> Resu
         embed_job: Arc::new(std::sync::Mutex::new(Some(embed::EmbedJobHandle {
             cancel: Arc::clone(&cancel),
         }))),
+        import_job: Arc::new(std::sync::Mutex::new(None)),
     });
     let state = app.state::<AppState>();
     match embedding_reembed_cancel(state) {
+        IpcResponse::Ok { ok: () } => Ok(cancel.load(Ordering::Relaxed)),
+        IpcResponse::Err { err } => Err(err),
+    }
+}
+
+pub fn test_helper_try_reserve_import_slot(
+    import_job: Arc<std::sync::Mutex<Option<ingest::ImportJobHandle>>>,
+    job_id: String,
+) -> Result<(), String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    with_import_job_lock(&import_job, |slot| {
+        if slot.is_some() {
+            return Err(
+                "An import job is already active. Please cancel it or wait for it to finish."
+                    .to_string(),
+            );
+        }
+        *slot = Some(ingest::ImportJobHandle { job_id, cancel });
+        Ok(())
+    })?
+}
+
+pub fn test_helper_import_cancel(db_path: std::path::PathBuf) -> Result<bool, String> {
+    use tauri::Manager;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let app = tauri::test::mock_app();
+    app.manage(AppState {
+        db_path,
+        redacted_session_key: std::sync::Mutex::new(None),
+        embed_job: Arc::new(std::sync::Mutex::new(None)),
+        import_job: Arc::new(std::sync::Mutex::new(Some(ingest::ImportJobHandle {
+            job_id: "job-test-cancel".to_string(),
+            cancel: Arc::clone(&cancel),
+        }))),
+    });
+    let state = app.state::<AppState>();
+    match import_cancel_job(state) {
         IpcResponse::Ok { ok: () } => Ok(cancel.load(Ordering::Relaxed)),
         IpcResponse::Err { err } => Err(err),
     }
@@ -2050,6 +2312,7 @@ pub fn test_helper_settings_set(
         db_path,
         redacted_session_key: std::sync::Mutex::new(None),
         embed_job: Arc::new(std::sync::Mutex::new(None)),
+        import_job: Arc::new(std::sync::Mutex::new(None)),
     });
     let state = app.state::<AppState>();
     match settings_set(key, value, state) {
@@ -2592,6 +2855,330 @@ fn embedding_reembed_cancel(state: tauri::State<'_, AppState>) -> IpcResponse<()
             handle.cancel.store(true, Ordering::Relaxed);
         }
     }))
+}
+
+#[tauri::command]
+fn import_start_job(
+    state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    input: ImportStartJobInput,
+) -> IpcResponse<ImportJobStatus> {
+    into_ipc((|| {
+        check_rate_limit("import")?;
+
+        let conn = open_connection(&state.db_path)?;
+        let file_path = validate_import_start_input(&conn, &input)?;
+        let (parent_for_fk, write_target) =
+            ingest::resolve_import_vault_ids(&conn, input.target_vault_id.as_deref())?;
+
+        let import_job = Arc::clone(&state.import_job);
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let job_id = generate_id(&conn, "job")?;
+
+        with_import_job_lock(&import_job, |slot| {
+            if slot.is_some() {
+                return Err(
+                    "An import job is already active. Please cancel it or wait for it to finish."
+                        .to_string(),
+                );
+            }
+            *slot = Some(ingest::ImportJobHandle {
+                job_id: job_id.clone(),
+                cancel: Arc::clone(&cancel),
+            });
+            Ok(())
+        })??;
+
+        let source_name = file_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("document.pdf")
+            .to_string();
+        let rasterization_dpi = i32::from(clamp_rasterization_dpi(input.rasterization_dpi));
+
+        let initial_status = match (|| -> Result<ImportJobStatus, String> {
+            ingest::create_import_job(
+                &conn,
+                &job_id,
+                &ingest::CreateImportJobParams {
+                    import_type: "pdf".to_string(),
+                    source_name,
+                    // FK to vaults(id): always store parent vault when a subvault was selected.
+                    target_vault_id: parent_for_fk.clone(),
+                    rasterization_dpi,
+                },
+            )?;
+            build_import_job_status(&conn, &job_id)
+        })() {
+            Ok(status) => status,
+            Err(err) => {
+                let _ = with_import_job_lock(&import_job, |slot| {
+                    *slot = None;
+                });
+                return Err(err);
+            }
+        };
+
+        let db_path = state.db_path.clone();
+        let config = ingest_config_from_input(&input);
+        // Selected vault or subvault id — used as the write target when finalizing.
+        let worker_target_vault_id = write_target.clone();
+        let worker_model = config.model.clone();
+        let app_handle_worker = app_handle.clone();
+        let import_job_worker = Arc::clone(&import_job);
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_job_id = job_id.clone();
+        let worker_file_path = file_path;
+        let worker_rasterization_dpi = rasterization_dpi;
+
+        std::thread::spawn(move || {
+            let _import_slot_guard = ImportJobSlotGuard {
+                import_job: Arc::clone(&import_job_worker),
+                cancel: Arc::clone(&worker_cancel),
+            };
+
+            let (progress_tx, progress_rx) =
+                std::sync::mpsc::channel::<ingest::ImportJobProgress>();
+            let progress_db_path = db_path.clone();
+            let progress_job_id = worker_job_id.clone();
+            let progress_app = app_handle_worker.clone();
+
+            let progress_handle = std::thread::spawn(move || {
+                let conn = match open_connection(&progress_db_path) {
+                    Ok(conn) => conn,
+                    Err(err) => {
+                        eprintln!("[import] Failed to open progress thread connection: {err}");
+                        return;
+                    }
+                };
+                let mut last_write = Instant::now() - Duration::from_millis(250);
+                let mut last_emit = Instant::now() - Duration::from_millis(250);
+                let mut pending_progress: Option<ingest::ImportJobProgress> = None;
+                while let Ok(progress) = progress_rx.recv() {
+                    // Flush immediately when a page completes or pages are done (LLM phase).
+                    // Do not treat mid-job ticks as staged — only finalize sets staged.
+                    let is_final =
+                        progress.current_page == progress.total_pages && progress.total_pages > 0;
+                    pending_progress = Some(progress);
+                    if is_final || last_write.elapsed() >= Duration::from_millis(250) {
+                        if let Some(ref pending) = pending_progress {
+                            if ingest::update_import_job_from_progress(
+                                &conn,
+                                &progress_job_id,
+                                pending,
+                            )
+                            .is_ok()
+                            {
+                                pending_progress = None;
+                                last_write = Instant::now();
+                                if is_final || last_emit.elapsed() >= Duration::from_millis(250) {
+                                    emit_import_job_status(&progress_app, &conn, &progress_job_id);
+                                    last_emit = Instant::now();
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(ref pending) = pending_progress {
+                    if ingest::update_import_job_from_progress(&conn, &progress_job_id, pending)
+                        .is_ok()
+                    {
+                        emit_import_job_status(&progress_app, &conn, &progress_job_id);
+                    }
+                }
+            });
+
+            let progress_for_job = progress_tx.clone();
+            enum ImportPdfWorkerOutcome {
+                Staged(ingest::IngestJobResult),
+                UserCancelled,
+                Failed(String),
+            }
+
+            let pdf_outcome = (|| -> Result<ImportPdfWorkerOutcome, String> {
+                let conn = open_connection(&db_path)?;
+                ingest::set_import_job_status(&conn, &worker_job_id, "extracting", None)?;
+                emit_import_job_status(&app_handle_worker, &conn, &worker_job_id);
+
+                match ingest::IngestJobEngine::process_pdf_job(
+                    &worker_job_id,
+                    &worker_file_path,
+                    config,
+                    Some(progress_for_job),
+                    Some(worker_cancel.as_ref()),
+                ) {
+                    Ok(job_result) => Ok(ImportPdfWorkerOutcome::Staged(job_result)),
+                    Err(ocr::engine::OcrError::Cancelled) => {
+                        Ok(ImportPdfWorkerOutcome::UserCancelled)
+                    }
+                    Err(err) => Ok(ImportPdfWorkerOutcome::Failed(err.to_string())),
+                }
+            })();
+
+            drop(progress_tx);
+            let _ = progress_handle.join();
+
+            let finalize_result = (|| -> Result<(), String> {
+                let mut conn = open_connection(&db_path)?;
+                match pdf_outcome {
+                    Ok(ImportPdfWorkerOutcome::Staged(job_result)) => {
+                        let embed_engine = build_embed_engine_from_settings(&conn).ok();
+                        if let Some((changeset_id, node_count)) = ingest::finalize_import_changeset(
+                            &mut conn,
+                            &worker_job_id,
+                            worker_target_vault_id.as_deref(),
+                            &job_result.candidates,
+                            worker_model.as_deref(),
+                            embed_engine.as_deref(),
+                        )? {
+                            ingest::link_import_job_changeset(
+                                &conn,
+                                &worker_job_id,
+                                &changeset_id,
+                                node_count,
+                            )?;
+                        }
+                        let extraction_path = ingest::derive_document_extraction_path(
+                            job_result.digital_pages,
+                            job_result.ocr_pages,
+                            job_result.hybrid_pages,
+                        );
+                        ingest::update_import_job_staged_metadata(
+                            &conn,
+                            &worker_job_id,
+                            &job_result,
+                            worker_rasterization_dpi,
+                            extraction_path,
+                        )?;
+                    }
+                    Ok(ImportPdfWorkerOutcome::UserCancelled) => {
+                        ingest::set_import_job_status(
+                            &conn,
+                            &worker_job_id,
+                            "failed",
+                            Some("Cancelled by user"),
+                        )?;
+                    }
+                    Ok(ImportPdfWorkerOutcome::Failed(err)) => {
+                        ingest::set_import_job_status(&conn, &worker_job_id, "failed", Some(&err))?;
+                    }
+                    Err(err) => {
+                        ingest::set_import_job_status(&conn, &worker_job_id, "failed", Some(&err))?;
+                    }
+                }
+                emit_import_job_status(&app_handle_worker, &conn, &worker_job_id);
+                Ok(())
+            })();
+
+            if let Err(err) = finalize_result {
+                eprintln!("[import] worker failed: {err}");
+            }
+        });
+
+        Ok(initial_status)
+    })())
+}
+
+#[tauri::command]
+fn import_get_status(
+    state: tauri::State<'_, AppState>,
+    job_id: String,
+) -> IpcResponse<Option<ImportJobStatus>> {
+    into_ipc((|| {
+        let conn = open_connection(&state.db_path)?;
+        let row = ingest::get_import_job(&conn, &job_id)?;
+        Ok(row.map(ingest::import_job_row_to_status))
+    })())
+}
+
+#[tauri::command]
+fn import_list_jobs(
+    state: tauri::State<'_, AppState>,
+    limit: Option<i32>,
+) -> IpcResponse<Vec<ImportJobStatus>> {
+    into_ipc((|| {
+        let conn = open_connection(&state.db_path)?;
+        let limit = limit.unwrap_or(20).max(1);
+        let rows = ingest::list_import_jobs(&conn, limit)?;
+        Ok(rows
+            .into_iter()
+            .map(ingest::import_job_row_to_status)
+            .collect())
+    })())
+}
+
+#[tauri::command]
+fn import_get_extraction_preview(
+    state: tauri::State<'_, AppState>,
+    job_id: String,
+) -> IpcResponse<ImportExtractionPreview> {
+    into_ipc((|| {
+        let conn = open_connection(&state.db_path)?;
+        let preview = ingest::get_import_extraction_preview(&conn, &job_id)?
+            .ok_or_else(|| format!("Import job not found: {job_id}"))?;
+        if preview.markdown.trim().is_empty() {
+            return Err("Extraction preview not available for this job".to_string());
+        }
+        Ok(preview)
+    })())
+}
+
+#[tauri::command]
+fn import_cancel_job(state: tauri::State<'_, AppState>) -> IpcResponse<()> {
+    into_ipc((|| -> Result<(), String> {
+        let has_active = with_import_job_lock(&state.import_job, |slot| {
+            if let Some(handle) = slot.as_ref() {
+                handle.cancel.store(true, Ordering::Relaxed);
+                true
+            } else {
+                false
+            }
+        })?;
+
+        if !has_active {
+            let conn = open_connection(&state.db_path)?;
+            conn.execute(
+                "UPDATE import_jobs 
+                 SET status = 'failed', error = 'Cancelled by user' 
+                 WHERE status IN ('pending', 'extracting');",
+                [],
+            )
+            .map_err(|err| format!("Failed to cancel stuck jobs in database: {err}"))?;
+        }
+        Ok(())
+    })())
+}
+
+#[tauri::command]
+async fn import_browse_pdf() -> IpcResponse<Option<String>> {
+    let path = rfd::AsyncFileDialog::new()
+        .add_filter("PDF", &["pdf"])
+        .pick_file()
+        .await;
+
+    match path {
+        Some(handle) => IpcResponse::Ok {
+            ok: Some(handle.path().to_string_lossy().into_owned()),
+        },
+        None => IpcResponse::Ok { ok: None },
+    }
+}
+
+#[tauri::command]
+async fn ocr_download_models() -> IpcResponse<()> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        ocr::download_ocr_models_if_needed().map_err(|err| err.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => IpcResponse::Ok { ok: () },
+        Ok(Err(err)) => IpcResponse::Err { err },
+        Err(join_err) => IpcResponse::Err {
+            err: format!("Failed to spawn OCR download task: {join_err}"),
+        },
+    }
 }
 
 #[tauri::command]
@@ -4067,6 +4654,25 @@ async fn llm_list_models(provider: String, endpoint: String) -> IpcResponse<Vec<
     into_ipc(llm::client::LlmClient::list_models(&client).await)
 }
 
+#[tauri::command]
+async fn get_model_context_limit(
+    provider: String,
+    endpoint: String,
+    model: String,
+) -> IpcResponse<Option<usize>> {
+    let parsed_provider = match provider.trim().to_lowercase().as_str() {
+        "ollama" => llm::client::LlmProvider::Ollama,
+        "lmstudio" => llm::client::LlmProvider::LmStudio,
+        "anthropic" => llm::client::LlmProvider::Anthropic,
+        "openai" => llm::client::LlmProvider::OpenAi,
+        "google" => llm::client::LlmProvider::Google,
+        "xai" => llm::client::LlmProvider::XAi,
+        _ => return IpcResponse::Ok { ok: None },
+    };
+    let client = llm::client::UniversalClient::new(parsed_provider, endpoint, model);
+    into_ipc(client.get_context_limit().await.map_err(|e| e.to_string()))
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn llm_chat(
@@ -4080,9 +4686,14 @@ async fn llm_chat(
     is_redacted_unlocked: bool,
     state: tauri::State<'_, AppState>,
     session_id: &str,
+    attached_document: Option<String>,
+    max_assembler_tokens: Option<usize>,
+    max_history_tokens: Option<usize>,
 ) -> Result<String, String> {
     let db_path = state.db_path.clone();
-    let persona_instruction = "You are MindVault's personalized, context-aware memory assistant.";
+    // Kept in signature for Tauri IPC contract; history is loaded from DB instead.
+    let _ = user_prompt;
+    let persona_instruction = "You are Amber, a personal memory assistant. Only help capture, organize, and recall the user's notes, ideas, and projects.";
 
     let mut system_prompt = if session_id == "temporary-session" {
         "[Off the Record Mode: Context assembly has been bypassed. No personal memories or notes are accessible in this session.]".to_string()
@@ -4093,7 +4704,7 @@ async fn llm_chat(
             node_ids,
             llm::assembler::AssemblerConfig {
                 scope,
-                max_tokens: DEFAULT_ASSEMBLER_MAX_TOKENS,
+                max_tokens: max_assembler_tokens.unwrap_or(DEFAULT_ASSEMBLER_MAX_TOKENS),
                 is_unlocked: is_redacted_unlocked,
             },
         )?
@@ -4154,6 +4765,17 @@ async fn llm_chat(
         system_prompt = format!("{persona_instruction}\n\n{system_prompt}");
     }
 
+    if let Some(attached_doc) = attached_document.filter(|s| !s.is_empty()) {
+        system_prompt = format!(
+            "{}\n\n[AUXILIARY DOCUMENT]\n\
+             The user attached this document for reference. Use it to answer their questions and cite it when relevant.\n\
+             <attached_document>\n\
+             {}\n\
+             </attached_document>",
+            system_prompt, attached_doc
+        );
+    }
+
     let parsed_provider = match provider.trim().to_lowercase().as_str() {
         "ollama" => llm::client::LlmProvider::Ollama,
         "lmstudio" => llm::client::LlmProvider::LmStudio,
@@ -4165,11 +4787,245 @@ async fn llm_chat(
     };
 
     let client = llm::client::UniversalClient::new(parsed_provider, endpoint, model);
-    let messages = [llm::client::LlmMessage {
-        role: "user".to_string(),
-        content: user_prompt,
-    }];
+
+    // Load recent conversation history (token-budgeted) so the model sees previous turns without overflowing
+    let messages: Vec<llm::client::LlmMessage> = {
+        let conn = open_connection(&db_path)?;
+        let history =
+            chat::get_recent_chat_history(&conn, session_id, max_history_tokens.unwrap_or(4000))
+                .map_err(|e| e.to_string())?;
+        history
+            .into_iter()
+            .map(|msg| llm::client::LlmMessage {
+                role: msg.role,
+                content: msg.content,
+            })
+            .collect()
+    };
+
     llm::client::LlmClient::complete(&client, &system_prompt, &messages).await
+}
+
+#[derive(Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPdfExtraction {
+    pub source_name: String,
+    pub page_count: usize,
+    pub text: String,
+    pub ocr_confidence: Option<f32>,
+    pub needs_ocr_models: bool,
+    pub prompt_injection_flagged: bool,
+    pub page_token_estimates: Vec<usize>,
+}
+
+#[tauri::command]
+async fn chat_extract_pdf_text(file_path: String) -> IpcResponse<ChatPdfExtraction> {
+    use crate::ocr::engine::OcrEngine;
+
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<ChatPdfExtraction, String> {
+        let path = Path::new(&file_path);
+        let source_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Attached Document")
+            .to_string();
+
+        let rasterizer = ocr::PdfRasterizer::new()
+            .map_err(|e| format!("Failed to initialize PDF rasterizer: {e}"))?;
+        let document = rasterizer
+            .load_document_from_file(path)
+            .map_err(|e| format!("Failed to load PDF file: {e}"))?;
+        let page_infos = ocr::PdfRasterizer::scan_loaded_document(&document)
+            .map_err(|e| format!("Failed to scan PDF pages: {e}"))?;
+
+        let total_pages = page_infos.len();
+        if total_pages == 0 {
+            return Err("PDF document contains no pages.".to_string());
+        }
+
+        let mut has_ocr_or_hybrid = false;
+        for p in &page_infos {
+            if p.page_type == ocr::PdfPageType::Ocr || p.page_type == ocr::PdfPageType::Hybrid {
+                has_ocr_or_hybrid = true;
+                break;
+            }
+        }
+
+        let ocr_models_available = ocr::ocr_models_exist();
+        let needs_ocr_models = has_ocr_or_hybrid && !ocr_models_available;
+
+        let mut cached_ocr_engine: Option<ocr::BundledOcrEngine> = None;
+        let mut total_ocr_confidence_sum = 0.0;
+        let mut ocr_pass_count = 0;
+        let mut page_token_estimates = Vec::new();
+
+        let rasterizer_config = ocr::PdfRasterizerConfig { dpi: 150 };
+
+        let mut page_markdowns = Vec::new();
+
+        for (i, p) in page_infos.iter().enumerate() {
+            let (raw_blocks, page_width, page_height) = match p.page_type {
+                ocr::PdfPageType::Digital => {
+                    let raw_blocks =
+                        ocr::PdfRasterizer::extract_digital_blocks_from_document(&document, i)
+                            .map_err(|e| {
+                                format!("Failed extracting digital blocks on page {}: {e}", i + 1)
+                            })?;
+                    (raw_blocks, p.width_pts, p.height_pts)
+                }
+                ocr::PdfPageType::Ocr => {
+                    if !ocr_models_available {
+                        (Vec::new(), p.width_pts, p.height_pts)
+                    } else {
+                        if cached_ocr_engine.is_none() {
+                            cached_ocr_engine = Some(
+                                ocr::BundledOcrEngine::new()
+                                    .map_err(|e| format!("Failed initializing OCR engine: {e}"))?,
+                            );
+                        }
+                        let ocr_engine = cached_ocr_engine
+                            .as_mut()
+                            .ok_or_else(|| "OCR engine not initialized".to_string())?;
+                        let page_img = rasterizer
+                            .render_loaded_page(&document, i, &rasterizer_config)
+                            .map_err(|e| format!("Failed rendering page {} for OCR: {e}", i + 1))?;
+                        let (image_width, image_height) =
+                            (page_img.width() as f32, page_img.height() as f32);
+                        let ocr_output = ocr_engine.recognize(&page_img).map_err(|e| {
+                            format!("OCR recognition failed on page {}: {e}", i + 1)
+                        })?;
+
+                        total_ocr_confidence_sum += ocr_output.avg_confidence;
+                        ocr_pass_count += 1;
+
+                        let raw_blocks = crate::ingest::coords::normalize_blocks_to_pdf_points(
+                            ocr_output
+                                .blocks
+                                .into_iter()
+                                .map(|b| {
+                                    ingest::layout::RawLayoutBlock::new(b.text, b.bbox)
+                                        .with_confidence(b.confidence)
+                                })
+                                .collect(),
+                            image_width,
+                            image_height,
+                            p.width_pts,
+                            p.height_pts,
+                        );
+                        (raw_blocks, p.width_pts, p.height_pts)
+                    }
+                }
+                ocr::PdfPageType::Hybrid => {
+                    let digital_blocks =
+                        ocr::PdfRasterizer::extract_digital_blocks_from_document(&document, i)
+                            .map_err(|e| {
+                                format!("Failed extracting digital blocks on page {}: {e}", i + 1)
+                            })?;
+                    let page_area = p.width_pts * p.height_pts;
+
+                    let run_ocr = if !ocr_models_available {
+                        false
+                    } else {
+                        if digital_blocks.len() < 2 {
+                            true
+                        } else {
+                            let text_area: f32 = digital_blocks
+                                .iter()
+                                .map(|block| block.bbox.width.max(0.0) * block.bbox.height.max(0.0))
+                                .sum();
+                            text_area / page_area.max(1.0) < 0.01
+                        }
+                    };
+
+                    if run_ocr {
+                        if cached_ocr_engine.is_none() {
+                            cached_ocr_engine = Some(
+                                ocr::BundledOcrEngine::new()
+                                    .map_err(|e| format!("Failed initializing OCR engine: {e}"))?,
+                            );
+                        }
+                        let ocr_engine = cached_ocr_engine
+                            .as_mut()
+                            .ok_or_else(|| "OCR engine not initialized".to_string())?;
+                        let page_img = rasterizer
+                            .render_loaded_page(&document, i, &rasterizer_config)
+                            .map_err(|e| format!("Failed rendering page {} for OCR: {e}", i + 1))?;
+                        let (image_width, image_height) =
+                            (page_img.width() as f32, page_img.height() as f32);
+                        let ocr_output = ocr_engine.recognize(&page_img).map_err(|e| {
+                            format!("OCR recognition failed on page {}: {e}", i + 1)
+                        })?;
+
+                        total_ocr_confidence_sum += ocr_output.avg_confidence;
+                        ocr_pass_count += 1;
+
+                        let ocr_blocks = crate::ingest::coords::normalize_blocks_to_pdf_points(
+                            ocr_output
+                                .blocks
+                                .into_iter()
+                                .map(|b| {
+                                    ingest::layout::RawLayoutBlock::new(b.text, b.bbox)
+                                        .with_confidence(b.confidence)
+                                })
+                                .collect(),
+                            image_width,
+                            image_height,
+                            p.width_pts,
+                            p.height_pts,
+                        );
+
+                        let raw_blocks = crate::ingest::job::merge_hybrid_raw_blocks(
+                            digital_blocks,
+                            ocr_blocks,
+                            crate::ingest::HybridMergeStrategy::OcrPreferred,
+                        );
+                        (raw_blocks, p.width_pts, p.height_pts)
+                    } else {
+                        (digital_blocks, p.width_pts, p.height_pts)
+                    }
+                }
+            };
+
+            let layout_blocks = ingest::layout::analyze_layout(raw_blocks, page_width, page_height);
+            let page_ingest_blocks = crate::ingest::assemble_markdown_blocks(&layout_blocks, i);
+
+            let mut page_markdown = crate::ingest::join_ingest_blocks(&page_ingest_blocks);
+            if p.page_type != ocr::PdfPageType::Digital && !ocr_models_available {
+                page_markdown.push_str("\n\n* [Warning: OCR models not installed. Scanned text could not be extracted from this page.] *\n");
+            }
+
+            let page_token_est = crate::llm::assembler::count_tokens(&page_markdown);
+            page_token_estimates.push(page_token_est);
+            page_markdowns.push(page_markdown);
+        }
+
+        let assembled_markdown = page_markdowns.join("\n\n--- PAGE_BREAK ---\n\n");
+        let prompt_injection_flagged = ingest::security::scan_prompt_injection(&assembled_markdown);
+
+        let ocr_confidence = if ocr_pass_count > 0 {
+            Some((total_ocr_confidence_sum / (ocr_pass_count as f32)).clamp(0.0, 1.0))
+        } else {
+            None
+        };
+
+        Ok(ChatPdfExtraction {
+            source_name,
+            page_count: total_pages,
+            text: assembled_markdown,
+            ocr_confidence,
+            needs_ocr_models,
+            prompt_injection_flagged,
+            page_token_estimates,
+        })
+    })
+    .await;
+
+    match result {
+        Ok(res) => into_ipc(res),
+        Err(join_err) => into_ipc(Err(format!(
+            "Failed to spawn PDF extraction task: {join_err}"
+        ))),
+    }
 }
 
 #[tauri::command]
@@ -4523,5 +5379,189 @@ mod tests {
 
         let second = super::check_rate_limit("embedding");
         assert!(second.is_err());
+    }
+
+    #[test]
+    fn validate_import_start_input_rejects_non_pdf() {
+        let txt_path = std::env::temp_dir().join("amber_import_validate_test.txt");
+        std::fs::write(&txt_path, b"hello")
+            .unwrap_or_else(|err| panic!("failed to write temp import validation file: {err}"));
+
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite connection: {err}"));
+        let input = super::ImportStartJobInput {
+            file_path: txt_path.to_string_lossy().to_string(),
+            target_vault_id: None,
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        };
+
+        let result = super::validate_import_start_input(&conn, &input);
+        assert!(result.is_err());
+        let _ = std::fs::remove_file(txt_path);
+    }
+
+    #[test]
+    fn validate_import_start_input_accepts_subvault_id() {
+        let pdf_path = std::env::temp_dir().join("amber_import_subvault_validate.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4")
+            .unwrap_or_else(|err| panic!("failed to write temp pdf: {err}"));
+
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite connection: {err}"));
+        conn.execute_batch(
+            "CREATE TABLE vaults (id TEXT PRIMARY KEY, deleted_at TEXT);
+             CREATE TABLE sub_vaults (id TEXT PRIMARY KEY, vault_id TEXT, deleted_at TEXT);
+             INSERT INTO vaults (id, deleted_at) VALUES ('vault_parent', NULL);
+             INSERT INTO sub_vaults (id, vault_id, deleted_at) VALUES ('sub_year3', 'vault_parent', NULL);",
+        )
+        .unwrap_or_else(|err| panic!("failed to seed vault tables: {err}"));
+
+        let input = super::ImportStartJobInput {
+            file_path: pdf_path.to_string_lossy().to_string(),
+            target_vault_id: Some("sub_year3".to_string()),
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        };
+
+        let result = super::validate_import_start_input(&conn, &input);
+        assert!(
+            result.is_ok(),
+            "expected subvault id to be accepted: {result:?}"
+        );
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn validate_import_start_input_rejects_missing_vault() {
+        let pdf_path = std::env::temp_dir().join("amber_import_missing_vault.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4")
+            .unwrap_or_else(|err| panic!("failed to write temp pdf: {err}"));
+
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite connection: {err}"));
+        conn.execute_batch(
+            "CREATE TABLE vaults (id TEXT PRIMARY KEY, deleted_at TEXT);
+             CREATE TABLE sub_vaults (id TEXT PRIMARY KEY, vault_id TEXT, deleted_at TEXT);",
+        )
+        .unwrap_or_else(|err| panic!("failed to seed vault tables: {err}"));
+
+        let input = super::ImportStartJobInput {
+            file_path: pdf_path.to_string_lossy().to_string(),
+            target_vault_id: Some("vault_does_not_exist".to_string()),
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        };
+
+        let result = super::validate_import_start_input(&conn, &input);
+        assert!(result.is_err());
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn resolve_vault_effective_privacy_missing_vault_is_open() {
+        let conn = Connection::open_in_memory()
+            .unwrap_or_else(|err| panic!("expected in-memory sqlite connection: {err}"));
+        conn.execute_batch(
+            "CREATE TABLE vaults (
+                id TEXT PRIMARY KEY,
+                privacy_tier TEXT NOT NULL DEFAULT 'open',
+                deleted_at TEXT
+             );
+             CREATE TABLE sub_vaults (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT,
+                privacy_tier TEXT,
+                deleted_at TEXT
+             );",
+        )
+        .unwrap_or_else(|err| panic!("failed to create privacy tables: {err}"));
+
+        let tier = super::resolve_vault_effective_privacy(&conn, "vault_root_graph")
+            .unwrap_or_else(|err| panic!("expected missing vault to resolve without error: {err}"));
+        assert_eq!(tier, "open");
+    }
+
+    #[test]
+    fn import_cancel_sets_flag() {
+        let cancelled = super::test_helper_import_cancel(std::env::temp_dir().join("dummy.db"))
+            .unwrap_or_else(|err| panic!("import cancel helper failed: {err}"));
+        assert!(cancelled);
+    }
+
+    #[test]
+    fn import_slot_reservation_allows_only_one_concurrent_holder() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let import_job = Arc::new(std::sync::Mutex::new(None));
+        let barrier = Arc::new(Barrier::new(2));
+        let successes = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for thread_idx in 0..2 {
+            let import_job = Arc::clone(&import_job);
+            let barrier = Arc::clone(&barrier);
+            let successes = Arc::clone(&successes);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let job_id = format!("job-concurrent-{thread_idx}");
+                if super::test_helper_try_reserve_import_slot(import_job, job_id).is_ok() {
+                    successes.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle
+                .join()
+                .unwrap_or_else(|_| panic!("import slot reservation thread panicked"));
+        }
+
+        assert_eq!(successes.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn ingest_config_maps_onboarding_vault_id_to_category_key() {
+        use super::{ingest_config_from_input, ImportStartJobInput};
+
+        let config = ingest_config_from_input(&ImportStartJobInput {
+            file_path: "/tmp/sample.pdf".to_string(),
+            target_vault_id: Some("vault_learning".to_string()),
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        });
+        assert_eq!(
+            config.allowed_vault_keys.as_deref(),
+            Some(vec!["learning".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn ingest_config_custom_vault_uses_empty_allowed_keys() {
+        use super::{ingest_config_from_input, ImportStartJobInput};
+
+        let config = ingest_config_from_input(&ImportStartJobInput {
+            file_path: "/tmp/sample.pdf".to_string(),
+            target_vault_id: Some("vault_custom_user".to_string()),
+            rasterization_dpi: 300,
+            use_llm_extraction: false,
+            provider: None,
+            endpoint: None,
+            model: None,
+        });
+        assert_eq!(config.allowed_vault_keys, Some(vec![]));
     }
 }

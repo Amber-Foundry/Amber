@@ -83,4 +83,5 @@ textarea {
   border-top: 1px solid rgba(188, 108, 37, 0.15);
   border-top-left-radius: 12px;
   border-top-right-radius: 12px;
+  background: var(--background);
 }

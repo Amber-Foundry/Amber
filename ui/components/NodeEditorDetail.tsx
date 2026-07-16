@@ -15,6 +15,7 @@ import type { Node } from "../types/generated/Node";
 import { createDoor, listOutgoingDoors } from "../services/doors";
 import { useUIStore } from "../utils/store";
 import LatexBlock from "./LatexBlock";
+import { BarChartIcon, MaximizeIcon } from "./icons";
 
 type NodeEditorDetailProps = {
   value: string;
@@ -213,7 +214,7 @@ export default function NodeEditorDetail({
             onClick={() => setNodeEditorChartsEnabled(!chartsEnabled)}
             title="Toggle interactive charts render workspace assets"
           >
-            📊 Charts: {chartsEnabled ? "ON" : "OFF"}
+            <BarChartIcon size={14} /> Charts: {chartsEnabled ? "ON" : "OFF"}
           </button>
           {onExpand && (
             <button
@@ -222,7 +223,10 @@ export default function NodeEditorDetail({
               onClick={onExpand}
               title="Expand editor to full center canvas focus"
             >
-              <span className="expand-icon">⛶</span> Focus Canvas
+              <span className="expand-icon">
+                <MaximizeIcon size={14} />
+              </span>{" "}
+              Focus Canvas
             </button>
           )}
         </div>

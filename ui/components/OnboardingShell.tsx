@@ -48,12 +48,12 @@ const QUESTION_FIELDS: Array<{
 }> = [
   {
     key: "displayName",
-    label: "What should MindVault call you?",
+    label: "What should Amber call you?",
     placeholder: "Kevin",
   },
   {
     key: "useMindVaultFor",
-    label: "What do you mainly want MindVault to help with?",
+    label: "What do you mainly want Amber to help with?",
     placeholder: "Remember stuff for work and keep notes about things I care about.",
     multiline: true,
   },
@@ -416,7 +416,7 @@ function OnboardingShell({ onComplete, onSkip, busy, errorMessage }: OnboardingS
         await setSetting("displayName", answers.displayName.trim());
       }
       await unwrapIpcResult(onboardingCommit(payload));
-      setStatusMessage({ text: "Onboarding committed. Opening MindVault…", kind: "info" });
+      setStatusMessage({ text: "Onboarding committed. Opening Amber…", kind: "info" });
       await onComplete();
     } catch (error) {
       setStatusMessage({
@@ -459,7 +459,7 @@ function OnboardingShell({ onComplete, onSkip, busy, errorMessage }: OnboardingS
         <header className="onboarding-header">
           <div>
             <p className="onboarding-eyebrow">First Run Setup</p>
-            <h1>Welcome to MindVault</h1>
+            <h1>Welcome to Amber</h1>
           </div>
           <button
             type="button"

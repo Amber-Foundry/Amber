@@ -457,6 +457,14 @@
   flex: 1;
 }
 
+.spatial-node-title-stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
+}
+
 .spatial-node-icon {
   font-size: 0.82rem;
   color: #9c9993;
@@ -470,7 +478,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
 }
 
 .spatial-node-title-input {

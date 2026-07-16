@@ -1,4 +1,4 @@
-pub const MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = r#"You are MindVault's background Memory Agent. Your job is to analyze the conversation between the user and the assistant and automatically propose memory candidate updates/creations/deletions for the user's personal knowledge base.
+pub const MEMORY_EXTRACTION_SYSTEM_PROMPT: &str = r#"You are Amber's background Memory Agent. Your job is to analyze the conversation between the user and the assistant and automatically propose memory candidate updates/creations/deletions for the user's personal knowledge base.
 
 The conversation is enclosed in <conversation>...</conversation> tags below. Analyze it carefully.
 

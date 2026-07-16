@@ -102,7 +102,7 @@ fn normalize_tags(tags: Option<Vec<String>>, index: usize) -> Result<Option<Vec<
 }
 
 /// Bundled Onboarding Agent: fixed system prompt for one-shot extraction from Q&A JSON.
-pub const ONBOARDING_EXTRACTION_SYSTEM_PROMPT: &str = r#"You are MindVault's onboarding extractor. The user submitted plain onboarding answers as JSON (not a chat).
+pub const ONBOARDING_EXTRACTION_SYSTEM_PROMPT: &str = r#"You are Amber's onboarding extractor. The user submitted plain onboarding answers as JSON (not a chat).
 
 Your job: infer concise memory nodes they would want in a personal knowledge base.
 
@@ -245,11 +245,32 @@ pub fn vault_id_for_category_key(category_key: &str) -> Option<&'static str> {
     }
 }
 
+/// Canonical onboarding vault ID → category key for import targeting.
+///
+/// Not a mechanical inversion of [`vault_id_for_category_key`] (that map is many-to-one:
+/// `demographics`, `interests`, and `personal` all resolve to `vault_personal`). Import uses
+/// `"personal"` as the canonical key for `vault_personal`; `demographics` remains an
+/// onboarding-only alias accepted by [`vault_id_for_category_key`].
+///
+/// Returns `None` for custom / non-onboarding vault IDs (Commit 10 option a: those imports
+/// fall back to `vault_root_graph` at changeset build time).
+pub fn category_key_for_vault_id(vault_id: &str) -> Option<&'static str> {
+    match vault_id.trim() {
+        "vault_personal" => Some("personal"),
+        "vault_work" => Some("work"),
+        "vault_learning" => Some("learning"),
+        "vault_health" => Some("health"),
+        "vault_finance" => Some("finance"),
+        "vault_credentials" => Some("credentials"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_llm_json_response, parse_proposals_from_llm_output, parse_proposals_json,
-        validate_answers_json, vault_id_for_category_key,
+        category_key_for_vault_id, normalize_llm_json_response, parse_proposals_from_llm_output,
+        parse_proposals_json, validate_answers_json, vault_id_for_category_key,
     };
 
     #[test]
@@ -326,6 +347,31 @@ mod tests {
             Some("vault_personal")
         );
         assert_eq!(vault_id_for_category_key("unknown"), None);
+    }
+
+    #[test]
+    fn category_key_for_vault_id_maps_onboarding_vaults() {
+        assert_eq!(
+            category_key_for_vault_id("vault_learning"),
+            Some("learning")
+        );
+        assert_eq!(
+            category_key_for_vault_id("vault_personal"),
+            Some("personal")
+        );
+        assert_eq!(category_key_for_vault_id("vault_custom_user"), None);
+    }
+
+    #[test]
+    fn category_key_for_vault_id_uses_personal_not_demographics() {
+        assert_eq!(
+            category_key_for_vault_id("vault_personal"),
+            Some("personal")
+        );
+        assert_ne!(
+            category_key_for_vault_id("vault_personal"),
+            Some("demographics")
+        );
     }
 
     #[test]

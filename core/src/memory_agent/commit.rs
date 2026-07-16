@@ -1,7 +1,7 @@
 use crate::ipc_types::ChangesetCommitInput;
 use crate::priority;
 use crate::redacted;
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -25,15 +25,10 @@ fn resolve_effective_privacy(
     Ok(vault_privacy)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn insert_changeset_node(
     tx: &Transaction,
     vault_id: &str,
-    title: &str,
-    summary: &str,
-    detail: Option<&str>,
-    node_type: &str,
-    tags: Option<&Vec<String>>,
+    proposed: &crate::memory_agent::changeset::ProposedNodeData,
     session_key: Option<&redacted::SessionKey>,
 ) -> Result<String, String> {
     let parent_vault_id: Option<String> = tx
@@ -63,15 +58,23 @@ fn insert_changeset_node(
         resolve_effective_privacy(tx, &resolved_vault_id, sub_vault_privacy.as_deref())?;
     let is_redacted = effective_privacy == "redacted";
 
+    let source = proposed.source.as_deref().unwrap_or("agent_extract");
+    let source_type = proposed.source_type.as_deref().unwrap_or("agent_extract");
+    let meta_str = proposed
+        .meta
+        .as_ref()
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| "{}".to_string());
+
     let encrypted_payload = if is_redacted {
         let key = session_key.ok_or_else(|| "VAULT_LOCKED".to_string())?;
         Some(redacted::encrypt_json(
             &redacted::NodeSecretPayload {
-                title: title.to_string(),
-                summary: summary.to_string(),
-                detail: detail.map(String::from),
-                source: Some("agent_extract".to_string()),
-                source_type: Some("agent_extract".to_string()),
+                title: proposed.title.to_string(),
+                summary: proposed.summary.to_string(),
+                detail: proposed.detail.clone(),
+                source: Some(source.to_string()),
+                source_type: Some(source_type.to_string()),
             },
             key,
         )?)
@@ -82,13 +85,13 @@ fn insert_changeset_node(
     let stored_title = if is_redacted {
         "[REDACTED]".to_string()
     } else {
-        title.to_string()
+        proposed.title.to_string()
     };
 
     let stored_summary = if is_redacted {
         "[Metadata Locked]".to_string()
     } else {
-        summary.to_string()
+        proposed.summary.to_string()
     };
 
     let node_id = crate::generate_id(tx, "node")?;
@@ -98,22 +101,29 @@ fn insert_changeset_node(
         "INSERT INTO nodes (
             id, vault_id, sub_vault_id, node_type, title, summary, detail, source, source_type,
             privacy_tier, priority, meta, encrypted_payload
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'agent_extract', 'agent_extract', NULL, ?8, '{}', ?9);",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12);",
         params![
             node_id,
             resolved_vault_id,
             resolved_sub_vault_id,
-            node_type,
+            proposed.node_type.as_deref().unwrap_or("concept"),
             stored_title,
             stored_summary,
-            if is_redacted { None } else { detail },
+            if is_redacted {
+                None
+            } else {
+                proposed.detail.as_deref()
+            },
+            source,
+            source_type,
             priority_json,
+            meta_str,
             encrypted_payload
         ],
     )
     .map_err(|err| format!("Failed to insert changeset node: {err}"))?;
 
-    if let Some(tag_list) = tags {
+    if let Some(tag_list) = &proposed.tags {
         for tag_name in tag_list {
             let clean_name = tag_name.trim();
             if clean_name.is_empty() {
@@ -149,16 +159,269 @@ fn insert_changeset_node(
     Ok(node_id)
 }
 
-#[allow(clippy::too_many_arguments)]
+fn source_stem(source_name: &str) -> &str {
+    Path::new(source_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(source_name)
+}
+
+fn strip_chunk_index_suffix(title: &str) -> String {
+    if let Some(idx) = title.rfind(" (") {
+        let suffix = &title[idx + 2..];
+        if suffix.ends_with(')')
+            && suffix
+                .trim_end_matches(')')
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '/')
+        {
+            return title[..idx].to_string();
+        }
+    }
+    title.to_string()
+}
+
+fn meta_chunk_index(meta: &serde_json::Value) -> Option<u64> {
+    meta.get("chunk_index")
+        .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|i| i as u64)))
+}
+
+struct ImportChunkRef {
+    id: String,
+    title: String,
+    summary: String,
+    source: Option<String>,
+    vault_id: String,
+    sub_vault_id: Option<String>,
+    meta: serde_json::Value,
+    chunk_index: u64,
+}
+
+fn insert_door(
+    tx: &Transaction,
+    source_node_id: &str,
+    target_node_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let id = crate::generate_id(tx, "door")?;
+    tx.execute(
+        "INSERT INTO doors (id, source_node_id, target_node_id, target_vault_id, label)
+         VALUES (?1, ?2, ?3, NULL, ?4);",
+        params![id, source_node_id, target_node_id, label],
+    )
+    .map_err(|err| format!("Failed inserting import spine door: {err}"))?;
+    Ok(())
+}
+
+struct ImportJobSpineRow {
+    source_name: String,
+    assembled_markdown: String,
+    avg_ocr_confidence: f64,
+    tables_detected_unpreserved: i64,
+    extraction_path: Option<String>,
+}
+
+/// After an import changeset is fully reviewed, create a parent document node and wire
+/// `section` (parent→chunk) + `next` (chunk→chunk) doors.
+fn create_import_document_spine(
+    tx: &Transaction,
+    changeset_id: &str,
+    session_key: Option<&redacted::SessionKey>,
+) -> Result<(), String> {
+    let import_jobs_exist = tx
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'import_jobs' LIMIT 1;",
+            [],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+    if !import_jobs_exist {
+        return Ok(());
+    }
+
+    let job: Option<ImportJobSpineRow> = tx
+        .query_row(
+            "SELECT COALESCE(source_name, ''), COALESCE(assembled_markdown, ''),
+                    COALESCE(avg_ocr_confidence, 0.0), COALESCE(tables_detected_unpreserved, 0),
+                    extraction_path
+             FROM import_jobs
+             WHERE changeset_id = ?1
+             LIMIT 1;",
+            [changeset_id],
+            |row| {
+                Ok(ImportJobSpineRow {
+                    source_name: row.get(0)?,
+                    assembled_markdown: row.get(1)?,
+                    avg_ocr_confidence: row.get(2)?,
+                    tables_detected_unpreserved: row.get(3)?,
+                    extraction_path: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|err| format!("Failed loading import job for spine: {err}"))?;
+
+    let Some(ImportJobSpineRow {
+        source_name,
+        assembled_markdown,
+        avg_ocr_confidence,
+        tables_detected_unpreserved,
+        extraction_path,
+    }) = job
+    else {
+        return Ok(());
+    };
+    if assembled_markdown.trim().is_empty() {
+        return Ok(());
+    }
+
+    let mut stmt = tx
+        .prepare(
+            "SELECT n.id, n.title, n.summary, n.source, n.vault_id, n.sub_vault_id, COALESCE(n.meta, '{}')
+             FROM changeset_items ci
+             INNER JOIN nodes n ON n.id = ci.target_node_id
+             WHERE ci.changeset_id = ?1
+               AND ci.status = 'accepted'
+               AND ci.item_type = 'add'
+               AND n.deleted_at IS NULL
+               AND n.source_type = 'pdf_import';",
+        )
+        .map_err(|err| format!("Failed preparing import chunk query: {err}"))?;
+
+    let rows = stmt
+        .query_map([changeset_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(|err| format!("Failed querying accepted import chunks: {err}"))?;
+
+    let mut chunks: Vec<ImportChunkRef> = Vec::new();
+    for row in rows {
+        let (id, title, summary, source, vault_id, sub_vault_id, meta_str) =
+            row.map_err(|err| format!("Failed reading import chunk row: {err}"))?;
+        let meta: serde_json::Value =
+            serde_json::from_str(&meta_str).unwrap_or(serde_json::json!({}));
+        if meta.get("import_role").and_then(|v| v.as_str()) == Some("document") {
+            continue;
+        }
+        let Some(chunk_index) = meta_chunk_index(&meta) else {
+            continue;
+        };
+        chunks.push(ImportChunkRef {
+            id,
+            title,
+            summary,
+            source,
+            vault_id,
+            sub_vault_id,
+            meta,
+            chunk_index,
+        });
+    }
+    drop(stmt);
+
+    if chunks.is_empty() {
+        return Ok(());
+    }
+
+    chunks.sort_by_key(|c| c.chunk_index);
+    let chunk_total = chunks.len();
+    let write_vault = chunks[0]
+        .sub_vault_id
+        .clone()
+        .unwrap_or_else(|| chunks[0].vault_id.clone());
+    let source = chunks[0]
+        .source
+        .clone()
+        .unwrap_or_else(|| source_name.clone());
+    let parent_title = {
+        let stripped = strip_chunk_index_suffix(&chunks[0].title);
+        if stripped.trim().is_empty() {
+            format!("{} · Document", source_stem(&source_name))
+        } else {
+            stripped
+        }
+    };
+    let parent_summary = if chunks[0].summary.chars().count() > 120 {
+        chunks[0].summary.chars().take(117).collect::<String>() + "..."
+    } else if chunks[0].summary.trim().is_empty() {
+        source_name.clone()
+    } else {
+        chunks[0].summary.clone()
+    };
+
+    let mut parent_meta = serde_json::json!({
+        "import_role": "document",
+        "chunk_total": chunk_total,
+        "avg_ocr_confidence": avg_ocr_confidence as f32,
+        "tables_unstructured": tables_detected_unpreserved > 0,
+    });
+    if let Some(path) = extraction_path.filter(|p| !p.trim().is_empty()) {
+        if let Some(map) = parent_meta.as_object_mut() {
+            map.insert("extraction_path".to_string(), serde_json::json!(path));
+        }
+    }
+    let parent_proposed = crate::memory_agent::changeset::ProposedNodeData {
+        title: parent_title,
+        summary: parent_summary,
+        detail: Some(assembled_markdown),
+        node_type: Some("summary".to_string()),
+        target_vault_key: None,
+        vault_id: Some(write_vault.clone()),
+        tags: Some(vec!["pdf_import".to_string()]),
+        confidence: 1.0,
+        action: crate::memory_agent::parser::CandidateAction::Add,
+        substantial_change: None,
+        source: Some(source),
+        source_type: Some("pdf_import".to_string()),
+        meta: Some(parent_meta),
+    };
+    let parent_id = insert_changeset_node(tx, &write_vault, &parent_proposed, session_key)?;
+
+    for chunk in &chunks {
+        let mut updated = chunk.meta.clone();
+        if !updated.is_object() {
+            updated = serde_json::json!({});
+        }
+        if let Some(map) = updated.as_object_mut() {
+            map.insert("import_role".to_string(), serde_json::json!("chunk"));
+            map.insert("document_id".to_string(), serde_json::json!(parent_id));
+            map.insert("chunk_total".to_string(), serde_json::json!(chunk_total));
+            map.insert(
+                "chunk_index".to_string(),
+                serde_json::json!(chunk.chunk_index),
+            );
+        }
+        let meta_str = updated.to_string();
+        tx.execute(
+            "UPDATE nodes SET meta = ?2, updated_at = datetime('now') WHERE id = ?1;",
+            params![chunk.id, meta_str],
+        )
+        .map_err(|err| format!("Failed stamping chunk document_id on {}: {err}", chunk.id))?;
+
+        insert_door(tx, &parent_id, &chunk.id, "section")?;
+    }
+
+    for window in chunks.windows(2) {
+        insert_door(tx, &window[0].id, &window[1].id, "next")?;
+    }
+
+    Ok(())
+}
+
 fn update_changeset_node(
     tx: &Transaction,
     node_id: &str,
     vault_id: &str,
-    title: &str,
-    summary: &str,
-    detail: Option<&str>,
-    node_type: &str,
-    tags: Option<&Vec<String>>,
+    proposed: &crate::memory_agent::changeset::ProposedNodeData,
     session_key: Option<&redacted::SessionKey>,
 ) -> Result<(), String> {
     let parent_vault_id: Option<String> = tx
@@ -207,15 +470,43 @@ fn update_changeset_node(
         );
     }
 
+    let (existing_source, existing_source_type): (Option<String>, Option<String>) = tx
+        .query_row(
+            "SELECT source, source_type FROM nodes WHERE id = ?1 LIMIT 1;",
+            [node_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|err| format!("Failed fetching node source fields: {err}"))?;
+    let source = proposed
+        .source
+        .as_deref()
+        .or(existing_source.as_deref())
+        .unwrap_or("agent_extract");
+    let source_type = proposed
+        .source_type
+        .as_deref()
+        .or(existing_source_type.as_deref())
+        .unwrap_or("agent_extract");
+    let meta_str = match &proposed.meta {
+        Some(meta) => meta.to_string(),
+        None => tx
+            .query_row(
+                "SELECT COALESCE(meta, '{}') FROM nodes WHERE id = ?1 LIMIT 1;",
+                [node_id],
+                |row| row.get(0),
+            )
+            .map_err(|err| format!("Failed fetching node meta: {err}"))?,
+    };
+
     let encrypted_payload = if is_redacted {
         let key = session_key.ok_or_else(|| "VAULT_LOCKED".to_string())?;
         Some(redacted::encrypt_json(
             &redacted::NodeSecretPayload {
-                title: title.to_string(),
-                summary: summary.to_string(),
-                detail: detail.map(String::from),
-                source: Some("agent_extract".to_string()),
-                source_type: Some("agent_extract".to_string()),
+                title: proposed.title.to_string(),
+                summary: proposed.summary.to_string(),
+                detail: proposed.detail.clone(),
+                source: Some(source.to_string()),
+                source_type: Some(source_type.to_string()),
             },
             key,
         )?)
@@ -226,13 +517,13 @@ fn update_changeset_node(
     let stored_title = if is_redacted {
         "[REDACTED]".to_string()
     } else {
-        title.to_string()
+        proposed.title.to_string()
     };
 
     let stored_summary = if is_redacted {
         "[Metadata Locked]".to_string()
     } else {
-        summary.to_string()
+        proposed.summary.to_string()
     };
 
     let rows_affected = tx
@@ -244,18 +535,28 @@ fn update_changeset_node(
              title = ?5,
              summary = ?6,
              detail = ?7,
+             source = ?8,
+             source_type = ?9,
              version = version + 1,
              updated_at = datetime('now'),
-             encrypted_payload = ?8
+             meta = ?10,
+             encrypted_payload = ?11
          WHERE id = ?1 AND deleted_at IS NULL;",
             params![
                 node_id,
                 resolved_vault_id,
                 resolved_sub_vault_id,
-                node_type,
+                proposed.node_type.as_deref().unwrap_or("concept"),
                 stored_title,
                 stored_summary,
-                if is_redacted { None } else { detail },
+                if is_redacted {
+                    None
+                } else {
+                    proposed.detail.as_deref()
+                },
+                source,
+                source_type,
+                meta_str,
                 encrypted_payload
             ],
         )
@@ -271,7 +572,7 @@ fn update_changeset_node(
     tx.execute("DELETE FROM node_tags WHERE node_id = ?1;", [node_id])
         .map_err(|err| format!("Failed clearing node tags: {err}"))?;
 
-    if let Some(tag_list) = tags {
+    if let Some(tag_list) = &proposed.tags {
         for tag_name in tag_list {
             let clean_name = tag_name.trim();
             if clean_name.is_empty() {
@@ -604,18 +905,45 @@ pub fn commit_changeset_transaction(
                     current_tags
                 };
 
+                let source = parsed_props
+                    .get("source")
+                    .and_then(|v| v.as_str().map(String::from));
+                let source_type = parsed_props
+                    .get("sourceType")
+                    .or_else(|| parsed_props.get("source_type"))
+                    .and_then(|v| v.as_str().map(String::from));
+                let meta = parsed_props.get("meta").cloned();
+
                 match item_type.as_str() {
                     "add" => {
-                        let _new_node_id = insert_changeset_node(
-                            &tx,
-                            vault_id,
-                            title,
-                            summary,
-                            detail,
-                            node_type,
-                            tags.as_ref(),
-                            session_key.as_ref(),
-                        )?;
+                        let proposed = crate::memory_agent::changeset::ProposedNodeData {
+                            title: title.to_string(),
+                            summary: summary.to_string(),
+                            detail: detail.map(String::from),
+                            node_type: Some(node_type.to_string()),
+                            target_vault_key: None,
+                            vault_id: Some(vault_id.to_string()),
+                            tags: tags.clone(),
+                            confidence: 1.0,
+                            action: crate::memory_agent::parser::CandidateAction::Add,
+                            substantial_change: None,
+                            source,
+                            source_type,
+                            meta,
+                        };
+                        let new_node_id =
+                            insert_changeset_node(&tx, vault_id, &proposed, session_key.as_ref())?;
+                        // Persist created node id so a later resolve can build the import spine
+                        // even when Accept is split across multiple commit calls.
+                        tx.execute(
+                            "UPDATE changeset_items
+                             SET target_node_id = ?1
+                             WHERE id = ?2 AND changeset_id = ?3;",
+                            params![new_node_id, &item_action.item_id, &input.changeset_id],
+                        )
+                        .map_err(|err| {
+                            format!("Failed linking accepted add to new node id: {err}")
+                        })?;
                     }
                     "update" => {
                         let nid = target_node_id.as_ref().ok_or_else(|| {
@@ -624,17 +952,22 @@ pub fn commit_changeset_transaction(
                                 item_action.item_id
                             )
                         })?;
-                        update_changeset_node(
-                            &tx,
-                            nid,
-                            vault_id,
-                            title,
-                            summary,
-                            detail,
-                            node_type,
-                            tags.as_ref(),
-                            session_key.as_ref(),
-                        )?;
+                        let proposed = crate::memory_agent::changeset::ProposedNodeData {
+                            title: title.to_string(),
+                            summary: summary.to_string(),
+                            detail: detail.map(String::from),
+                            node_type: Some(node_type.to_string()),
+                            target_vault_key: None,
+                            vault_id: Some(vault_id.to_string()),
+                            tags: tags.clone(),
+                            confidence: 1.0,
+                            action: crate::memory_agent::parser::CandidateAction::Update,
+                            substantial_change: None,
+                            source,
+                            source_type,
+                            meta,
+                        };
+                        update_changeset_node(&tx, nid, vault_id, &proposed, session_key.as_ref())?;
                     }
                     "merge" => {
                         let mid = merge_with_id.as_ref().ok_or_else(|| {
@@ -706,19 +1039,30 @@ pub fn commit_changeset_transaction(
                         }
                         let merged_tags_vec: Vec<String> = merged_tags.into_iter().collect();
 
+                        let proposed = crate::memory_agent::changeset::ProposedNodeData {
+                            title: ex_title.clone(),
+                            summary: ex_summary.clone(),
+                            detail: if merged_detail.is_empty() {
+                                None
+                            } else {
+                                Some(merged_detail.clone())
+                            },
+                            node_type: Some(ex_node_type.clone()),
+                            target_vault_key: None,
+                            vault_id: Some(ex_vault_id.clone()),
+                            tags: Some(merged_tags_vec.clone()),
+                            confidence: 1.0,
+                            action: crate::memory_agent::parser::CandidateAction::Update,
+                            substantial_change: None,
+                            source: None,
+                            source_type: None,
+                            meta: None,
+                        };
                         update_changeset_node(
                             &tx,
                             mid,
                             &ex_vault_id,
-                            &ex_title,
-                            &ex_summary,
-                            if merged_detail.is_empty() {
-                                None
-                            } else {
-                                Some(merged_detail.as_str())
-                            },
-                            &ex_node_type,
-                            Some(&merged_tags_vec),
+                            &proposed,
                             session_key.as_ref(),
                         )?;
                     }
@@ -847,6 +1191,32 @@ pub fn commit_changeset_transaction(
     )
     .map_err(|err| format!("Failed final status update on parent changeset: {err}"))?;
 
+    if resolved_status != "pending" {
+        let import_jobs_table_exists = tx
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'import_jobs' LIMIT 1;",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if import_jobs_table_exists {
+            // Spine only when something was accepted; all-dismissed leaves no chunks.
+            if resolved_status != "dismissed" {
+                create_import_document_spine(&tx, &input.changeset_id, session_key.as_ref())?;
+            }
+            // DB CHECK still only allows committed (not dismissed). List/get map
+            // committed+changeset.dismissed → status "dismissed" for the Job Log.
+            tx.execute(
+                "UPDATE import_jobs
+                 SET status = 'committed',
+                     completed_at = datetime('now')
+                 WHERE changeset_id = ?1 AND status = 'staged';",
+                [&input.changeset_id],
+            )
+            .map_err(|err| format!("Failed to commit linked import job: {err}"))?;
+        }
+    }
+
     drop(tag_stmt);
 
     tx.commit()
@@ -931,6 +1301,34 @@ mod tests {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 color TEXT
+            );
+            CREATE TABLE IF NOT EXISTS doors (
+                id TEXT PRIMARY KEY,
+                source_node_id TEXT NOT NULL,
+                target_node_id TEXT,
+                target_vault_id TEXT,
+                label TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                orphan_reason TEXT,
+                orphan_since TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS import_jobs (
+                id TEXT PRIMARY KEY,
+                import_type TEXT NOT NULL DEFAULT 'pdf',
+                source_name TEXT,
+                target_vault_id TEXT,
+                status TEXT NOT NULL,
+                changeset_id TEXT,
+                node_count INTEGER DEFAULT 0,
+                error TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                assembled_markdown TEXT,
+                avg_ocr_confidence REAL DEFAULT 0.0,
+                tables_detected_unpreserved INTEGER DEFAULT 0,
+                extraction_path TEXT
             );
         ";
         conn.execute_batch(ddl)?;
@@ -1971,6 +2369,102 @@ mod tests {
     }
 
     #[test]
+    fn test_commit_update_persists_source_fields() -> Result<(), Box<dyn Error>> {
+        let mut conn = setup_test_db()?;
+        let db_path = Path::new("test.db");
+
+        conn.execute(
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_open', 'Open', 'open');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail, source, source_type, priority)
+             VALUES ('node_source', 'vault_open', 'concept', 'Original Title', 'Original Summary', 'Original Detail', 'manual', 'manual', '{}');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changesets (id, status, item_count) VALUES ('cs_source', 'pending', 1);",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changeset_items (id, changeset_id, item_type, target_node_id, proposed_data, status)
+             VALUES ('item_source', 'cs_source', 'update', 'node_source',
+                     '{\"title\":\"Updated Title\",\"source\":\"chat_session\",\"sourceType\":\"chat\",\"vaultId\":\"vault_open\"}', 'pending');",
+            [],
+        )?;
+
+        let input = ChangesetCommitInput {
+            changeset_id: "cs_source".to_string(),
+            item_actions: vec![ItemReviewAction {
+                item_id: "item_source".to_string(),
+                action: "accept".to_string(),
+                edited_data: None,
+            }],
+        };
+
+        let result = commit_changeset_transaction(&mut conn, &input, db_path, None)?;
+        assert!(result);
+
+        let (title, source, source_type): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT title, source, source_type FROM nodes WHERE id = 'node_source';",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+
+        assert_eq!(title, "Updated Title");
+        assert_eq!(source.as_deref(), Some("chat_session"));
+        assert_eq!(source_type.as_deref(), Some("chat"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_changeset_node_preserves_source_when_omitted() -> Result<(), Box<dyn Error>> {
+        let mut conn = setup_test_db()?;
+
+        conn.execute(
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_open', 'Open', 'open');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail, source, source_type, priority)
+             VALUES ('node_preserve_source', 'vault_open', 'concept', 'Original Title', 'Original Summary', 'Original Detail', 'manual', 'manual', '{}');",
+            [],
+        )?;
+
+        let tx = conn.transaction()?;
+        let proposed = crate::memory_agent::changeset::ProposedNodeData {
+            title: "Updated Title".to_string(),
+            summary: "Updated Summary".to_string(),
+            detail: Some("Updated Detail".to_string()),
+            node_type: Some("concept".to_string()),
+            target_vault_key: None,
+            vault_id: Some("vault_open".to_string()),
+            tags: None,
+            confidence: 1.0,
+            action: crate::memory_agent::parser::CandidateAction::Update,
+            substantial_change: None,
+            source: None,
+            source_type: None,
+            meta: None,
+        };
+        update_changeset_node(&tx, "node_preserve_source", "vault_open", &proposed, None)?;
+        tx.commit()?;
+
+        let (source, source_type): (Option<String>, Option<String>) = conn.query_row(
+            "SELECT source, source_type FROM nodes WHERE id = 'node_preserve_source';",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        assert_eq!(source.as_deref(), Some("manual"));
+        assert_eq!(source_type.as_deref(), Some("manual"));
+
+        Ok(())
+    }
+
+    #[test]
     fn test_update_changeset_node_unredact_locked_guard() -> Result<(), Box<dyn Error>> {
         let mut conn = setup_test_db()?;
 
@@ -1993,21 +2487,267 @@ mod tests {
 
         let tx = conn.transaction()?;
 
+        let proposed = crate::memory_agent::changeset::ProposedNodeData {
+            title: "New Title".to_string(),
+            summary: "New Summary".to_string(),
+            detail: Some("New Detail".to_string()),
+            node_type: Some("concept".to_string()),
+            target_vault_key: None,
+            vault_id: Some("vault_open".to_string()),
+            tags: None,
+            confidence: 1.0,
+            action: crate::memory_agent::parser::CandidateAction::Update,
+            substantial_change: None,
+            source: None,
+            source_type: None,
+            meta: None,
+        };
         // Call update_changeset_node to move node_encrypted to vault_open without session key
-        let res = update_changeset_node(
-            &tx,
-            "node_encrypted",
-            "vault_open",
-            "New Title",
-            "New Summary",
-            Some("New Detail"),
-            "concept",
-            None,
-            None,
-        );
+        let res = update_changeset_node(&tx, "node_encrypted", "vault_open", &proposed, None);
 
         let err = res.err().ok_or("Expected error from guard")?;
         assert!(err.contains("Unlock redacted content with your master password before changing the node to a non-redacted tier."));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_accept_creates_document_spine() -> Result<(), Box<dyn Error>> {
+        let mut conn = setup_test_db()?;
+        let db_path = Path::new("test.db");
+
+        conn.execute(
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_learning', 'Learning', 'open');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changesets (id, status, item_count) VALUES ('cs_import', 'pending', 2);",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO import_jobs (id, source_name, target_vault_id, status, changeset_id, assembled_markdown,
+             avg_ocr_confidence, tables_detected_unpreserved, extraction_path)
+             VALUES ('job_import', 'CSE824 HW1.pdf', 'vault_learning', 'staged', 'cs_import', '# Full Doc\n\nBody',
+             0.91, 2, 'hybrid');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changeset_items (id, changeset_id, item_type, proposed_data, status, sort_order)
+             VALUES
+             ('item_c0', 'cs_import', 'add',
+              '{\"title\":\"CSE824 HW1 · Intro (1/2)\",\"summary\":\"Intro\",\"detail\":\"chunk0\",\"node_type\":\"fact\",\"vault_id\":\"vault_learning\",\"source\":\"CSE824 HW1.pdf\",\"source_type\":\"pdf_import\",\"meta\":{\"chunk_index\":0,\"token_estimate\":10,\"ocr_confidence\":0.9,\"tables_unstructured\":true},\"action\":\"add\",\"confidence\":0.9}',
+              'pending', 0),
+             ('item_c1', 'cs_import', 'add',
+              '{\"title\":\"CSE824 HW1 · Body (2/2)\",\"summary\":\"Body\",\"detail\":\"chunk1\",\"node_type\":\"fact\",\"vault_id\":\"vault_learning\",\"source\":\"CSE824 HW1.pdf\",\"source_type\":\"pdf_import\",\"meta\":{\"chunk_index\":1,\"token_estimate\":12,\"ocr_confidence\":0.92},\"action\":\"add\",\"confidence\":0.9}',
+              'pending', 1);",
+            [],
+        )?;
+
+        let input = ChangesetCommitInput {
+            changeset_id: "cs_import".to_string(),
+            item_actions: vec![
+                ItemReviewAction {
+                    item_id: "item_c0".to_string(),
+                    action: "accept".to_string(),
+                    edited_data: None,
+                },
+                ItemReviewAction {
+                    item_id: "item_c1".to_string(),
+                    action: "accept".to_string(),
+                    edited_data: None,
+                },
+            ],
+        };
+
+        assert!(commit_changeset_transaction(
+            &mut conn, &input, db_path, None
+        )?);
+
+        let doc_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE json_extract(meta, '$.import_role') = 'document';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(doc_count, 1);
+
+        let (doc_id, detail, node_type): (String, Option<String>, String) = conn.query_row(
+            "SELECT id, detail, node_type FROM nodes WHERE json_extract(meta, '$.import_role') = 'document' LIMIT 1;",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(detail.as_deref(), Some("# Full Doc\n\nBody"));
+        assert_eq!(node_type, "summary");
+
+        let (avg_ocr, tables_flag, extraction): (f64, i64, Option<String>) = conn.query_row(
+            "SELECT json_extract(meta, '$.avg_ocr_confidence'),
+                    json_extract(meta, '$.tables_unstructured'),
+                    json_extract(meta, '$.extraction_path')
+             FROM nodes WHERE id = ?1;",
+            [&doc_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert!((avg_ocr - 0.91).abs() < 0.001);
+        assert_eq!(tables_flag, 1);
+        assert_eq!(extraction.as_deref(), Some("hybrid"));
+
+        let chunk_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE json_extract(meta, '$.import_role') = 'chunk';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(chunk_count, 2);
+
+        let stamped: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes
+             WHERE json_extract(meta, '$.document_id') = ?1
+               AND json_extract(meta, '$.import_role') = 'chunk';",
+            [&doc_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(stamped, 2);
+
+        let section_doors: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM doors WHERE source_node_id = ?1 AND label = 'section';",
+            [&doc_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(section_doors, 2);
+
+        let next_doors: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM doors WHERE label = 'next';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(next_doors, 1);
+
+        let job_status: String = conn.query_row(
+            "SELECT status FROM import_jobs WHERE id = 'job_import';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(job_status, "committed");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_non_import_accept_skips_document_spine() -> Result<(), Box<dyn Error>> {
+        let mut conn = setup_test_db()?;
+        let db_path = Path::new("test.db");
+
+        conn.execute(
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_open', 'Open', 'open');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changesets (id, status, item_count) VALUES ('cs_agent', 'pending', 1);",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changeset_items (id, changeset_id, item_type, proposed_data, status)
+             VALUES ('item_agent', 'cs_agent', 'add',
+              '{\"title\":\"Agent Fact\",\"summary\":\"From chat\",\"detail\":\"body\",\"node_type\":\"fact\",\"vault_id\":\"vault_open\",\"sourceType\":\"agent_extract\",\"action\":\"add\",\"confidence\":0.9}',
+              'pending');",
+            [],
+        )?;
+
+        let input = ChangesetCommitInput {
+            changeset_id: "cs_agent".to_string(),
+            item_actions: vec![ItemReviewAction {
+                item_id: "item_agent".to_string(),
+                action: "accept".to_string(),
+                edited_data: None,
+            }],
+        };
+        assert!(commit_changeset_transaction(
+            &mut conn, &input, db_path, None
+        )?);
+
+        let docs: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE json_extract(meta, '$.import_role') = 'document';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(docs, 0);
+        let doors: i64 = conn.query_row("SELECT COUNT(*) FROM doors;", [], |row| row.get(0))?;
+        assert_eq!(doors, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_spine_waits_until_changeset_fully_resolved() -> Result<(), Box<dyn Error>> {
+        let mut conn = setup_test_db()?;
+        let db_path = Path::new("test.db");
+
+        conn.execute(
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_learning', 'Learning', 'open');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changesets (id, status, item_count) VALUES ('cs_partial', 'pending', 2);",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO import_jobs (id, source_name, status, changeset_id, assembled_markdown)
+             VALUES ('job_partial', 'doc.pdf', 'staged', 'cs_partial', '# Doc');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO changeset_items (id, changeset_id, item_type, proposed_data, status)
+             VALUES
+             ('item_p0', 'cs_partial', 'add',
+              '{\"title\":\"doc · A (1/2)\",\"summary\":\"A\",\"detail\":\"a\",\"node_type\":\"fact\",\"vault_id\":\"vault_learning\",\"source\":\"doc.pdf\",\"source_type\":\"pdf_import\",\"meta\":{\"chunk_index\":0},\"action\":\"add\",\"confidence\":0.9}',
+              'pending'),
+             ('item_p1', 'cs_partial', 'add',
+              '{\"title\":\"doc · B (2/2)\",\"summary\":\"B\",\"detail\":\"b\",\"node_type\":\"fact\",\"vault_id\":\"vault_learning\",\"source\":\"doc.pdf\",\"source_type\":\"pdf_import\",\"meta\":{\"chunk_index\":1},\"action\":\"add\",\"confidence\":0.9}',
+              'pending');",
+            [],
+        )?;
+
+        let first = ChangesetCommitInput {
+            changeset_id: "cs_partial".to_string(),
+            item_actions: vec![ItemReviewAction {
+                item_id: "item_p0".to_string(),
+                action: "accept".to_string(),
+                edited_data: None,
+            }],
+        };
+        assert!(commit_changeset_transaction(
+            &mut conn, &first, db_path, None
+        )?);
+
+        let docs_mid: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE json_extract(meta, '$.import_role') = 'document';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(docs_mid, 0);
+        let job_mid: String = conn.query_row(
+            "SELECT status FROM import_jobs WHERE id = 'job_partial';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(job_mid, "staged");
+
+        let second = ChangesetCommitInput {
+            changeset_id: "cs_partial".to_string(),
+            item_actions: vec![ItemReviewAction {
+                item_id: "item_p1".to_string(),
+                action: "accept".to_string(),
+                edited_data: None,
+            }],
+        };
+        assert!(commit_changeset_transaction(
+            &mut conn, &second, db_path, None
+        )?);
+
+        let docs_end: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE json_extract(meta, '$.import_role') = 'document';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(docs_end, 1);
 
         Ok(())
     }

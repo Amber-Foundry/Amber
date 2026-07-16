@@ -17,12 +17,19 @@ import {
   setLlmMode,
   getApiKey,
   setApiKey,
+  getChatContextAuto,
+  setChatContextAuto,
+  getChatContextLimit,
+  setChatContextLimit,
+  getLocalModelContextOverrides,
+  setLocalModelContextOverride,
 } from "../utils/settings";
 import EmbeddingSettings from "./EmbeddingSettings";
 import AdvancedLlmSettings from "./AdvancedLlmSettings";
 import ModelSetupPanel from "./ModelSetupPanel";
 import { cancelReembed, getEmbeddingStatus, startReembed } from "../services/embedding";
 import type { EmbeddingStatus } from "../types/generated";
+import { GearIcon, ComputerIcon, CloudIcon, ZapIcon } from "./icons";
 
 const DEV_SAMPLE_ONBOARDING_ANSWERS = `{
   "displayName": "Dev Tester",
@@ -113,6 +120,36 @@ function LocalSettings({
   selectedModel: string;
   setSelectedModel: (m: string) => void;
 }) {
+  const [prevSelectedModel, setPrevSelectedModel] = useState(selectedModel);
+  const [overrideText, setOverrideText] = useState(() => {
+    if (selectedModel) {
+      const overrides = getLocalModelContextOverrides();
+      return overrides[selectedModel]?.toString() || "";
+    }
+    return "";
+  });
+
+  if (selectedModel !== prevSelectedModel) {
+    setPrevSelectedModel(selectedModel);
+    if (selectedModel) {
+      const overrides = getLocalModelContextOverrides();
+      setOverrideText(overrides[selectedModel]?.toString() || "");
+    } else {
+      setOverrideText("");
+    }
+  }
+
+  const handleOverrideChange = (val: string) => {
+    setOverrideText(val);
+    if (!selectedModel) return;
+    const parsed = parseInt(val, 10);
+    if (isNaN(parsed) || parsed <= 0) {
+      setLocalModelContextOverride(selectedModel, 0);
+    } else {
+      setLocalModelContextOverride(selectedModel, parsed);
+    }
+  };
+
   return (
     <div className="settings-section local-settings">
       <div className="provider-toggle segmented-control">
@@ -160,6 +197,24 @@ function LocalSettings({
           ))}
         </select>
       </label>
+
+      {selectedModel && (
+        <label className="settings-field">
+          <span>Context Window Limit (Override)</span>
+          <input
+            type="number"
+            min="0"
+            step="1000"
+            value={overrideText}
+            onChange={(event) => handleOverrideChange(event.target.value)}
+            placeholder="e.g. 16384 (leave blank for model default)"
+          />
+          <span className="field-hint" style={{ marginTop: "4px", fontSize: "11px", opacity: 0.7 }}>
+            If the model limit cannot be queried from the endpoint, this override will be used
+            instead of falling back to 8,000.
+          </span>
+        </label>
+      )}
 
       <button type="button" className="settings-action save" onClick={onSave}>
         Save Configuration
@@ -209,7 +264,8 @@ function CloudSettings({
   const [selectedModel, setSelectedModel] = useState(() => getLlmModel(provider) || defaultModel);
 
   useEffect(() => {
-    if (!getLlmModel(provider)) {
+    const saved = getLlmModel(provider);
+    if (!saved) {
       setLlmModel(provider, defaultModel);
     }
   }, [provider, defaultModel]);
@@ -266,17 +322,13 @@ function CloudSettings({
       </label>
 
       <label className="settings-field">
-        <span>Model Preset</span>
-        <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
-          {!providerDef.presets.includes(selectedModel) && selectedModel ? (
-            <option value={selectedModel}>{selectedModel}</option>
-          ) : null}
-          {providerDef.presets.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+        <span>Model Name</span>
+        <input
+          type="text"
+          value={selectedModel}
+          onChange={(e) => setSelectedModel(e.target.value)}
+          placeholder={`e.g. ${defaultModel}`}
+        />
       </label>
 
       <button type="button" className="settings-action save" onClick={handleSave}>
@@ -294,6 +346,19 @@ function LlmSettings() {
   const [extractionAnswersJson, setExtractionAnswersJson] = useState(DEV_SAMPLE_ONBOARDING_ANSWERS);
   const [extractionPreview, setExtractionPreview] = useState("");
   const [extractionBusy, setExtractionBusy] = useState(false);
+
+  const [chatContextAuto, setChatContextAutoState] = useState(() => getChatContextAuto());
+  const [chatContextLimit, setChatContextLimitState] = useState(() => getChatContextLimit());
+
+  const handleChatContextAutoChange = (val: boolean) => {
+    setChatContextAutoState(val);
+    setChatContextAuto(val);
+  };
+
+  const handleChatContextLimitChange = (val: number) => {
+    setChatContextLimitState(val);
+    setChatContextLimit(val);
+  };
 
   const [mode, setModeState] = useState(() => getLlmMode());
   const [localProvider, setLocalProvider] = useState<"ollama" | "lmstudio">(() => {
@@ -460,6 +525,8 @@ function LlmSettings() {
   useEffect(() => {
     function handleSettingsChange() {
       setModeState(getLlmMode());
+      setChatContextAutoState(getChatContextAuto());
+      setChatContextLimitState(getChatContextLimit());
       const p = getLlmProvider();
       if (["ollama", "lmstudio"].includes(p)) {
         setLocalProvider(p as "ollama" | "lmstudio");
@@ -571,7 +638,9 @@ function LlmSettings() {
   return (
     <aside className="pane pane-right llm-settings">
       <div className="pane-header">
-        <h3>⚙️ LLM Settings</h3>
+        <h3>
+          <GearIcon size={16} /> LLM Settings
+        </h3>
       </div>
 
       <ModelSetupPanel variant="settings" />
@@ -607,21 +676,21 @@ function LlmSettings() {
             className={mode === "local" ? "active" : ""}
             onClick={() => handleModeChange("local")}
           >
-            💻 Local
+            <ComputerIcon size={14} /> Local
           </button>
           <button
             type="button"
             className={mode === "cloud" ? "active" : ""}
             onClick={() => handleModeChange("cloud")}
           >
-            ☁️ Cloud
+            <CloudIcon size={14} /> Cloud
           </button>
           <button
             type="button"
             className={mode === "hybrid" ? "active" : ""}
             onClick={() => handleModeChange("hybrid")}
           >
-            ⚡ Hybrid
+            <ZapIcon size={14} /> Hybrid
           </button>
         </div>
 
@@ -669,7 +738,7 @@ function LlmSettings() {
                     setLlmProvider(localProvider);
                   }}
                 >
-                  💻 Local Set
+                  <ComputerIcon size={14} /> Local Set
                 </button>
                 <button
                   type="button"
@@ -679,7 +748,7 @@ function LlmSettings() {
                     setLlmProvider(cloudProvider);
                   }}
                 >
-                  ☁️ Cloud Set
+                  <CloudIcon size={14} /> Cloud Set
                 </button>
               </div>
               {hybridTab === "local" ? (
@@ -719,6 +788,49 @@ function LlmSettings() {
               </div>
             </div>
           )}
+
+          <div className="settings-section context-budget-settings">
+            <h4 className="settings-section-title">Context Window Budget</h4>
+
+            <label className="settings-field checkbox-field">
+              <input
+                type="checkbox"
+                checked={chatContextAuto}
+                onChange={(e) => handleChatContextAutoChange(e.target.checked)}
+                id="llm-context-auto-checkbox"
+              />
+              <span className="checkbox-label">Auto-manage attachment context budget</span>
+              <span className="field-hint" style={{ marginTop: "4px", display: "block" }}>
+                Auto uses up to 75% of the model's context window for attachments and reserves the
+                rest for conversation and generation.
+              </span>
+            </label>
+
+            <label className={`settings-field range-field${chatContextAuto ? " disabled" : ""}`}>
+              <div className="range-label-row">
+                <span>Max Document Token Budget</span>
+                <span className="range-value">
+                  {chatContextAuto
+                    ? "Dynamic (Auto)"
+                    : `${chatContextLimit.toLocaleString()} tokens`}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="1000"
+                max="100000"
+                step="500"
+                value={chatContextLimit}
+                disabled={chatContextAuto}
+                onChange={(e) => handleChatContextLimitChange(parseInt(e.target.value, 10))}
+                id="llm-context-limit-slider"
+              />
+              <span className="field-hint">
+                Controls the maximum tokens allocated for attached documents. Larger values reduce
+                truncation but leave less room for chat history and responses.
+              </span>
+            </label>
+          </div>
 
           {showDevOnboardingTools ? (
             <div className="llm-settings-dev" aria-label="Developer onboarding shortcuts">

@@ -233,6 +233,60 @@ pub fn get_chat_history(
     Ok(messages)
 }
 
+pub fn get_recent_chat_history(
+    db: &Connection,
+    session_id: &str,
+    max_tokens: usize,
+) -> Result<Vec<ChatMessage>, crate::AppError> {
+    ensure_session(db, session_id)?;
+
+    let mut statement = db
+        .prepare(
+            "SELECT id, role, content, coalesce(created_at, datetime('now'))
+             FROM session_messages
+             WHERE session_id = ?1
+             ORDER BY created_at DESC, rowid DESC;",
+        )
+        .map_err(|err| {
+            eprintln!("Database error preparing chat history query: {err}");
+            "Failed preparing chat history query".to_string()
+        })?;
+
+    let rows = statement
+        .query_map(params![session_id], |row| {
+            Ok(ChatMessage {
+                id: row.get(0)?,
+                role: row.get(1)?,
+                content: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|err| {
+            eprintln!("Database error querying chat history: {err}");
+            "Failed querying chat history".to_string()
+        })?;
+
+    let mut selected_messages = Vec::new();
+    let mut accumulated_tokens = 0;
+
+    for row in rows {
+        let msg = row.map_err(|err| {
+            eprintln!("Database error decoding chat history row: {err}");
+            "Failed decoding chat history row".to_string()
+        })?;
+        let count = msg.content.len();
+        let msg_tokens = count.div_ceil(4);
+        if accumulated_tokens + msg_tokens > max_tokens {
+            break;
+        }
+        accumulated_tokens += msg_tokens;
+        selected_messages.push(msg);
+    }
+
+    selected_messages.reverse();
+    Ok(selected_messages)
+}
+
 pub fn clear_chat_history(db: &Connection, session_id: &str) -> Result<(), crate::AppError> {
     ensure_session(db, session_id)?;
 
@@ -412,6 +466,32 @@ pub fn update_session_summary(
     Ok(())
 }
 
+/// Purges all empty sessions (0 messages) from the database except the most recent one.
+pub fn purge_empty_sessions(db: &Connection) -> Result<(), String> {
+    db.execute(
+        "WITH most_recent_empty (id) AS (
+             SELECT s2.id FROM sessions s2
+             WHERE s2.id != 'temporary-session'
+               AND NOT EXISTS (
+                   SELECT 1 FROM session_messages sm2
+                   WHERE sm2.session_id = s2.id
+               )
+             ORDER BY s2.started_at DESC, s2.rowid DESC
+             LIMIT 1
+         )
+         DELETE FROM sessions
+         WHERE id != 'temporary-session'
+           AND NOT EXISTS (
+               SELECT 1 FROM session_messages sm
+               WHERE sm.session_id = sessions.id
+           )
+           AND id != (SELECT id FROM most_recent_empty);",
+        [],
+    )
+    .map_err(|err| format!("Failed to purge empty sessions: {err}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,6 +593,170 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(temp_message_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_purge_empty_sessions() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+
+        create_session(
+            &conn,
+            "sess_with_msgs".to_string(),
+            Some("Has Messages".to_string()),
+        )?;
+        append_message(
+            &conn,
+            "m1".to_string(),
+            "user".to_string(),
+            "hello".to_string(),
+            "sess_with_msgs",
+        )?;
+
+        create_session(
+            &conn,
+            "sess_empty_old".to_string(),
+            Some("Empty Old".to_string()),
+        )?;
+        conn.execute(
+            "UPDATE sessions SET started_at = '2026-07-13 10:00:00' WHERE id = 'sess_empty_old';",
+            [],
+        )?;
+
+        create_session(
+            &conn,
+            "sess_empty_new".to_string(),
+            Some("Empty New".to_string()),
+        )?;
+        conn.execute(
+            "UPDATE sessions SET started_at = '2026-07-13 12:00:00' WHERE id = 'sess_empty_new';",
+            [],
+        )?;
+
+        purge_empty_sessions(&conn)?;
+
+        // "sess_with_msgs" still exists
+        let has_msgs_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = 'sess_with_msgs';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(has_msgs_exists, 1);
+
+        // "sess_empty_old" was purged
+        let empty_old_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = 'sess_empty_old';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(empty_old_exists, 0);
+
+        // "sess_empty_new" still exists (most recent empty session)
+        let empty_new_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = 'sess_empty_new';",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(empty_new_exists, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_recent_chat_history_capping() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+        let sess_id = "test_session_cap";
+
+        create_session(&conn, sess_id.to_string(), Some("Test Cap".to_string()))?;
+
+        // Append multiple messages:
+        // m1: 40 chars = 10 tokens
+        // m2: 20 chars = 5 tokens
+        // m3: 8 chars = 2 tokens
+        append_message(
+            &conn,
+            "m1".to_string(),
+            "user".to_string(),
+            "a".repeat(40),
+            sess_id,
+        )?;
+        append_message(
+            &conn,
+            "m2".to_string(),
+            "assistant".to_string(),
+            "b".repeat(20),
+            sess_id,
+        )?;
+        append_message(
+            &conn,
+            "m3".to_string(),
+            "user".to_string(),
+            "c".repeat(8),
+            sess_id,
+        )?;
+
+        // If max_tokens is 20, we can hold all:
+        // m3 (2) + m2 (5) + m1 (10) = 17 tokens
+        let history = get_recent_chat_history(&conn, sess_id, 20)?;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].id, "m1");
+        assert_eq!(history[1].id, "m2");
+        assert_eq!(history[2].id, "m3");
+
+        // If max_tokens is 8, we can hold m3 (2) + m2 (5) = 7 tokens
+        let history = get_recent_chat_history(&conn, sess_id, 8)?;
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].id, "m2");
+        assert_eq!(history[1].id, "m3");
+
+        // If max_tokens is 1, we can hold nothing (m3 requires 2 tokens)
+        let history = get_recent_chat_history(&conn, sess_id, 1)?;
+        assert_eq!(history.len(), 0);
+
+        // Multi-byte UTF-8 character estimation check (e.g. Chinese characters where each is 3 bytes)
+        // 8 characters = 24 bytes.
+        // Under byte-count estimation: 24.div_ceil(4) = 6 tokens.
+        let sess_utf8 = "test_session_utf8";
+        create_session(&conn, sess_utf8.to_string(), Some("Test UTF8".to_string()))?;
+        append_message(
+            &conn,
+            "utf8_msg".to_string(),
+            "user".to_string(),
+            "测试测试测试测试".to_string(), // 8 Chinese characters, 24 bytes
+            sess_utf8,
+        )?;
+
+        // With max_tokens = 2, it is excluded (requires 6 tokens)
+        let history_utf8_2 = get_recent_chat_history(&conn, sess_utf8, 2)?;
+        assert_eq!(history_utf8_2.len(), 0);
+
+        // With max_tokens = 6, it is included
+        let history_utf8_6 = get_recent_chat_history(&conn, sess_utf8, 6)?;
+        assert_eq!(history_utf8_6.len(), 1);
+        assert_eq!(history_utf8_6[0].id, "utf8_msg");
+
+        // Ceiling division check for short messages (e.g., "Hi" = 2 characters)
+        // Under integer division `2 / 4`, this would be 0 tokens.
+        // Under ceiling division `(2 + 3) / 4`, this is 1 token.
+        let sess_ceil = "test_session_ceil";
+        create_session(&conn, sess_ceil.to_string(), Some("Test Ceil".to_string()))?;
+        append_message(
+            &conn,
+            "short_msg".to_string(),
+            "user".to_string(),
+            "Hi".to_string(), // 2 characters
+            sess_ceil,
+        )?;
+
+        // With max_tokens = 0, we can hold nothing (short_msg requires 1 token)
+        let history_ceil_0 = get_recent_chat_history(&conn, sess_ceil, 0)?;
+        assert_eq!(history_ceil_0.len(), 0);
+
+        // With max_tokens = 1, we can hold the message
+        let history_ceil_1 = get_recent_chat_history(&conn, sess_ceil, 1)?;
+        assert_eq!(history_ceil_1.len(), 1);
+        assert_eq!(history_ceil_1[0].id, "short_msg");
+
         Ok(())
     }
 }
