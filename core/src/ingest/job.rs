@@ -35,7 +35,6 @@ fn looks_like_boilerplate_line(line: &str) -> bool {
     }
     let lower = trimmed.to_ascii_lowercase();
     if lower.starts_with("due:")
-        || lower.starts_with("due date")
         || lower.contains("due date")
         || lower.starts_with("name:")
         || lower.starts_with("student:")
