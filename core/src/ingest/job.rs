@@ -43,7 +43,7 @@ fn looks_like_boilerplate_line(line: &str) -> bool {
         return true;
     }
     let alnum: String = trimmed.chars().filter(|c| c.is_alphanumeric()).collect();
-    !alnum.is_empty() && alnum.chars().all(|c| c.is_ascii_digit())
+    alnum.is_empty() || alnum.chars().all(|c| c.is_ascii_digit())
 }
 
 fn first_content_line(text: &str) -> Option<String> {
@@ -1631,5 +1631,19 @@ mod tests {
         assert_ne!(a.title, b.title);
         assert!(a.title.contains("(1/2)"));
         assert!(b.title.contains("(2/2)"));
+    }
+
+    #[test]
+    fn boilerplate_classifies_separator_lines_without_alnum() {
+        // Lines with no alphanumeric content (rules/separators) must be boilerplate,
+        // not mistaken for valid content.
+        assert!(looks_like_boilerplate_line("----"));
+        assert!(looks_like_boilerplate_line("* * * *"));
+        assert!(looks_like_boilerplate_line("======"));
+        assert!(looks_like_boilerplate_line("   "));
+        // A real digit-only page marker stays boilerplate.
+        assert!(looks_like_boilerplate_line("42"));
+        // Genuine text is not boilerplate.
+        assert!(!looks_like_boilerplate_line("Theorem of Pythagoras"));
     }
 }
