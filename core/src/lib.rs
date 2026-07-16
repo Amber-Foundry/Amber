@@ -4822,7 +4822,7 @@ pub struct ChatPdfExtraction {
 async fn chat_extract_pdf_text(file_path: String) -> IpcResponse<ChatPdfExtraction> {
     use crate::ocr::engine::OcrEngine;
 
-    into_ipc((|| -> Result<ChatPdfExtraction, String> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<ChatPdfExtraction, String> {
         let path = Path::new(&file_path);
         let source_name = path
             .file_name()
@@ -5017,7 +5017,15 @@ async fn chat_extract_pdf_text(file_path: String) -> IpcResponse<ChatPdfExtracti
             prompt_injection_flagged,
             page_token_estimates,
         })
-    })())
+    })
+    .await;
+
+    match result {
+        Ok(res) => into_ipc(res),
+        Err(join_err) => into_ipc(Err(format!(
+            "Failed to spawn PDF extraction task: {join_err}"
+        ))),
+    }
 }
 
 #[tauri::command]
