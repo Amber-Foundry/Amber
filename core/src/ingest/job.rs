@@ -70,6 +70,14 @@ fn fallback_chunk_title(chunk: &ImportChunkSpec, source_name: &str, total_chunks
             chunk.heading_context.as_ref().and_then(|heading| {
                 if looks_like_boilerplate_line(heading) {
                     None
+                } else if heading.chars().count() > MAX_TITLE_DISAMBIGUATOR_CHARS {
+                    Some(
+                        heading
+                            .chars()
+                            .take(MAX_TITLE_DISAMBIGUATOR_CHARS.saturating_sub(3))
+                            .collect::<String>()
+                            + "...",
+                    )
                 } else {
                     Some(heading.clone())
                 }
