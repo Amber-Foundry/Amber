@@ -32,7 +32,7 @@ pub fn resolve_import_vault_ids(
         return Ok((Some(id.to_string()), Some(id.to_string())));
     }
 
-    let parent: Option<String> = conn
+    let parent: Option<Option<String>> = conn
         .query_row(
             "SELECT vault_id FROM sub_vaults WHERE id = ?1 AND deleted_at IS NULL LIMIT 1;",
             [id],
@@ -40,6 +40,7 @@ pub fn resolve_import_vault_ids(
         )
         .optional()
         .map_err(|err| format!("Failed validating target subvault: {err}"))?;
+    let parent = parent.flatten();
 
     match parent {
         Some(parent_id) => Ok((Some(parent_id), Some(id.to_string()))),
@@ -263,6 +264,22 @@ mod tests {
             .unwrap_or_else(|err| panic!("expected resolve to succeed: {err}"));
         assert_eq!(parent2.as_deref(), Some("vault_learning"));
         assert_eq!(write2.as_deref(), Some("vault_learning"));
+    }
+
+    #[test]
+    fn resolve_import_vault_ids_handles_null_subvault_parent() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sub_vaults (id, vault_id, deleted_at) VALUES ('sub_orphan', NULL, NULL);",
+            [],
+        )
+        .unwrap_or_else(|err| panic!("failed to insert orphan subvault: {err}"));
+
+        // A NULL vault_id must not raise a FromSqlError; it should resolve to a clean Err.
+        match resolve_import_vault_ids(&conn, Some("sub_orphan")) {
+            Ok(_) => panic!("expected NULL subvault parent to error"),
+            Err(err) => assert!(err.contains("Target vault not found")),
+        }
     }
 
     #[test]
