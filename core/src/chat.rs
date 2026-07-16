@@ -469,22 +469,23 @@ pub fn update_session_summary(
 /// Purges all empty sessions (0 messages) from the database except the most recent one.
 pub fn purge_empty_sessions(db: &Connection) -> Result<(), String> {
     db.execute(
-        "DELETE FROM sessions
+        "WITH most_recent_empty (id) AS (
+             SELECT s2.id FROM sessions s2
+             WHERE s2.id != 'temporary-session'
+               AND NOT EXISTS (
+                   SELECT 1 FROM session_messages sm2
+                   WHERE sm2.session_id = s2.id
+               )
+             ORDER BY s2.started_at DESC, s2.rowid DESC
+             LIMIT 1
+         )
+         DELETE FROM sessions
          WHERE id != 'temporary-session'
            AND NOT EXISTS (
                SELECT 1 FROM session_messages sm
                WHERE sm.session_id = sessions.id
            )
-           AND id != (
-               SELECT id FROM sessions s2
-               WHERE s2.id != 'temporary-session'
-                 AND NOT EXISTS (
-                     SELECT 1 FROM session_messages sm2
-                     WHERE sm2.session_id = s2.id
-                 )
-               ORDER BY s2.started_at DESC, s2.rowid DESC
-               LIMIT 1
-           );",
+           AND id != (SELECT id FROM most_recent_empty);",
         [],
     )
     .map_err(|err| format!("Failed to purge empty sessions: {err}"))?;
