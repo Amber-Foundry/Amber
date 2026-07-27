@@ -342,7 +342,7 @@ impl EphemeralChunkStore {
 }
 
 /// Helper to perform lightweight English suffix stemming (plurals, past tense, gerunds).
-pub fn stem_search_token(w: &str) -> Option<String> {
+fn stem_search_token(w: &str) -> Option<String> {
     if w.len() <= 3 {
         return None;
     }
