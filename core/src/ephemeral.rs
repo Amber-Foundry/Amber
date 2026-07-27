@@ -257,10 +257,12 @@ impl EphemeralChunkStore {
         query_embedding: &[f32],
         top_k: usize,
     ) -> Vec<EphemeralChunk> {
-        let mut session_chunks: Vec<&EphemeralChunk> = Vec::new();
-        for ((s_id, _), chunks) in &self.chunks {
-            if s_id == session_id {
-                session_chunks.extend(chunks);
+        let mut session_chunks: Vec<(&(String, String), &EphemeralChunk)> = Vec::new();
+        for (key, chunks) in &self.chunks {
+            if key.0 == session_id {
+                for c in chunks {
+                    session_chunks.push((key, c));
+                }
             }
         }
 
@@ -276,7 +278,7 @@ impl EphemeralChunkStore {
         for qtok in &query_tokens {
             let doc_freq = session_chunks
                 .iter()
-                .filter(|c| {
+                .filter(|(_, c)| {
                     let c_tokens = normalize_search_tokens(&c.text);
                     let h_tokens =
                         normalize_search_tokens(c.heading_context.as_deref().unwrap_or(""));
@@ -288,24 +290,23 @@ impl EphemeralChunkStore {
             token_idf.insert(qtok.clone(), idf);
         }
 
-        // Check if real GIST embeddings were computed vs fallback bag-of-words
-        let has_real_embeddings = self
-            .summaries
-            .iter()
-            .filter(|((s_id, _), _)| s_id == session_id)
-            .any(|(_, summary)| summary.embeddings_computed);
-
-        // Adaptive Weighting: If real semantic embeddings are available, balance vector + keyword (0.4 / 0.6).
-        // If fallback bag-of-words vectors were used, rely 100% on pure keyword ranking (0.0 / 1.0) to prevent noise.
-        let (vector_weight, keyword_weight) = if has_real_embeddings {
-            (0.4f32, 0.6f32)
-        } else {
-            (0.0f32, 1.0f32)
-        };
-
         let mut scored_chunks: Vec<(f32, EphemeralChunk)> = Vec::new();
 
-        for chunk in session_chunks {
+        for (key, chunk) in session_chunks {
+            // Adaptive Weighting per Attachment: If real semantic embeddings are available for this specific attachment,
+            // balance vector + keyword (0.4 / 0.6). If fallback bag-of-words vectors were used, rely 100% on pure keyword ranking.
+            let chunk_embeddings_computed = self
+                .summaries
+                .get(key)
+                .map(|s| s.embeddings_computed)
+                .unwrap_or(false);
+
+            let (vector_weight, keyword_weight) = if chunk_embeddings_computed {
+                (0.4f32, 0.6f32)
+            } else {
+                (0.0f32, 1.0f32)
+            };
+
             let vector_score = cosine_similarity(query_embedding, &chunk.embedding);
 
             let chunk_tokens = normalize_search_tokens(&chunk.text);
@@ -341,7 +342,7 @@ impl EphemeralChunkStore {
 }
 
 /// Helper to perform lightweight English suffix stemming (plurals, past tense, gerunds).
-fn stem_search_token(w: &str) -> Option<String> {
+pub fn stem_search_token(w: &str) -> Option<String> {
     if w.len() <= 3 {
         return None;
     }
@@ -349,7 +350,18 @@ fn stem_search_token(w: &str) -> Option<String> {
         return Some(format!("{}y", &w[..w.len() - 3]));
     }
     if w.ends_with("es") && w.len() > 3 {
-        return Some(w[..w.len() - 2].to_string());
+        let stem_before_es = &w[..w.len() - 2];
+        // Strip 2 chars ("es") ONLY if preceded by sibilants (s, x, z, ch, sh) e.g. "boxes" -> "box", "watches" -> "watch"
+        if stem_before_es.ends_with("ch")
+            || stem_before_es.ends_with("sh")
+            || stem_before_es.ends_with('x')
+            || stem_before_es.ends_with('z')
+            || stem_before_es.ends_with("ss")
+        {
+            return Some(stem_before_es.to_string());
+        }
+        // Otherwise for words with silent 'e' + 's' ("crimes", "notes", "cases"), strip trailing 's' -> "crime", "note", "case"
+        return Some(w[..w.len() - 1].to_string());
     }
     if w.ends_with('s') && !w.ends_with("ss") {
         return Some(w[..w.len() - 1].to_string());
@@ -726,6 +738,26 @@ pub fn get_ephemeral_store() -> &'static Arc<RwLock<EphemeralChunkStore>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_stem_search_token() {
+        assert_eq!(stem_search_token("crimes"), Some("crime".to_string()));
+        assert_eq!(stem_search_token("documents"), Some("document".to_string()));
+        assert_eq!(stem_search_token("boxes"), Some("box".to_string()));
+        assert_eq!(stem_search_token("watches"), Some("watch".to_string()));
+        assert_eq!(stem_search_token("cases"), Some("case".to_string()));
+
+        let crimes_tokens = normalize_search_tokens("high crimes and misdemeanors");
+        let crime_tokens = normalize_search_tokens("crime rate");
+        assert!(
+            crimes_tokens.contains("crime"),
+            "normalize_search_tokens('crimes') must generate stem 'crime'"
+        );
+        assert!(
+            crime_tokens.contains("crime"),
+            "normalize_search_tokens('crime') must generate 'crime'"
+        );
+    }
 
     #[test]
     fn test_step_1_normalization_and_punctuation() {
