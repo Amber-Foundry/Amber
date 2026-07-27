@@ -49,7 +49,13 @@ import {
   getLocalModelContextOverrides,
 } from "../utils/settings";
 import { useUIStore } from "../utils/store";
-import { chatConvertTemporaryToMemory, chatExtractPdfText, getModelContextLimit } from "../ipc";
+import {
+  chatConvertTemporaryToMemory,
+  chatExtractPdfText,
+  chatAttachEphemeralDocument,
+  chatDetachEphemeralDocument,
+  getModelContextLimit,
+} from "../ipc";
 import { browseImportPdf, startOcrModelDownload } from "../services/import";
 import {
   FileIcon,
@@ -657,6 +663,13 @@ function ChatPanel({
 
       const filename = filePath.split(/[/\\]/).pop() || "document.pdf";
       setExtractingName(filename);
+      const attachmentId = crypto.randomUUID();
+
+      // Store ephemeral chunks + embeddings on attach
+      void chatAttachEphemeralDocument(sessionId, attachmentId, filePath).then((res) => {
+        console.log("[EphemeralStore] Document attached:", res);
+      });
+
       const res = await chatExtractPdfText(filePath);
       if ("err" in res) {
         setStatus(`Extraction failed: ${res.err}`);
@@ -667,7 +680,7 @@ function ChatPanel({
 
       const doc = res.ok;
       const newDoc: AttachedDoc = {
-        id: crypto.randomUUID(),
+        id: attachmentId,
         filePath,
         sourceName: doc.sourceName,
         pageCount: doc.pageCount,
@@ -697,6 +710,9 @@ function ChatPanel({
   };
 
   const handleRemoveAttachment = (id: string) => {
+    void chatDetachEphemeralDocument(sessionId, id).then((res) => {
+      console.log(`[EphemeralStore] Detached document ${id}:`, res);
+    });
     setSessionAttachments((prev) => ({
       ...prev,
       [sessionId]: (prev[sessionId] || []).filter((d) => d.id !== id),

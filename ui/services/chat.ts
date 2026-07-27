@@ -58,7 +58,10 @@ export async function chatCreateSession(id: string, summary?: string): Promise<v
   return unwrapIpcResult(ipcChatCreateSession(id, summary));
 }
 
+import { chatClearEphemeralSession } from "../ipc";
+
 export async function chatDeleteSession(id: string): Promise<void> {
+  void chatClearEphemeralSession(id);
   return unwrapIpcResult(ipcChatDeleteSession(id));
 }
 
