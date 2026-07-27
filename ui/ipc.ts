@@ -172,6 +172,14 @@ export function chatGetEphemeralChunks(sessionId: string, attachmentId: string) 
   });
 }
 
+export function chatQueryEphemeralChunks(sessionId: string, userPrompt: string, topK?: number) {
+  return invokeTyped<EphemeralChunk[]>("chat_query_ephemeral_chunks", {
+    sessionId,
+    userPrompt,
+    topK,
+  });
+}
+
 export function chatGetHistory(sessionId: string) {
   return invokeTyped<ChatMessage[]>("chat_get_history", { sessionId });
 }

@@ -147,6 +147,256 @@ impl EphemeralChunkStore {
             .copied()
             .unwrap_or(0)
     }
+
+    /// Perform hybrid vector + TF-IDF keyword search over all attached chunks in a session.
+    /// Returns up to `top_k` most relevant EphemeralChunk items ranked by descending match score.
+    pub fn query_session_chunks(
+        &self,
+        session_id: &str,
+        query_text: &str,
+        query_embedding: &[f32],
+        top_k: usize,
+    ) -> Vec<EphemeralChunk> {
+        let mut session_chunks: Vec<&EphemeralChunk> = Vec::new();
+        for ((s_id, _), chunks) in &self.chunks {
+            if s_id == session_id {
+                session_chunks.extend(chunks);
+            }
+        }
+
+        if session_chunks.is_empty() {
+            return Vec::new();
+        }
+
+        let query_tokens = normalize_search_tokens(query_text);
+        let total_docs = session_chunks.len() as f32;
+
+        // Calculate IDF for each query token
+        let mut token_idf = std::collections::HashMap::new();
+        for qtok in &query_tokens {
+            let doc_freq = session_chunks
+                .iter()
+                .filter(|c| {
+                    let c_tokens = normalize_search_tokens(&c.text);
+                    let h_tokens =
+                        normalize_search_tokens(c.heading_context.as_deref().unwrap_or(""));
+                    c_tokens.contains(qtok) || h_tokens.contains(qtok)
+                })
+                .count() as f32;
+
+            let idf = (total_docs / (doc_freq + 1.0)).ln().max(0.1);
+            token_idf.insert(qtok.clone(), idf);
+        }
+
+        let mut scored_chunks: Vec<(f32, EphemeralChunk)> = Vec::new();
+
+        for chunk in session_chunks {
+            let vector_score = cosine_similarity(query_embedding, &chunk.embedding);
+
+            let chunk_tokens = normalize_search_tokens(&chunk.text);
+            let heading_tokens =
+                normalize_search_tokens(chunk.heading_context.as_deref().unwrap_or(""));
+
+            let mut keyword_score = 0.0f32;
+            for qtok in &query_tokens {
+                let idf = token_idf.get(qtok).cloned().unwrap_or(0.1);
+                let in_chunk = chunk_tokens.contains(qtok);
+                let in_heading = heading_tokens.contains(qtok);
+
+                if in_heading {
+                    keyword_score += idf * 4.0;
+                } else if in_chunk {
+                    keyword_score += idf * 1.5;
+                }
+            }
+
+            let combined_score = vector_score * 0.2 + keyword_score * 0.8;
+            scored_chunks.push((combined_score, chunk.clone()));
+        }
+
+        scored_chunks.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let k = top_k.max(1);
+        scored_chunks
+            .into_iter()
+            .take(k)
+            .map(|(_, chunk)| chunk)
+            .collect()
+    }
+}
+
+/// Normalize text into clean search tokens by filtering out standard English stop words.
+pub fn normalize_search_tokens(text: &str) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    let stop_words = [
+        "what", "does", "the", "document", "mention", "about", "is", "are", "and", "for", "with",
+        "this", "that", "from", "have", "has", "can", "you", "tell", "me", "show", "find", "was",
+        "were", "where", "which", "who", "when", "how", "why", "been", "being",
+    ];
+
+    for word in text.split_whitespace() {
+        let clean: String = word
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase();
+
+        if clean.len() >= 2 && !stop_words.contains(&clean.as_str()) {
+            set.insert(clean);
+        }
+    }
+    set
+}
+
+/// Compute cosine similarity between two vector slices.
+pub fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f32 {
+    if v1.len() != v2.len() || v1.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    let mut norm1 = 0.0f32;
+    let mut norm2 = 0.0f32;
+    for (a, b) in v1.iter().zip(v2.iter()) {
+        dot += a * b;
+        norm1 += a * a;
+        norm2 += b * b;
+    }
+    let denom = (norm1.sqrt() * norm2.sqrt()).max(1e-9);
+    dot / denom
+}
+
+/// Helper to compute a normalized 384-dimensional term-frequency vector as a fallback
+/// when the ONNX embedding model is unavailable.
+pub fn compute_fallback_text_vector(text: &str) -> Vec<f32> {
+    if text.trim().is_empty() {
+        return vec![0.0f32; 384];
+    }
+    let mut vec = vec![0.0f32; 384];
+    let words: Vec<&str> = text.split_whitespace().collect();
+    for word in words {
+        let clean: String = word
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase();
+        if clean.len() < 2 {
+            continue;
+        }
+        let byte_sum: usize = clean.bytes().map(|b| b as usize).sum();
+        let dim = (clean.len() * 37 + byte_sum * 13) % 384;
+        vec[dim] += 1.0;
+    }
+    let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-6);
+    for x in &mut vec {
+        *x /= norm;
+    }
+    vec
+}
+
+/// Compute 384-dimensional query embedding vector using bundled GIST ONNX model (or normalized fallback).
+pub fn embed_query(query: &str) -> Vec<f32> {
+    use crate::embed::engine::EmbedEngine;
+
+    if query.trim().is_empty() {
+        return vec![0.0f32; 384];
+    }
+
+    if let Ok(engine) =
+        crate::embed::BundledEmbedEngine::new(crate::embed::bundled::DEFAULT_BUNDLED_MODEL_ID, 384)
+    {
+        if let Ok(vectors) = engine.embed(&[query.to_string()]) {
+            if let Some(vec) = vectors.into_iter().next() {
+                return vec;
+            }
+        }
+    }
+
+    compute_fallback_text_vector(query)
+}
+
+/// Fallback chunker that splits assembled markdown text into ~350-token ImportChunkSpec blocks per page/paragraph.
+pub fn fallback_chunk_markdown_text(
+    markdown_text: &str,
+    total_pages: usize,
+    target_tokens: usize,
+) -> Vec<crate::ingest::job::ImportChunkSpec> {
+    let pages: Vec<&str> = markdown_text.split("\n\n--- PAGE_BREAK ---\n\n").collect();
+    let mut specs = Vec::new();
+    let mut chunk_idx = 0;
+
+    for (page_idx, page_content) in pages.iter().enumerate() {
+        let paragraphs: Vec<&str> = page_content
+            .split("\n\n")
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
+
+        let mut current_text = String::new();
+        let mut current_tokens = 0;
+        let mut current_heading: Option<String> = None;
+
+        for para in paragraphs {
+            if para.starts_with('#') {
+                let h = para.trim_start_matches('#').trim().to_string();
+                if !h.is_empty() {
+                    current_heading = Some(h);
+                }
+            }
+
+            let para_tokens = crate::llm::assembler::count_tokens(para);
+            if current_tokens + para_tokens > target_tokens && !current_text.is_empty() {
+                specs.push(crate::ingest::job::ImportChunkSpec {
+                    chunk_index: chunk_idx,
+                    text: current_text.clone(),
+                    token_count: current_tokens,
+                    heading_context: current_heading.clone(),
+                    chunk_type: "import".to_string(),
+                    ocr_confidence: None,
+                    tables_unstructured: false,
+                    source_page_indices: vec![page_idx],
+                });
+                chunk_idx += 1;
+                current_text.clear();
+                current_tokens = 0;
+            }
+
+            if !current_text.is_empty() {
+                current_text.push_str("\n\n");
+            }
+            current_text.push_str(para);
+            current_tokens += para_tokens;
+        }
+
+        if !current_text.is_empty() {
+            specs.push(crate::ingest::job::ImportChunkSpec {
+                chunk_index: chunk_idx,
+                text: current_text,
+                token_count: current_tokens,
+                heading_context: current_heading,
+                chunk_type: "import".to_string(),
+                ocr_confidence: None,
+                tables_unstructured: false,
+                source_page_indices: vec![page_idx],
+            });
+            chunk_idx += 1;
+        }
+    }
+
+    if specs.is_empty() && !markdown_text.trim().is_empty() {
+        let tokens = crate::llm::assembler::count_tokens(markdown_text);
+        specs.push(crate::ingest::job::ImportChunkSpec {
+            chunk_index: 0,
+            text: markdown_text.to_string(),
+            token_count: tokens,
+            heading_context: None,
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+            source_page_indices: (0..total_pages.max(1)).collect(),
+        });
+    }
+
+    specs
 }
 
 /// Compute 384-dimensional embeddings for a list of ImportChunkSpec items.
@@ -169,18 +419,10 @@ pub fn compute_ephemeral_chunk_embeddings(
         }
     }
 
-    // Fallback: Generate normalized 384-dim vectors for test/environments without ONNX model files
+    // Fallback: Generate term-matching normalized 384-dim vectors for test/environments without ONNX model files
     texts
         .iter()
-        .enumerate()
-        .map(|(idx, text)| {
-            let mut vec = vec![0.0f32; 384];
-            let val = (idx + text.len()) as f32 + 1.0;
-            vec[0] = val;
-            let norm = vec[0].abs().max(1e-6);
-            vec[0] /= norm;
-            vec
-        })
+        .map(|text| compute_fallback_text_vector(text))
         .collect()
 }
 
