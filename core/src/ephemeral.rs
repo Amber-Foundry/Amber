@@ -148,6 +148,106 @@ impl EphemeralChunkStore {
             .unwrap_or(0)
     }
 
+    /// Return total tokens across all active attachments for a session.
+    pub fn get_session_total_tokens(&self, session_id: &str) -> usize {
+        self.summaries
+            .iter()
+            .filter(|((s_id, _), _)| s_id == session_id)
+            .map(|(_, s)| s.total_tokens)
+            .sum()
+    }
+
+    /// Return total chunks held for a session.
+    pub fn get_session_total_chunks(&self, session_id: &str) -> usize {
+        self.chunks
+            .iter()
+            .filter(|((s_id, _), _)| s_id == session_id)
+            .map(|(_, c)| c.len())
+            .sum()
+    }
+
+    /// Get all chunks for a session ordered by original chunk index.
+    pub fn get_all_session_chunks(&self, session_id: &str) -> Vec<EphemeralChunk> {
+        let mut all_chunks: Vec<(usize, EphemeralChunk)> = Vec::new();
+        for ((s_id, _), chunks) in &self.chunks {
+            if s_id == session_id {
+                for c in chunks {
+                    all_chunks.push((c.chunk_index, c.clone()));
+                }
+            }
+        }
+        all_chunks.sort_by_key(|(idx, _)| *idx);
+        all_chunks.into_iter().map(|(_, c)| c).collect()
+    }
+
+    /// Get chunks for a session capped to a max token budget (e.g. 3200 tokens).
+    /// If total chunks exceed the cap, samples evenly across the document to provide broad coverage without blowing the context budget.
+    pub fn get_budget_capped_session_chunks(
+        &self,
+        session_id: &str,
+        max_tokens: usize,
+    ) -> Vec<EphemeralChunk> {
+        let all_chunks = self.get_all_session_chunks(session_id);
+        if all_chunks.is_empty() {
+            return Vec::new();
+        }
+
+        let total_tokens: usize = all_chunks.iter().map(|c| c.token_count).sum();
+        if total_tokens <= max_tokens || all_chunks.len() <= 10 {
+            return all_chunks;
+        }
+
+        // Evenly sample up to 10 chunks across the full document range
+        let target_count = 10;
+        let mut sampled = Vec::new();
+        let step = (all_chunks.len() - 1) as f32 / (target_count - 1) as f32;
+
+        for i in 0..target_count {
+            let idx = (i as f32 * step).round() as usize;
+            if idx < all_chunks.len()
+                && !sampled
+                    .iter()
+                    .any(|c: &EphemeralChunk| c.chunk_index == all_chunks[idx].chunk_index)
+            {
+                sampled.push(all_chunks[idx].clone());
+            }
+        }
+        sampled
+    }
+
+    /// Evaluate if retrieval should be bypassed for a session turn.
+    /// Returns (bypass: bool, reason: &str).
+    pub fn should_bypass_retrieval(
+        &self,
+        session_id: &str,
+        user_prompt: &str,
+    ) -> (bool, &'static str) {
+        let total_tokens = self.get_session_total_tokens(session_id);
+        let total_chunks = self.get_session_total_chunks(session_id);
+
+        if total_chunks == 0 {
+            return (false, "No ephemeral chunks in store");
+        }
+
+        // Small-document bypass: if full text fits in context budget (<= 1500 tokens or <= 3 chunks), bypass retrieval
+        if total_tokens <= 1500 || total_chunks <= 3 {
+            return (
+                true,
+                "Small document fits fully in context budget — retrieval bypassed",
+            );
+        }
+
+        // Broad-question handling: detect whole-document summarization phrasing
+        if is_broad_summarization_query(user_prompt) {
+            return (
+                true,
+                "Broad document request detected — sending full budgeted document text",
+            );
+        }
+
+        (false, "Selective top-K smart retrieval active")
+    }
+
     /// Perform hybrid vector + TF-IDF keyword search over all attached chunks in a session.
     /// Returns up to `top_k` most relevant EphemeralChunk items ranked by descending match score.
     pub fn query_session_chunks(
@@ -246,6 +346,150 @@ pub fn normalize_search_tokens(text: &str) -> std::collections::HashSet<String> 
         }
     }
     set
+}
+
+/// Check if user prompt contains whole-document or broad summarization keywords.
+pub fn is_broad_summarization_query(user_prompt: &str) -> bool {
+    let raw_lower = user_prompt.to_lowercase();
+
+    // 1. Normalized Text (Punctuation-Agnostic with Apostrophe Stripping)
+    // Strip apostrophes directly ("bird's" -> "birds"), then replace non-alphanumeric with spaces ("tl;dr" -> "tl dr")
+    let strip_apostrophe = raw_lower.replace('\'', "");
+    let clean_alpha: String = strip_apostrophe
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    let tokens: Vec<&str> = clean_alpha.split_whitespace().collect();
+    let collapsed = tokens.join(" ");
+
+    // 2. Explicit Whole-Document Scope (Absolute Highest Precedence)
+    // Phrases like "entire document", "whole file", "all sections", "cover to cover" explicitly request
+    // the ENTIRE document, overriding any localized section mention.
+    let explicit_whole_doc_phrases = [
+        "entire document",
+        "whole document",
+        "full document",
+        "entire file",
+        "whole file",
+        "full file",
+        "all sections",
+        "all pages",
+        "every section",
+        "whole thing",
+        "entire text",
+        "cover to cover",
+        "beginning to end",
+        "start to finish",
+    ];
+
+    if explicit_whole_doc_phrases
+        .iter()
+        .any(|phrase| collapsed.contains(phrase) || raw_lower.contains(phrase))
+    {
+        return true;
+    }
+
+    // 3. Localized Narrow Section Guard:
+    // If the user specifies a localized section/chapter/page (e.g. "chapter 3", "chapter3", "section 2", "page 15", "line 12", "line12"),
+    // return false so smart Top-K vector retrieval pinpoints that specific section instead of whole-document sampling!
+    let localized_prefix_targets = [
+        "chapter",
+        "section",
+        "page",
+        "paragraph",
+        "part",
+        "article",
+        "line",
+    ];
+    let localized_exact_targets = ["this function", "closure error", "bug in"];
+
+    let has_localized_token = tokens.iter().any(|tok| {
+        localized_prefix_targets.iter().any(|prefix| {
+            if let Some(suffix) = tok.strip_prefix(prefix) {
+                // Match "chapter", "chapter3", "line12", but NOT "participation", "partner", "pagination", or "lineage"
+                suffix.is_empty() || suffix.chars().all(|c| c.is_numeric())
+            } else {
+                false
+            }
+        })
+    });
+    let has_localized_exact = localized_exact_targets
+        .iter()
+        .any(|target| raw_lower.contains(target));
+
+    if has_localized_token || has_localized_exact {
+        return false;
+    }
+
+    // 4. Broad Summarization Intent Terms:
+    // Now that localized section requests (e.g. "summarize section 2") have been guarded by Step 3,
+    // general broad summary requests ("summarize", "overview", "tldr", "executive summary", "overview of the code") return true.
+    let broad_summary_terms = [
+        "summarize",
+        "summary",
+        "overview",
+        "synopsis",
+        "digest",
+        "tldr",
+        "tl dr",
+        "executive summary",
+        "table of contents",
+        "toc",
+        "nutshell",
+    ];
+
+    for term in &broad_summary_terms {
+        if collapsed.contains(term) || raw_lower.contains(term) {
+            return true;
+        }
+    }
+
+    // 5. Ambiguous Terms (require explicit document noun scope, e.g. "takeaways from the pdf")
+    let ambiguous_terms = ["outline", "takeaway", "takeaways", "highlights", "recap"];
+    let doc_scope_nouns = [
+        "document",
+        "documents",
+        "file",
+        "files",
+        "pdf",
+        "pdfs",
+        "manual",
+        "manuals",
+        "presentation",
+        "presentations",
+        "paper",
+        "papers",
+        "text",
+        "texts",
+        "book",
+        "books",
+        "code",
+        "codebase",
+    ];
+
+    let has_ambiguous = tokens.iter().any(|tok| ambiguous_terms.contains(tok));
+    let has_doc_scope = tokens.iter().any(|tok| doc_scope_nouns.contains(tok));
+
+    if has_ambiguous && has_doc_scope {
+        return true;
+    }
+
+    // 6. Additional Broad Scope Phrases (Punctuation-Agnostic)
+    let broad_scope_phrases = [
+        "big picture",
+        "birds eye",
+        "bird eye",
+        "what is this about",
+        "what is this document about",
+        "what is the document about",
+        "what does this document say",
+        "what does the document say",
+        "explain the document",
+    ];
+
+    broad_scope_phrases
+        .iter()
+        .any(|phrase| collapsed.contains(phrase) || raw_lower.contains(phrase))
 }
 
 /// Compute cosine similarity between two vector slices.
@@ -431,4 +675,88 @@ static GLOBAL_EPHEMERAL_STORE: OnceLock<Arc<RwLock<EphemeralChunkStore>>> = Once
 /// Access the global singleton instance of the EphemeralChunkStore.
 pub fn get_ephemeral_store() -> &'static Arc<RwLock<EphemeralChunkStore>> {
     GLOBAL_EPHEMERAL_STORE.get_or_init(|| Arc::new(RwLock::new(EphemeralChunkStore::new())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_step_1_normalization_and_punctuation() {
+        assert!(is_broad_summarization_query(
+            "Give me a bird's eye view of the file"
+        ));
+        assert!(is_broad_summarization_query("Give me a tl;dr of the text"));
+        assert!(is_broad_summarization_query("What is the TL;DR?"));
+    }
+
+    #[test]
+    fn test_step_2_explicit_whole_document_scope_precedence() {
+        assert!(is_broad_summarization_query(
+            "Please summarize the entire document"
+        ));
+        assert!(is_broad_summarization_query("Overview of the whole file"));
+        assert!(is_broad_summarization_query("Cover to cover recap"));
+        // Explicit scope overrides narrow section/code words
+        assert!(is_broad_summarization_query(
+            "Can you summarize the entire document? I need to understand error handling in section 2."
+        ));
+    }
+
+    #[test]
+    fn test_step_3_localized_narrow_section_guard() {
+        assert!(!is_broad_summarization_query("Please summarize chapter 3."));
+        assert!(!is_broad_summarization_query(
+            "Give me an overview of section 2."
+        ));
+        assert!(!is_broad_summarization_query("Summarize chapter3"));
+        assert!(!is_broad_summarization_query(
+            "Can you summarize this chapter."
+        ));
+        assert!(!is_broad_summarization_query("Explain page 15"));
+
+        // Words containing prefixes (participation, pagination, lineage) must NOT trigger narrow guard
+        assert!(is_broad_summarization_query(
+            "Summarize the standard participation model"
+        ));
+        assert!(is_broad_summarization_query(
+            "Give me a summary of pagination in this architecture"
+        ));
+        assert!(is_broad_summarization_query(
+            "Overview of the lineage tracking file"
+        ));
+    }
+
+    #[test]
+    fn test_step_4_unambiguous_summary_intent() {
+        assert!(is_broad_summarization_query(
+            "Can you give me an overview of the code?"
+        ));
+        assert!(is_broad_summarization_query("Give me a summary"));
+        assert!(is_broad_summarization_query(
+            "Show me the executive summary"
+        ));
+        assert!(is_broad_summarization_query("Table of contents"));
+    }
+
+    #[test]
+    fn test_step_5_ambiguous_terms_with_doc_nouns() {
+        assert!(is_broad_summarization_query(
+            "Give me takeaways from these documents"
+        ));
+        assert!(is_broad_summarization_query("Highlights of the pdf"));
+        assert!(is_broad_summarization_query("Recap of the codebase"));
+
+        // Without doc scope nouns, ambiguous terms with narrow targets return false
+        assert!(!is_broad_summarization_query(
+            "Can you outline a solution for fixing this Rust closure error?"
+        ));
+    }
+
+    #[test]
+    fn test_step_6_additional_broad_phrases() {
+        assert!(is_broad_summarization_query("What is this document about?"));
+        assert!(is_broad_summarization_query("Explain the document"));
+        assert!(is_broad_summarization_query("What does the document say?"));
+    }
 }

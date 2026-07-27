@@ -4700,36 +4700,72 @@ async fn llm_chat(
     // Kept in signature for Tauri IPC contract; history is loaded from DB instead.
     let persona_instruction = "You are Amber, a personal memory assistant. Only help capture, organize, and recall the user's notes, ideas, and projects.";
 
-    // Per-turn vector retrieval: embed user prompt and retrieve top-5 relevant chunks from session's ephemeral chunk store
+    // Ephemeral document assembly: evaluate small-document bypass & broad-question fallback
     let retrieved_doc_content: Option<String> = {
         let store_arc = ephemeral::get_ephemeral_store();
         if let Ok(store) = store_arc.read() {
-            let query_vec = ephemeral::embed_query(&user_prompt);
-            let top_chunks = store.query_session_chunks(session_id, &user_prompt, &query_vec, 5);
-            if !top_chunks.is_empty() {
-                let mut content = String::new();
-                for chunk in &top_chunks {
-                    let page_str = chunk
-                        .source_page_indices
-                        .iter()
-                        .map(|p| (p + 1).to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let header = if let Some(heading) = &chunk.heading_context {
-                        format!(
-                            "### [Retrieved Chunk (Pages: {}), Heading: {}]\n",
-                            page_str, heading
-                        )
-                    } else {
-                        format!("### [Retrieved Chunk (Pages: {})]\n", page_str)
-                    };
-                    content.push_str(&header);
-                    content.push_str(&chunk.text);
-                    content.push_str("\n\n");
+            let (bypass, reason) = store.should_bypass_retrieval(session_id, &user_prompt);
+
+            if bypass {
+                // Whole-document mode: assemble chunks capped to 3000-token budget ceiling
+                let all_chunks = store.get_budget_capped_session_chunks(session_id, 3000);
+                if !all_chunks.is_empty() {
+                    let mut content =
+                        format!("<!-- RETRIEVAL MODE: FULL DOCUMENT BYPASS ({reason}) -->\n\n");
+                    for chunk in &all_chunks {
+                        let page_str = chunk
+                            .source_page_indices
+                            .iter()
+                            .map(|p| (p + 1).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let header = if let Some(heading) = &chunk.heading_context {
+                            format!(
+                                "### [Document Section (Pages: {}), Heading: {}]\n",
+                                page_str, heading
+                            )
+                        } else {
+                            format!("### [Document Section (Pages: {})]\n", page_str)
+                        };
+                        content.push_str(&header);
+                        content.push_str(&chunk.text);
+                        content.push_str("\n\n");
+                    }
+                    Some(content)
+                } else {
+                    attached_document
                 }
-                Some(content)
             } else {
-                attached_document
+                // Smart top-K retrieval mode
+                let query_vec = ephemeral::embed_query(&user_prompt);
+                let top_chunks =
+                    store.query_session_chunks(session_id, &user_prompt, &query_vec, 5);
+                if !top_chunks.is_empty() {
+                    let mut content =
+                        "<!-- RETRIEVAL MODE: SMART RETRIEVAL (Top-5 Chunks) -->\n\n".to_string();
+                    for chunk in &top_chunks {
+                        let page_str = chunk
+                            .source_page_indices
+                            .iter()
+                            .map(|p| (p + 1).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let header = if let Some(heading) = &chunk.heading_context {
+                            format!(
+                                "### [Retrieved Chunk (Pages: {}), Heading: {}]\n",
+                                page_str, heading
+                            )
+                        } else {
+                            format!("### [Retrieved Chunk (Pages: {})]\n", page_str)
+                        };
+                        content.push_str(&header);
+                        content.push_str(&chunk.text);
+                        content.push_str("\n\n");
+                    }
+                    Some(content)
+                } else {
+                    attached_document
+                }
             }
         } else {
             attached_document

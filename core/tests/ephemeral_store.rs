@@ -390,3 +390,253 @@ fn vector_retrieval_finds_amendment_xxiv_with_precision() -> Result<(), Box<dyn 
 
     Ok(())
 }
+
+#[test]
+fn small_document_bypasses_retrieval() -> Result<(), Box<dyn Error>> {
+    let mut store = EphemeralChunkStore::new();
+    let session_id = "session-small-doc";
+    let attachment_id = "doc-small-memo";
+
+    let chunks = vec![
+        ImportChunkSpec {
+            chunk_index: 0,
+            text: "Short memo paragraph 1.".to_string(),
+            token_count: 200,
+            heading_context: None,
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+            source_page_indices: vec![0],
+        },
+        ImportChunkSpec {
+            chunk_index: 1,
+            text: "Short memo paragraph 2.".to_string(),
+            token_count: 200,
+            heading_context: None,
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+            source_page_indices: vec![0],
+        },
+    ];
+
+    let embeddings = amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&chunks);
+    let ephemeral_chunks: Vec<EphemeralChunk> = chunks
+        .into_iter()
+        .zip(embeddings)
+        .map(|(spec, vec)| EphemeralChunk {
+            chunk_index: spec.chunk_index,
+            text: spec.text,
+            token_count: spec.token_count,
+            heading_context: spec.heading_context,
+            source_page_indices: spec.source_page_indices,
+            embedding: vec,
+            ocr_confidence: spec.ocr_confidence,
+            tables_unstructured: spec.tables_unstructured,
+        })
+        .collect();
+
+    let summary = EphemeralAttachmentSummary {
+        session_id: session_id.to_string(),
+        attachment_id: attachment_id.to_string(),
+        source_name: "small_memo.pdf".to_string(),
+        file_path: "/tmp/small_memo.pdf".to_string(),
+        total_chunks: 2,
+        total_tokens: 400,
+        page_count: 1,
+        ocr_confidence: None,
+        prompt_injection_flagged: false,
+        needs_ocr_models: false,
+        embeddings_computed: true,
+    };
+
+    store.insert_attachment(summary, ephemeral_chunks);
+
+    let (bypass, reason) = store.should_bypass_retrieval(session_id, "What does paragraph 1 say?");
+    assert!(bypass, "Small document (400 tokens) must bypass retrieval");
+    assert!(reason.contains("Small document fits fully"));
+
+    Ok(())
+}
+
+#[test]
+fn broad_question_triggers_whole_document_fallback() -> Result<(), Box<dyn Error>> {
+    let mut store = EphemeralChunkStore::new();
+    let session_id = "session-large-doc";
+    let attachment_id = "doc-large-manual";
+
+    let mut chunks = Vec::new();
+    for i in 0..10 {
+        let spec = ImportChunkSpec {
+            chunk_index: i,
+            text: format!("Manual section {} detailed text...", i + 1),
+            token_count: 350,
+            heading_context: Some(format!("Section {}", i + 1)),
+            chunk_type: "import".to_string(),
+            ocr_confidence: None,
+            tables_unstructured: false,
+            source_page_indices: vec![i],
+        };
+        chunks.push(spec);
+    }
+
+    let embeddings = amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&chunks);
+    let ephemeral_chunks: Vec<EphemeralChunk> = chunks
+        .into_iter()
+        .zip(embeddings)
+        .map(|(spec, vec)| EphemeralChunk {
+            chunk_index: spec.chunk_index,
+            text: spec.text,
+            token_count: spec.token_count,
+            heading_context: spec.heading_context,
+            source_page_indices: spec.source_page_indices,
+            embedding: vec,
+            ocr_confidence: spec.ocr_confidence,
+            tables_unstructured: spec.tables_unstructured,
+        })
+        .collect();
+
+    let summary = EphemeralAttachmentSummary {
+        session_id: session_id.to_string(),
+        attachment_id: attachment_id.to_string(),
+        source_name: "large_manual.pdf".to_string(),
+        file_path: "/tmp/large_manual.pdf".to_string(),
+        total_chunks: 10,
+        total_tokens: 3500,
+        page_count: 10,
+        ocr_confidence: None,
+        prompt_injection_flagged: false,
+        needs_ocr_models: false,
+        embeddings_computed: true,
+    };
+
+    store.insert_attachment(summary, ephemeral_chunks);
+
+    // Specific query should use selective top-K retrieval
+    let (bypass1, _) =
+        store.should_bypass_retrieval(session_id, "What is Section 5 detailed text?");
+    assert!(
+        !bypass1,
+        "Specific question on 3500-token document must use smart top-K retrieval"
+    );
+
+    // Broad summarization query should trigger whole-document bypass
+    let (bypass2, reason2) =
+        store.should_bypass_retrieval(session_id, "Please summarize the entire document");
+    assert!(
+        bypass2,
+        "Broad summarization query must trigger whole-document fallback"
+    );
+    assert!(reason2.contains("Broad document request detected"));
+
+    // Assert punctuation-handling: tl;dr and bird's eye
+    let (bypass_tldr, _) =
+        store.should_bypass_retrieval(session_id, "Give me a tl;dr of the document");
+    assert!(
+        bypass_tldr,
+        "tl;dr must trigger broad summarization fallback"
+    );
+
+    let (bypass_bird1, _) =
+        store.should_bypass_retrieval(session_id, "Give me a birds eye view of the file");
+    assert!(
+        bypass_bird1,
+        "birds eye view must trigger broad summarization fallback"
+    );
+
+    let (bypass_bird2, _) =
+        store.should_bypass_retrieval(session_id, "Give me a bird's eye view of the file");
+    assert!(
+        bypass_bird2,
+        "bird's eye view with apostrophe must trigger broad summarization fallback"
+    );
+
+    // Assert explicit whole-document scope overrides narrow target words ("code", "error")
+    let (bypass_explicit_override, _) = store.should_bypass_retrieval(
+        session_id,
+        "Can you summarize the entire document? I need to understand how the code handles error handling across all sections.",
+    );
+    assert!(
+        bypass_explicit_override,
+        "Explicit 'entire document' scope must override narrow target words"
+    );
+
+    // Assert plural scope terms ("documents", "files")
+    let (bypass_plural, _) =
+        store.should_bypass_retrieval(session_id, "Give me takeaways from these documents");
+    assert!(
+        bypass_plural,
+        "Plural scope terms like 'documents' must trigger broad summarization"
+    );
+
+    // Assert "overview of the code" triggers broad summarization
+    let (bypass_code_overview, _) =
+        store.should_bypass_retrieval(session_id, "Can you give me an overview of the code?");
+    assert!(
+        bypass_code_overview,
+        "'overview of the code' must trigger broad summarization fallback"
+    );
+
+    // Assert localized section requests return false (Top-K Retrieval)
+    let (bypass_localized1, _) =
+        store.should_bypass_retrieval(session_id, "Please summarize chapter 3.");
+    assert!(
+        !bypass_localized1,
+        "Localized 'summarize chapter 3' query must return false (Top-K Retrieval)"
+    );
+
+    let (bypass_localized2, _) =
+        store.should_bypass_retrieval(session_id, "Give me an overview of section 2.");
+    assert!(
+        !bypass_localized2,
+        "Localized 'overview of section 2' query must return false (Top-K Retrieval)"
+    );
+
+    let (bypass_localized3, _) =
+        store.should_bypass_retrieval(session_id, "Can you summarize this chapter.");
+    assert!(
+        !bypass_localized3,
+        "Punctuation-ending 'summarize this chapter.' must return false (Top-K Retrieval)"
+    );
+
+    let (bypass_localized4, _) = store.should_bypass_retrieval(session_id, "Summarize chapter3");
+    assert!(
+        !bypass_localized4,
+        "No-space 'Summarize chapter3' must return false (Top-K Retrieval)"
+    );
+
+    // Assert words starting with prefix (participation, pagination, lineage) trigger broad summarization cleanly
+    let (bypass_part, _) =
+        store.should_bypass_retrieval(session_id, "Summarize the standard participation model");
+    assert!(
+        bypass_part,
+        "'participation' must NOT trigger localized guard"
+    );
+
+    let (bypass_page, _) = store.should_bypass_retrieval(
+        session_id,
+        "Give me a summary of pagination in this architecture",
+    );
+    assert!(bypass_page, "'pagination' must NOT trigger localized guard");
+
+    // Assert false positive guards: narrow targets without explicit whole-doc scope return false
+    let (bypass_narrow1, _) = store.should_bypass_retrieval(
+        session_id,
+        "Can you outline a solution for fixing this Rust closure error?",
+    );
+    assert!(
+        !bypass_narrow1,
+        "Narrow code/error query must NOT trigger whole-document fallback"
+    );
+
+    let (bypass_narrow2, _) = store.should_bypass_retrieval(
+        session_id,
+        "What were the key takeaways from chapter 3 only?",
+    );
+    assert!(
+        !bypass_narrow2,
+        "Narrow chapter query must NOT trigger whole-document fallback"
+    );
+
+    Ok(())
+}
