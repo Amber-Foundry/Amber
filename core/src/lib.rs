@@ -5315,7 +5315,8 @@ async fn chat_attach_ephemeral_document(
             }
 
             // Compute 384-dimensional GIST embeddings ONCE on attach
-            let embedding_vectors = ephemeral::compute_ephemeral_chunk_embeddings(&chunk_specs);
+            let (embedding_vectors, embeddings_computed) =
+                ephemeral::compute_ephemeral_chunk_embeddings(&chunk_specs);
 
             let total_tokens = chunk_specs.iter().map(|c| c.token_count).sum();
             let total_chunks = chunk_specs.len();
@@ -5352,7 +5353,7 @@ async fn chat_attach_ephemeral_document(
                 ocr_confidence,
                 prompt_injection_flagged,
                 needs_ocr_models,
-                embeddings_computed: true,
+                embeddings_computed,
             };
 
             let store_arc = ephemeral::get_ephemeral_store();

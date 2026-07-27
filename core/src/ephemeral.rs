@@ -288,6 +288,21 @@ impl EphemeralChunkStore {
             token_idf.insert(qtok.clone(), idf);
         }
 
+        // Check if real GIST embeddings were computed vs fallback bag-of-words
+        let has_real_embeddings = self
+            .summaries
+            .iter()
+            .filter(|((s_id, _), _)| s_id == session_id)
+            .any(|(_, summary)| summary.embeddings_computed);
+
+        // Adaptive Weighting: If real semantic embeddings are available, balance vector + keyword (0.4 / 0.6).
+        // If fallback bag-of-words vectors were used, rely 100% on pure keyword ranking (0.0 / 1.0) to prevent noise.
+        let (vector_weight, keyword_weight) = if has_real_embeddings {
+            (0.4f32, 0.6f32)
+        } else {
+            (0.0f32, 1.0f32)
+        };
+
         let mut scored_chunks: Vec<(f32, EphemeralChunk)> = Vec::new();
 
         for chunk in session_chunks {
@@ -310,7 +325,7 @@ impl EphemeralChunkStore {
                 }
             }
 
-            let combined_score = vector_score * 0.2 + keyword_score * 0.8;
+            let combined_score = vector_score * vector_weight + keyword_score * keyword_weight;
             scored_chunks.push((combined_score, chunk.clone()));
         }
 
@@ -325,7 +340,30 @@ impl EphemeralChunkStore {
     }
 }
 
-/// Normalize text into clean search tokens by filtering out standard English stop words.
+/// Helper to perform lightweight English suffix stemming (plurals, past tense, gerunds).
+fn stem_search_token(w: &str) -> Option<String> {
+    if w.len() <= 3 {
+        return None;
+    }
+    if w.ends_with("ies") && w.len() > 4 {
+        return Some(format!("{}y", &w[..w.len() - 3]));
+    }
+    if w.ends_with("es") && w.len() > 3 {
+        return Some(w[..w.len() - 2].to_string());
+    }
+    if w.ends_with('s') && !w.ends_with("ss") {
+        return Some(w[..w.len() - 1].to_string());
+    }
+    if w.ends_with("ing") && w.len() > 4 {
+        return Some(w[..w.len() - 3].to_string());
+    }
+    if w.ends_with("ed") && w.len() > 3 {
+        return Some(w[..w.len() - 2].to_string());
+    }
+    None
+}
+
+/// Normalize text into clean search tokens by filtering out standard English stop words and generating stems.
 pub fn normalize_search_tokens(text: &str) -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
     let stop_words = [
@@ -342,6 +380,11 @@ pub fn normalize_search_tokens(text: &str) -> std::collections::HashSet<String> 
             .to_lowercase();
 
         if clean.len() >= 2 && !stop_words.contains(&clean.as_str()) {
+            if let Some(stemmed) = stem_search_token(&clean) {
+                if stemmed.len() >= 2 && !stop_words.contains(&stemmed.as_str()) {
+                    set.insert(stemmed);
+                }
+            }
             set.insert(clean);
         }
     }
@@ -644,30 +687,33 @@ pub fn fallback_chunk_markdown_text(
 }
 
 /// Compute 384-dimensional embeddings for a list of ImportChunkSpec items.
-/// Uses the bundled GIST model if available, with a normalized fallback when ONNX model files are missing.
+/// Returns (vectors, embeddings_computed).
+/// Uses the bundled GIST model if available (embeddings_computed = true),
+/// with a normalized fallback when ONNX model files are missing (embeddings_computed = false).
 pub fn compute_ephemeral_chunk_embeddings(
     chunks: &[crate::ingest::job::ImportChunkSpec],
-) -> Vec<Vec<f32>> {
+) -> (Vec<Vec<f32>>, bool) {
     use crate::embed::engine::EmbedEngine;
 
     let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
     if texts.is_empty() {
-        return Vec::new();
+        return (Vec::new(), false);
     }
 
     if let Ok(engine) =
         crate::embed::BundledEmbedEngine::new(crate::embed::bundled::DEFAULT_BUNDLED_MODEL_ID, 384)
     {
         if let Ok(vectors) = engine.embed(&texts) {
-            return vectors;
+            return (vectors, true);
         }
     }
 
     // Fallback: Generate term-matching normalized 384-dim vectors for test/environments without ONNX model files
-    texts
+    let fallback_vectors = texts
         .iter()
         .map(|text| compute_fallback_text_vector(text))
-        .collect()
+        .collect();
+    (fallback_vectors, false)
 }
 
 static GLOBAL_EPHEMERAL_STORE: OnceLock<Arc<RwLock<EphemeralChunkStore>>> = OnceLock::new();

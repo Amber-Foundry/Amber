@@ -168,7 +168,8 @@ fn embeddings_computed_once_per_chunk_not_recomputed_per_turn() -> Result<(), Bo
     ];
 
     // Compute embeddings ONCE on attach
-    let embeddings = amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&specs);
+    let (embeddings, embeddings_computed) =
+        amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&specs);
     assert_eq!(embeddings.len(), 2);
     assert_eq!(embeddings[0].len(), 384);
 
@@ -198,7 +199,7 @@ fn embeddings_computed_once_per_chunk_not_recomputed_per_turn() -> Result<(), Bo
         ocr_confidence: None,
         prompt_injection_flagged: false,
         needs_ocr_models: false,
-        embeddings_computed: true,
+        embeddings_computed,
     };
 
     // Attach document (1st and ONLY compute)
@@ -258,7 +259,8 @@ fn vector_retrieval_finds_deep_page_fact_and_keeps_token_count_low() -> Result<(
         chunks.push(spec);
     }
 
-    let embeddings = amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&chunks);
+    let (embeddings, embeddings_computed) =
+        amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&chunks);
     let ephemeral_chunks: Vec<EphemeralChunk> = chunks
         .into_iter()
         .zip(embeddings)
@@ -285,7 +287,7 @@ fn vector_retrieval_finds_deep_page_fact_and_keeps_token_count_low() -> Result<(
         ocr_confidence: None,
         prompt_injection_flagged: false,
         needs_ocr_models: false,
-        embeddings_computed: true,
+        embeddings_computed,
     };
 
     store.insert_attachment(summary, ephemeral_chunks);
@@ -345,7 +347,8 @@ fn vector_retrieval_finds_amendment_xxiv_with_precision() -> Result<(), Box<dyn 
         chunks.push(spec);
     }
 
-    let embeddings = amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&chunks);
+    let (embeddings, embeddings_computed) =
+        amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&chunks);
     let ephemeral_chunks: Vec<EphemeralChunk> = chunks
         .into_iter()
         .zip(embeddings)
@@ -372,7 +375,7 @@ fn vector_retrieval_finds_amendment_xxiv_with_precision() -> Result<(), Box<dyn 
         ocr_confidence: None,
         prompt_injection_flagged: false,
         needs_ocr_models: false,
-        embeddings_computed: true,
+        embeddings_computed,
     };
 
     store.insert_attachment(summary, ephemeral_chunks);
@@ -420,7 +423,8 @@ fn small_document_bypasses_retrieval() -> Result<(), Box<dyn Error>> {
         },
     ];
 
-    let embeddings = amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&chunks);
+    let (embeddings, embeddings_computed) =
+        amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&chunks);
     let ephemeral_chunks: Vec<EphemeralChunk> = chunks
         .into_iter()
         .zip(embeddings)
@@ -447,7 +451,7 @@ fn small_document_bypasses_retrieval() -> Result<(), Box<dyn Error>> {
         ocr_confidence: None,
         prompt_injection_flagged: false,
         needs_ocr_models: false,
-        embeddings_computed: true,
+        embeddings_computed,
     };
 
     store.insert_attachment(summary, ephemeral_chunks);
@@ -480,7 +484,8 @@ fn broad_question_triggers_whole_document_fallback() -> Result<(), Box<dyn Error
         chunks.push(spec);
     }
 
-    let embeddings = amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&chunks);
+    let (embeddings, embeddings_computed) =
+        amber_lib::ephemeral::compute_ephemeral_chunk_embeddings(&chunks);
     let ephemeral_chunks: Vec<EphemeralChunk> = chunks
         .into_iter()
         .zip(embeddings)
@@ -507,7 +512,7 @@ fn broad_question_triggers_whole_document_fallback() -> Result<(), Box<dyn Error
         ocr_confidence: None,
         prompt_injection_flagged: false,
         needs_ocr_models: false,
-        embeddings_computed: true,
+        embeddings_computed,
     };
 
     store.insert_attachment(summary, ephemeral_chunks);
