@@ -102,6 +102,7 @@ fn assert_indexes_exist(conn: &Connection) {
     let required_indexes = [
         "idx_vaults_privacy",
         "idx_vaults_deleted",
+        "idx_vaults_parent",
         "idx_sub_vaults_vault",
         "idx_nodes_vault",
         "idx_nodes_sub_vault",
@@ -142,7 +143,8 @@ fn assert_indexes_exist(conn: &Connection) {
 }
 
 fn assert_foreign_keys_exist(conn: &Connection) {
-    let fk_expectations: [(&str, &[&str]); 13] = [
+    let fk_expectations: [(&str, &[&str]); 14] = [
+        ("vaults", &["vaults"]),
         ("sub_vaults", &["vaults"]),
         ("nodes", &["vaults", "sub_vaults"]),
         ("node_embeddings", &["nodes"]),
@@ -291,22 +293,6 @@ fn assert_invalidation_trigger_covers_fields(
             || v_sql_upper.contains("NEW.PRIVACY_TIER != OLD.PRIVACY_TIER")
             || v_sql_upper.contains("NEW.PRIVACY_TIER <> OLD.PRIVACY_TIER"),
         "Vault trigger missing privacy_tier check"
-    );
-
-    // Verify the sub-vault update trigger
-    let (sv_name, sv_sql): (String, String) = conn
-        .query_row(
-            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_invalidate_embedding_on_sub_vault_update';",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-    assert_eq!(sv_name, "trg_invalidate_embedding_on_sub_vault_update");
-    let sv_sql_upper = sv_sql.to_uppercase();
-    assert!(
-        sv_sql_upper.contains("NEW.PRIVACY_TIER IS NOT OLD.PRIVACY_TIER")
-            || sv_sql_upper.contains("NEW.PRIVACY_TIER != OLD.PRIVACY_TIER")
-            || sv_sql_upper.contains("NEW.PRIVACY_TIER <> OLD.PRIVACY_TIER"),
-        "Sub-vault trigger missing privacy_tier check"
     );
 
     Ok(())
@@ -494,6 +480,16 @@ fn apply_migrations_through_version(conn: &Connection, max_version: i64) {
         if version > max_version {
             break;
         }
+        let already_applied: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM schema_migrations WHERE version = ?1;",
+                [version],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if already_applied > 0 {
+            continue;
+        }
         let sql = fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
         if let Err(err) = conn.execute_batch(&sql) {
@@ -606,5 +602,74 @@ fn migration_0008_upgrades_legacy_0007_embedding_triggers() -> Result<(), Box<dy
     assert_eq!(applied_0008, 1, "migration 0008 should be recorded");
 
     fs::remove_dir_all(temp_dir).ok();
+    Ok(())
+}
+
+#[test]
+fn test_migration_0012_unifies_sub_vaults_into_vaults() -> Result<(), Box<dyn std::error::Error>> {
+    let conn = Connection::open_in_memory()?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        "#,
+    )?;
+
+    // Apply migrations 1 through 11
+    apply_migrations_through_version(&conn, 11);
+
+    // Seed pre-migration 2-tier dataset
+    conn.execute(
+        "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault_root', 'Root Vault', 'open');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO sub_vaults (id, vault_id, name, privacy_tier) VALUES ('sub_child', 'vault_root', 'Child Subvault', 'locked');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO nodes (id, vault_id, sub_vault_id, title, summary) VALUES ('node_sub', 'vault_root', 'sub_child', 'Sub Node', 'Summary');",
+        [],
+    )?;
+
+    // Apply migration 0012
+    apply_migrations_through_version(&conn, 12);
+
+    // Assert sub_child is now in vaults with parent_vault_id = 'vault_root'
+    let (parent_id, name, tier): (Option<String>, String, String) = conn.query_row(
+        "SELECT parent_vault_id, name, privacy_tier FROM vaults WHERE id = 'sub_child';",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    assert_eq!(parent_id, Some("vault_root".to_string()));
+    assert_eq!(name, "Child Subvault");
+    assert_eq!(tier, "locked");
+
+    // Assert node's vault_id now points to immediate container 'sub_child'
+    let (node_vault_id, sub_vault_id): (String, Option<String>) = conn.query_row(
+        "SELECT vault_id, sub_vault_id FROM nodes WHERE id = 'node_sub';",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(node_vault_id, "sub_child");
+    assert_eq!(sub_vault_id, Some("sub_child".to_string()));
+
+    // Assert sub_vaults sync trigger copies new sub_vaults rows into vaults
+    conn.execute(
+        "INSERT INTO sub_vaults (id, vault_id, name, privacy_tier) VALUES ('sub_sync_test', 'vault_root', 'Sync Sub', 'open');",
+        [],
+    )?;
+    let synced_parent: Option<String> = conn.query_row(
+        "SELECT parent_vault_id FROM vaults WHERE id = 'sub_sync_test';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(synced_parent, Some("vault_root".to_string()));
+
     Ok(())
 }
