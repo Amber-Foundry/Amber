@@ -455,7 +455,13 @@ impl LlmClient for UniversalClient {
                 let payload = AnthropicChatRequest {
                     model: self.model.clone(),
                     max_tokens: 4000,
-                    system: system_prompt.to_string(),
+                    system: vec![AnthropicSystemBlock {
+                        block_type: "text".to_string(),
+                        text: system_prompt.to_string(),
+                        cache_control: Some(AnthropicCacheControl {
+                            cache_type: "ephemeral".to_string(),
+                        }),
+                    }],
                     messages: anthropic_messages,
                 };
 
@@ -572,8 +578,23 @@ impl LlmClient for UniversalClient {
 struct AnthropicChatRequest {
     model: String,
     max_tokens: u32,
-    system: String,
+    system: Vec<AnthropicSystemBlock>,
     messages: Vec<AnthropicMessage>,
+}
+
+#[derive(Serialize)]
+struct AnthropicSystemBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
+}
+
+#[derive(Serialize)]
+struct AnthropicCacheControl {
+    #[serde(rename = "type")]
+    cache_type: String,
 }
 
 #[derive(Serialize)]
