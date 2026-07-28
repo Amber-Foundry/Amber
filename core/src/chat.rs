@@ -233,6 +233,7 @@ pub fn get_chat_history(
     Ok(messages)
 }
 
+#[allow(dead_code)]
 pub fn get_recent_chat_history(
     db: &Connection,
     session_id: &str,
@@ -284,6 +285,97 @@ pub fn get_recent_chat_history(
     }
 
     selected_messages.reverse();
+    Ok(selected_messages)
+}
+
+pub fn get_recent_chat_history_with_compaction(
+    db: &Connection,
+    session_id: &str,
+    max_tokens: usize,
+) -> Result<Vec<ChatMessage>, crate::AppError> {
+    ensure_session(db, session_id)?;
+
+    let mut statement = db
+        .prepare(
+            "SELECT id, role, content, coalesce(created_at, datetime('now'))
+             FROM session_messages
+             WHERE session_id = ?1
+             ORDER BY created_at DESC, rowid DESC;",
+        )
+        .map_err(|err| {
+            eprintln!("Database error preparing chat history query: {err}");
+            "Failed preparing chat history query".to_string()
+        })?;
+
+    let rows = statement
+        .query_map(params![session_id], |row| {
+            Ok(ChatMessage {
+                id: row.get(0)?,
+                role: row.get(1)?,
+                content: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|err| {
+            eprintln!("Database error querying chat history: {err}");
+            "Failed querying chat history".to_string()
+        })?;
+
+    let mut selected_messages = Vec::new();
+    let mut evicted_messages = Vec::new();
+    let mut accumulated_tokens = 0;
+
+    for row in rows {
+        let msg = row.map_err(|err| {
+            eprintln!("Database error decoding chat history row: {err}");
+            "Failed decoding chat history row".to_string()
+        })?;
+        let count = msg.content.len();
+        let msg_tokens = count.div_ceil(4);
+        if accumulated_tokens + msg_tokens <= max_tokens {
+            accumulated_tokens += msg_tokens;
+            selected_messages.push(msg);
+        } else {
+            evicted_messages.push(msg);
+        }
+    }
+
+    selected_messages.reverse();
+    evicted_messages.reverse();
+
+    if !evicted_messages.is_empty() {
+        let user_topics: Vec<String> = evicted_messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .map(|m| {
+                let snippet: String = m.content.chars().take(80).collect();
+                format!("- \"{}\"", snippet.trim().replace('\n', " "))
+            })
+            .collect();
+
+        if !user_topics.is_empty() {
+            let recap_text = format!(
+                "[EARLIER CONVERSATION RECAP]\n\
+                 (The following topics were discussed in earlier turns of this session and compacted to conserve context headroom):\n\
+                 {}\n\
+                 Keep this prior context in mind if the user refers to earlier parts of the chat.",
+                user_topics.join("\n")
+            );
+
+            let recap_msg = ChatMessage {
+                id: "recap_summary".to_string(),
+                role: "system".to_string(),
+                content: recap_text,
+                created_at: String::new(),
+            };
+
+            let mut final_messages = Vec::with_capacity(selected_messages.len() + 1);
+            final_messages.push(recap_msg);
+            final_messages.extend(selected_messages);
+            return Ok(final_messages);
+        }
+    }
+
     Ok(selected_messages)
 }
 
@@ -756,6 +848,57 @@ mod tests {
         let history_ceil_1 = get_recent_chat_history(&conn, sess_ceil, 1)?;
         assert_eq!(history_ceil_1.len(), 1);
         assert_eq!(history_ceil_1[0].id, "short_msg");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_recent_chat_history_with_compaction_recap() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let conn = setup_test_db()?;
+        let sess_id = "test_session_compaction";
+        create_session(
+            &conn,
+            sess_id.to_string(),
+            Some("Compaction Test".to_string()),
+        )?;
+
+        // Add Turn 1 (will be evicted)
+        append_message(
+            &conn,
+            "m1".to_string(),
+            "user".to_string(),
+            "What is Linear Regression and regularization?".to_string(),
+            sess_id,
+        )?;
+        append_message(
+            &conn,
+            "m2".to_string(),
+            "assistant".to_string(),
+            "Linear regression predicts values and regularization prevents overfitting."
+                .to_string(),
+            sess_id,
+        )?;
+
+        // Add Turn 2 (will fit in max_tokens)
+        append_message(
+            &conn,
+            "m3".to_string(),
+            "user".to_string(),
+            "Tell me about Maximum Likelihood Estimation now.".to_string(),
+            sess_id,
+        )?;
+
+        // Budget max_tokens to 20 tokens so Turn 1 gets evicted and Turn 2 fits
+        let history = get_recent_chat_history_with_compaction(&conn, sess_id, 20)?;
+
+        // History must contain 2 entries: 1 system recap message + 1 recent user message (m3)
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].id, "recap_summary");
+        assert_eq!(history[0].role, "system");
+        assert!(history[0].content.contains("[EARLIER CONVERSATION RECAP]"));
+        assert!(history[0].content.contains("Linear Regression"));
+        assert_eq!(history[1].id, "m3");
 
         Ok(())
     }

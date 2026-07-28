@@ -2111,7 +2111,9 @@ function ChatPanel({
                   <span>{formatTokens(systemReserve)}</span>
                 </div>
                 <div className="tooltip-row indent">
-                  <span>Chat History:</span>
+                  <span>
+                    Chat History{historyTokens > resolvedHistoryBudget ? " (Compacted)" : ""}:
+                  </span>
                   <span>{formatTokens(historyTokens)}</span>
                 </div>
                 {attachedDocTokens > 0 && (
@@ -2226,7 +2228,7 @@ function ChatPanel({
               <GearIcon size={14} />
             </span>
             <span className="banner-text">
-              Older messages will be dropped to fit this model's context.
+              Older messages are compacted into a summary recap to fit this model's context.
             </span>
           </div>
         ) : null}

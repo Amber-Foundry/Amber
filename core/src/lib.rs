@@ -4859,9 +4859,12 @@ async fn llm_chat(
     // Load recent conversation history (token-budgeted) so the model sees previous turns without overflowing
     let messages: Vec<llm::client::LlmMessage> = {
         let conn = open_connection(&db_path)?;
-        let history =
-            chat::get_recent_chat_history(&conn, session_id, max_history_tokens.unwrap_or(4000))
-                .map_err(|e| e.to_string())?;
+        let history = chat::get_recent_chat_history_with_compaction(
+            &conn,
+            session_id,
+            max_history_tokens.unwrap_or(4000),
+        )
+        .map_err(|e| e.to_string())?;
         history
             .into_iter()
             .map(|msg| llm::client::LlmMessage {
