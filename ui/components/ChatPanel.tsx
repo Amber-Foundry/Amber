@@ -619,9 +619,10 @@ function ChatPanel({
       const attachmentId = crypto.randomUUID();
 
       // Store ephemeral chunks + embeddings on attach
-      void chatAttachEphemeralDocument(sessionId, attachmentId, filePath).then((res) => {
-        console.log("[EphemeralStore] Document attached:", res);
-      });
+      const attachResult = await chatAttachEphemeralDocument(sessionId, attachmentId, filePath);
+      if ("err" in attachResult) {
+        console.warn("[EphemeralStore] Document attach warning:", attachResult.err);
+      }
 
       const res = await chatExtractPdfText(filePath);
       if ("err" in res) {
@@ -1136,14 +1137,15 @@ function ChatPanel({
   );
 
   const attachedDocTokens = useMemo(() => {
+    if (budgetedDocs.length === 0) return 0;
     let sum = 0;
     for (const doc of budgetedDocs) {
       const fullDocTokens = doc.pageTokenEstimates.reduce((a, b) => a + b, 0);
-      // Smart vector retrieval caps per-turn attachment context at ~2000 tokens (or full doc if smaller)
-      sum += Math.min(fullDocTokens, 2000);
+      const effectiveCap = fullDocTokens < 1200 ? fullDocTokens : resolvedDocBudget;
+      sum += Math.min(fullDocTokens, effectiveCap > 0 ? effectiveCap : 2000);
     }
     return sum;
-  }, [budgetedDocs]);
+  }, [budgetedDocs, resolvedDocBudget]);
 
   const historyTokens = useMemo(() => {
     let chatCharacters = 0;

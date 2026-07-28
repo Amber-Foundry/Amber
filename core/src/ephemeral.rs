@@ -363,7 +363,14 @@ fn stem_search_token(w: &str) -> Option<String> {
         // Otherwise for words with silent 'e' + 's' ("crimes", "notes", "cases"), strip trailing 's' -> "crime", "note", "case"
         return Some(w[..w.len() - 1].to_string());
     }
-    if w.ends_with('s') && !w.ends_with("ss") {
+    if w.ends_with('s')
+        && !w.ends_with("ss")
+        && !w.ends_with("us")
+        && !w.ends_with("is")
+        && !w.ends_with("as")
+        && !w.ends_with("os")
+        && w.len() > 3
+    {
         return Some(w[..w.len() - 1].to_string());
     }
     if w.ends_with("ing") && w.len() > 4 {

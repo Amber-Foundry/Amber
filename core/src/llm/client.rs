@@ -358,7 +358,6 @@ impl LlmClient for UniversalClient {
         components: &crate::llm::assembler::PromptComponents,
         messages: &[LlmMessage],
     ) -> Result<String, crate::AppError> {
-        let system_prompt = components.assemble_system_prompt();
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(300))
@@ -366,6 +365,7 @@ impl LlmClient for UniversalClient {
             .unwrap_or_else(|_| reqwest::Client::new());
         match self.provider {
             LlmProvider::Ollama => {
+                let system_prompt = components.assemble_system_prompt();
                 let url = format!("{}/api/chat", self.normalized_endpoint());
                 let mut ollama_messages = Vec::with_capacity(messages.len().saturating_add(1));
                 ollama_messages.push(OllamaChatApiMessage {
@@ -407,6 +407,7 @@ impl LlmClient for UniversalClient {
                 Ok(parsed.message.content)
             }
             LlmProvider::LmStudio => {
+                let system_prompt = components.assemble_system_prompt();
                 let url = format!("{}/v1/chat/completions", self.normalized_endpoint());
                 let mut openai_messages = Vec::with_capacity(messages.len().saturating_add(1));
                 openai_messages.push(LmStudioPayloadMessage {
@@ -539,6 +540,7 @@ impl LlmClient for UniversalClient {
                 Ok(text)
             }
             LlmProvider::OpenAi | LlmProvider::Google | LlmProvider::XAi => {
+                let system_prompt = components.assemble_system_prompt();
                 let provider_name = match self.provider {
                     LlmProvider::OpenAi => "OpenAI",
                     LlmProvider::Google => "Google Gemini",
