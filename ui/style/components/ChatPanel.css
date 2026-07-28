@@ -2418,6 +2418,16 @@
   font-size: 0.72rem;
 }
 
+.chip-retrieval {
+  color: #10b981;
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: rgba(16, 185, 129, 0.1);
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
 .chip-truncated {
   color: #b45309;
   font-size: 0.72rem;

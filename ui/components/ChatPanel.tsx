@@ -403,62 +403,15 @@ type ChatPanelProps = {
   onActivateSession?: (sessionId: string) => void;
 };
 
-const computeAttachedDocsBudget = (docs: AttachedDoc[], maxTokens = 6000): AttachedDoc[] => {
+const computeAttachedDocsBudget = (docs: AttachedDoc[], _maxTokens = 6000): AttachedDoc[] => {
   if (docs.length === 0) return [];
 
-  const processed = docs.map((d) => ({
+  // With per-turn vector retrieval in Rust, full document text is ingested into EphemeralChunkStore.
+  // Retrieval selects Top-K relevant chunks per turn, so frontend page truncation is not performed.
+  return docs.map((d) => ({
     ...d,
     includedPageCount: d.pageCount,
     isTruncated: false,
-  }));
-
-  let remainingBudget = maxTokens;
-  const activeIndices = new Set(processed.keys());
-
-  const includedPages = processed.map((d) => d.pageCount);
-
-  let iterations = 0;
-  while (activeIndices.size > 0 && iterations < 10) {
-    iterations++;
-    const share = Math.floor(remainingBudget / activeIndices.size);
-    let budgetReleased = false;
-
-    for (const idx of Array.from(activeIndices)) {
-      const fullDocTokens = processed[idx].pageTokenEstimates.reduce((a, b) => a + b, 0);
-      if (fullDocTokens <= share) {
-        remainingBudget -= fullDocTokens;
-        includedPages[idx] = processed[idx].pageCount;
-        activeIndices.delete(idx);
-        budgetReleased = true;
-      }
-    }
-
-    if (!budgetReleased) {
-      for (const idx of Array.from(activeIndices)) {
-        let acc = 0;
-        let pCount = 0;
-        for (const pageTokens of processed[idx].pageTokenEstimates) {
-          if (acc + pageTokens <= share) {
-            acc += pageTokens;
-            pCount++;
-          } else {
-            break;
-          }
-        }
-        if (pCount === 0 && processed[idx].pageCount > 0) {
-          pCount = 1;
-        }
-        includedPages[idx] = pCount;
-        processed[idx].isTruncated = pCount < processed[idx].pageCount;
-      }
-      break;
-    }
-  }
-
-  return processed.map((d, idx) => ({
-    ...d,
-    includedPageCount: includedPages[idx],
-    isTruncated: includedPages[idx] < d.pageCount,
   }));
 };
 
@@ -1185,8 +1138,9 @@ function ChatPanel({
   const attachedDocTokens = useMemo(() => {
     let sum = 0;
     for (const doc of budgetedDocs) {
-      const includedCount = doc.includedPageCount;
-      sum += doc.pageTokenEstimates.slice(0, includedCount).reduce((a, b) => a + b, 0);
+      const fullDocTokens = doc.pageTokenEstimates.reduce((a, b) => a + b, 0);
+      // Smart vector retrieval caps per-turn attachment context at ~2000 tokens (or full doc if smaller)
+      sum += Math.min(fullDocTokens, 2000);
     }
     return sum;
   }, [budgetedDocs]);
@@ -1244,7 +1198,7 @@ function ChatPanel({
     const cappedHistory = Math.min(historyTokens, resolvedHistoryBudget);
     const netSpaceForPrompt =
       activeLimit - systemReserve - 1500 - attachedDocTokens - vaultTokens - cappedHistory;
-    return netSpaceForPrompt < 1000; // less than 1000 tokens left for prompt + history
+    return netSpaceForPrompt < 250; // trigger dead end only when less than 250 tokens remain for prompt
   }, [
     sessionId,
     selectedNodeIds,
@@ -1292,19 +1246,13 @@ function ChatPanel({
               <FileIcon size={14} />
             </span>
             <span className="chip-name">{doc.sourceName}</span>
-            <span className="chip-pages">
-              {doc.isTruncated
-                ? `pp. 1–${doc.includedPageCount} of ${doc.pageCount}`
-                : `${doc.pageCount} pg`}
+            <span className="chip-pages">{`${doc.pageCount} pg`}</span>
+            <span
+              className="chip-retrieval"
+              title="Smart per-turn vector retrieval is active for this document"
+            >
+              Smart Retrieval
             </span>
-            {doc.isTruncated && (
-              <span
-                className="chip-truncated"
-                title="Document was truncated to fit the token budget"
-              >
-                <AlertIcon size={12} /> Truncated
-              </span>
-            )}
             {doc.needsOcrModels && (
               <span className="chip-ocr-warn" title="OCR models needed for full extraction">
                 <AlertIcon size={12} /> OCR
