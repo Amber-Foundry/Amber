@@ -1143,7 +1143,7 @@ function ChatPanel({
     let sum = 0;
     for (const doc of budgetedDocs) {
       const fullDocTokens = doc.pageTokenEstimates.reduce((a, b) => a + b, 0);
-      const effectiveCap = fullDocTokens < 1200 ? fullDocTokens : resolvedDocBudget;
+      const effectiveCap = fullDocTokens <= 1500 ? fullDocTokens : resolvedDocBudget;
       sum += Math.min(fullDocTokens, effectiveCap > 0 ? effectiveCap : 2000);
     }
     return sum;
@@ -1191,11 +1191,27 @@ function ChatPanel({
   }, [contextPercentage]);
 
   const isDeadEnd = useMemo(() => {
-    // History compaction and smart RAG retrieval automatically cap history and document chunks
-    // to fit within partitioned context budgets. Dead-end triggers only if active context limit
-    // is smaller than the minimum operating reserve (< 2000 tokens).
-    return totalContextLimit > 0 && totalContextLimit < 2000;
-  }, [totalContextLimit]);
+    if (totalContextLimit > 0 && totalContextLimit < 2000) return true;
+    const activeLimit = getChatContextAuto()
+      ? getContextBudgetCeiling(currentModel, currentProvider)
+      : totalContextLimit;
+    const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
+    const activeVaultBudget = isSingleConsumer ? 0 : resolvedVaultBudget;
+    const activeDocBudget = budgetedDocs.length > 0 ? resolvedDocBudget : 0;
+    const totalResolved = activeDocBudget + activeVaultBudget + resolvedHistoryBudget;
+    return activeLimit - systemReserve - 1500 - totalResolved < 0;
+  }, [
+    totalContextLimit,
+    currentModel,
+    currentProvider,
+    sessionId,
+    selectedNodeIds,
+    budgetedDocs.length,
+    resolvedDocBudget,
+    resolvedVaultBudget,
+    resolvedHistoryBudget,
+    systemReserve,
+  ]);
 
   const canSend = useMemo(
     () => input.trim().length > 0 && !isSending && !isDeadEnd,
