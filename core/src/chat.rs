@@ -233,61 +233,6 @@ pub fn get_chat_history(
     Ok(messages)
 }
 
-#[allow(dead_code)]
-pub fn get_recent_chat_history(
-    db: &Connection,
-    session_id: &str,
-    max_tokens: usize,
-) -> Result<Vec<ChatMessage>, crate::AppError> {
-    ensure_session(db, session_id)?;
-
-    let mut statement = db
-        .prepare(
-            "SELECT id, role, content, coalesce(created_at, datetime('now'))
-             FROM session_messages
-             WHERE session_id = ?1
-             ORDER BY created_at DESC, rowid DESC;",
-        )
-        .map_err(|err| {
-            eprintln!("Database error preparing chat history query: {err}");
-            "Failed preparing chat history query".to_string()
-        })?;
-
-    let rows = statement
-        .query_map(params![session_id], |row| {
-            Ok(ChatMessage {
-                id: row.get(0)?,
-                role: row.get(1)?,
-                content: row.get(2)?,
-                created_at: row.get(3)?,
-            })
-        })
-        .map_err(|err| {
-            eprintln!("Database error querying chat history: {err}");
-            "Failed querying chat history".to_string()
-        })?;
-
-    let mut selected_messages = Vec::new();
-    let mut accumulated_tokens = 0;
-
-    for row in rows {
-        let msg = row.map_err(|err| {
-            eprintln!("Database error decoding chat history row: {err}");
-            "Failed decoding chat history row".to_string()
-        })?;
-        let count = msg.content.len();
-        let msg_tokens = count.div_ceil(4);
-        if accumulated_tokens + msg_tokens > max_tokens {
-            break;
-        }
-        accumulated_tokens += msg_tokens;
-        selected_messages.push(msg);
-    }
-
-    selected_messages.reverse();
-    Ok(selected_messages)
-}
-
 pub fn get_recent_chat_history_with_compaction(
     db: &Connection,
     session_id: &str,
@@ -344,22 +289,47 @@ pub fn get_recent_chat_history_with_compaction(
     evicted_messages.reverse();
 
     if !evicted_messages.is_empty() {
-        let user_topics: Vec<String> = evicted_messages
-            .iter()
-            .filter(|m| m.role == "user")
-            .map(|m| {
-                let snippet: String = m.content.chars().take(80).collect();
-                format!("- \"{}\"", snippet.trim().replace('\n', " "))
-            })
-            .collect();
+        let mut turn_summaries = Vec::new();
+        let mut current_user: Option<String> = None;
 
-        if !user_topics.is_empty() {
+        for msg in &evicted_messages {
+            if msg.role == "user" {
+                current_user = Some(
+                    msg.content
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
+                        .trim()
+                        .replace('\n', " "),
+                );
+            } else if msg.role == "assistant" {
+                if let Some(user_q) = current_user.take() {
+                    let assistant_a: String = msg
+                        .content
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
+                        .trim()
+                        .replace('\n', " ");
+                    turn_summaries.push(format!(
+                        "- User: \"{}\" ➔ Assistant: \"{}\"",
+                        user_q, assistant_a
+                    ));
+                }
+            }
+        }
+
+        if let Some(remaining_user) = current_user {
+            turn_summaries.push(format!("- User: \"{}\"", remaining_user));
+        }
+
+        if !turn_summaries.is_empty() {
             let recap_text = format!(
                 "[EARLIER CONVERSATION RECAP]\n\
-                 (The following topics were discussed in earlier turns of this session and compacted to conserve context headroom):\n\
+                 (The following turns were discussed in earlier parts of this session and compacted to conserve context headroom):\n\
                  {}\n\
-                 Keep this prior context in mind if the user refers to earlier parts of the chat.",
-                user_topics.join("\n")
+                 Keep this prior context and assistant responses in mind if the user refers to earlier parts of the chat.",
+                turn_summaries.join("\n")
             );
 
             let recap_msg = ChatMessage {
@@ -789,21 +759,23 @@ mod tests {
 
         // If max_tokens is 20, we can hold all:
         // m3 (2) + m2 (5) + m1 (10) = 17 tokens
-        let history = get_recent_chat_history(&conn, sess_id, 20)?;
+        let history = get_recent_chat_history_with_compaction(&conn, sess_id, 20)?;
         assert_eq!(history.len(), 3);
         assert_eq!(history[0].id, "m1");
         assert_eq!(history[1].id, "m2");
         assert_eq!(history[2].id, "m3");
 
-        // If max_tokens is 8, we can hold m3 (2) + m2 (5) = 7 tokens
-        let history = get_recent_chat_history(&conn, sess_id, 8)?;
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].id, "m2");
-        assert_eq!(history[1].id, "m3");
+        // If max_tokens is 8, m1 gets evicted, producing a recap header + m2 + m3
+        let history = get_recent_chat_history_with_compaction(&conn, sess_id, 8)?;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].id, "recap_summary");
+        assert_eq!(history[1].id, "m2");
+        assert_eq!(history[2].id, "m3");
 
-        // If max_tokens is 1, we can hold nothing (m3 requires 2 tokens)
-        let history = get_recent_chat_history(&conn, sess_id, 1)?;
-        assert_eq!(history.len(), 0);
+        // If max_tokens is 1, recent messages fit 0 items, but evicted turns produce 1 recap message
+        let history = get_recent_chat_history_with_compaction(&conn, sess_id, 1)?;
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, "recap_summary");
 
         // Multi-byte UTF-8 character estimation check (e.g. Chinese characters where each is 3 bytes)
         // 8 characters = 24 bytes.
@@ -818,12 +790,13 @@ mod tests {
             sess_utf8,
         )?;
 
-        // With max_tokens = 2, it is excluded (requires 6 tokens)
-        let history_utf8_2 = get_recent_chat_history(&conn, sess_utf8, 2)?;
-        assert_eq!(history_utf8_2.len(), 0);
+        // With max_tokens = 2, the message is evicted, producing a recap header
+        let history_utf8_2 = get_recent_chat_history_with_compaction(&conn, sess_utf8, 2)?;
+        assert_eq!(history_utf8_2.len(), 1);
+        assert_eq!(history_utf8_2[0].id, "recap_summary");
 
-        // With max_tokens = 6, it is included
-        let history_utf8_6 = get_recent_chat_history(&conn, sess_utf8, 6)?;
+        // With max_tokens = 6, it is included directly
+        let history_utf8_6 = get_recent_chat_history_with_compaction(&conn, sess_utf8, 6)?;
         assert_eq!(history_utf8_6.len(), 1);
         assert_eq!(history_utf8_6[0].id, "utf8_msg");
 
@@ -840,12 +813,13 @@ mod tests {
             sess_ceil,
         )?;
 
-        // With max_tokens = 0, we can hold nothing (short_msg requires 1 token)
-        let history_ceil_0 = get_recent_chat_history(&conn, sess_ceil, 0)?;
-        assert_eq!(history_ceil_0.len(), 0);
+        // With max_tokens = 0, short_msg is evicted, producing a recap header
+        let history_ceil_0 = get_recent_chat_history_with_compaction(&conn, sess_ceil, 0)?;
+        assert_eq!(history_ceil_0.len(), 1);
+        assert_eq!(history_ceil_0[0].id, "recap_summary");
 
         // With max_tokens = 1, we can hold the message
-        let history_ceil_1 = get_recent_chat_history(&conn, sess_ceil, 1)?;
+        let history_ceil_1 = get_recent_chat_history_with_compaction(&conn, sess_ceil, 1)?;
         assert_eq!(history_ceil_1.len(), 1);
         assert_eq!(history_ceil_1[0].id, "short_msg");
 
