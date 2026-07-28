@@ -4842,8 +4842,6 @@ async fn llm_chat(
         retrieved_doc_content,
     };
 
-    let system_prompt = prompt_components.assemble_system_prompt();
-
     let parsed_provider = match provider.trim().to_lowercase().as_str() {
         "ollama" => llm::client::LlmProvider::Ollama,
         "lmstudio" => llm::client::LlmProvider::LmStudio,
@@ -4874,7 +4872,7 @@ async fn llm_chat(
             .collect()
     };
 
-    llm::client::LlmClient::complete(&client, &system_prompt, &messages).await
+    llm::client::LlmClient::complete_components(&client, &prompt_components, &messages).await
 }
 
 #[derive(Serialize, serde::Deserialize, Debug, Clone)]

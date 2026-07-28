@@ -15,6 +15,11 @@ pub trait LlmClient {
         system_prompt: &str,
         messages: &[LlmMessage],
     ) -> Result<String, crate::AppError>;
+    async fn complete_components(
+        &self,
+        components: &crate::llm::assembler::PromptComponents,
+        messages: &[LlmMessage],
+    ) -> Result<String, crate::AppError>;
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -340,6 +345,20 @@ impl LlmClient for UniversalClient {
         system_prompt: &str,
         messages: &[LlmMessage],
     ) -> Result<String, crate::AppError> {
+        let components = crate::llm::assembler::PromptComponents {
+            system_directives: system_prompt.to_string(),
+            vault_memory_context: String::new(),
+            retrieved_doc_content: None,
+        };
+        self.complete_components(&components, messages).await
+    }
+
+    async fn complete_components(
+        &self,
+        components: &crate::llm::assembler::PromptComponents,
+        messages: &[LlmMessage],
+    ) -> Result<String, crate::AppError> {
+        let system_prompt = components.assemble_system_prompt();
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(300))
@@ -351,7 +370,7 @@ impl LlmClient for UniversalClient {
                 let mut ollama_messages = Vec::with_capacity(messages.len().saturating_add(1));
                 ollama_messages.push(OllamaChatApiMessage {
                     role: "system".to_string(),
-                    content: system_prompt.to_string(),
+                    content: system_prompt,
                 });
                 for msg in messages {
                     ollama_messages.push(OllamaChatApiMessage {
@@ -392,7 +411,7 @@ impl LlmClient for UniversalClient {
                 let mut openai_messages = Vec::with_capacity(messages.len().saturating_add(1));
                 openai_messages.push(LmStudioPayloadMessage {
                     role: "system".to_string(),
-                    content: system_prompt.to_string(),
+                    content: system_prompt,
                 });
                 for msg in messages {
                     openai_messages.push(LmStudioPayloadMessage {
@@ -452,16 +471,39 @@ impl LlmClient for UniversalClient {
                         content: msg.content.clone(),
                     });
                 }
-                let payload = AnthropicChatRequest {
-                    model: self.model.clone(),
-                    max_tokens: 4000,
-                    system: vec![AnthropicSystemBlock {
+
+                let mut system_blocks = Vec::new();
+                let stable_prefix = components.assemble_stable_prefix();
+                if !stable_prefix.trim().is_empty() {
+                    system_blocks.push(AnthropicSystemBlock {
                         block_type: "text".to_string(),
-                        text: system_prompt.to_string(),
+                        text: stable_prefix,
                         cache_control: Some(AnthropicCacheControl {
                             cache_type: "ephemeral".to_string(),
                         }),
-                    }],
+                    });
+                }
+
+                if let Some(dynamic_context) = components.assemble_dynamic_context() {
+                    system_blocks.push(AnthropicSystemBlock {
+                        block_type: "text".to_string(),
+                        text: dynamic_context,
+                        cache_control: None, // Dynamic per-turn chunks are uncached!
+                    });
+                }
+
+                if system_blocks.is_empty() {
+                    system_blocks.push(AnthropicSystemBlock {
+                        block_type: "text".to_string(),
+                        text: String::new(),
+                        cache_control: None,
+                    });
+                }
+
+                let payload = AnthropicChatRequest {
+                    model: self.model.clone(),
+                    max_tokens: 4000,
+                    system: system_blocks,
                     messages: anthropic_messages,
                 };
 
