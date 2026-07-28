@@ -275,8 +275,7 @@ pub fn get_recent_chat_history_with_compaction(
             eprintln!("Database error decoding chat history row: {err}");
             "Failed decoding chat history row".to_string()
         })?;
-        let count = msg.content.len();
-        let msg_tokens = count.div_ceil(4);
+        let msg_tokens = crate::llm::assembler::count_tokens(&msg.content);
         if accumulated_tokens + msg_tokens <= max_tokens {
             accumulated_tokens += msg_tokens;
             selected_messages.push(msg);
@@ -863,8 +862,8 @@ mod tests {
             sess_id,
         )?;
 
-        // Budget max_tokens to 20 tokens so Turn 1 gets evicted and Turn 2 fits
-        let history = get_recent_chat_history_with_compaction(&conn, sess_id, 20)?;
+        // Budget max_tokens to 15 BPE tokens so Turn 1 (m1 and m2) gets evicted and Turn 2 (m3) fits
+        let history = get_recent_chat_history_with_compaction(&conn, sess_id, 15)?;
 
         // History must contain 2 entries: 1 system recap message + 1 recent user message (m3)
         assert_eq!(history.len(), 2);

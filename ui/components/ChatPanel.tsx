@@ -1136,6 +1136,8 @@ function ChatPanel({
     [attachedDocs, resolvedDocBudget]
   );
 
+  // Compute estimated attached document token consumption for UI Context Ring.
+  // Note: These values represent the dynamic smart retrieval context ceiling enforced on the Rust backend per turn.
   const attachedDocTokens = useMemo(() => {
     if (budgetedDocs.length === 0) return 0;
     let sum = 0;
@@ -1189,30 +1191,11 @@ function ChatPanel({
   }, [contextPercentage]);
 
   const isDeadEnd = useMemo(() => {
-    const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
-    const vaultTokens = isSingleConsumer ? 0 : resolvedVaultBudget;
-
-    // Safety cap ceiling or user-configured manual context limit
-    const activeLimit = getChatContextAuto()
-      ? getContextBudgetCeiling(currentModel, currentProvider)
-      : totalContextLimit;
-
-    const cappedHistory = Math.min(historyTokens, resolvedHistoryBudget);
-    const netSpaceForPrompt =
-      activeLimit - systemReserve - 1500 - attachedDocTokens - vaultTokens - cappedHistory;
-    return netSpaceForPrompt < 250; // trigger dead end only when less than 250 tokens remain for prompt
-  }, [
-    sessionId,
-    selectedNodeIds,
-    resolvedVaultBudget,
-    attachedDocTokens,
-    totalContextLimit,
-    systemReserve,
-    currentModel,
-    currentProvider,
-    historyTokens,
-    resolvedHistoryBudget,
-  ]);
+    // History compaction and smart RAG retrieval automatically cap history and document chunks
+    // to fit within partitioned context budgets. Dead-end triggers only if active context limit
+    // is smaller than the minimum operating reserve (< 2000 tokens).
+    return totalContextLimit > 0 && totalContextLimit < 2000;
+  }, [totalContextLimit]);
 
   const canSend = useMemo(
     () => input.trim().length > 0 && !isSending && !isDeadEnd,
