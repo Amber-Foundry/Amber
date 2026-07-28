@@ -49,7 +49,13 @@ import {
   getLocalModelContextOverrides,
 } from "../utils/settings";
 import { useUIStore } from "../utils/store";
-import { chatConvertTemporaryToMemory, chatExtractPdfText, getModelContextLimit } from "../ipc";
+import {
+  chatConvertTemporaryToMemory,
+  chatExtractPdfText,
+  chatAttachEphemeralDocument,
+  chatDetachEphemeralDocument,
+  getModelContextLimit,
+} from "../ipc";
 import { browseImportPdf, startOcrModelDownload } from "../services/import";
 import {
   FileIcon,
@@ -397,62 +403,15 @@ type ChatPanelProps = {
   onActivateSession?: (sessionId: string) => void;
 };
 
-const computeAttachedDocsBudget = (docs: AttachedDoc[], maxTokens = 6000): AttachedDoc[] => {
+const computeAttachedDocsBudget = (docs: AttachedDoc[], _maxTokens = 6000): AttachedDoc[] => {
   if (docs.length === 0) return [];
 
-  const processed = docs.map((d) => ({
+  // With per-turn vector retrieval in Rust, full document text is ingested into EphemeralChunkStore.
+  // Retrieval selects Top-K relevant chunks per turn, so frontend page truncation is not performed.
+  return docs.map((d) => ({
     ...d,
     includedPageCount: d.pageCount,
     isTruncated: false,
-  }));
-
-  let remainingBudget = maxTokens;
-  const activeIndices = new Set(processed.keys());
-
-  const includedPages = processed.map((d) => d.pageCount);
-
-  let iterations = 0;
-  while (activeIndices.size > 0 && iterations < 10) {
-    iterations++;
-    const share = Math.floor(remainingBudget / activeIndices.size);
-    let budgetReleased = false;
-
-    for (const idx of Array.from(activeIndices)) {
-      const fullDocTokens = processed[idx].pageTokenEstimates.reduce((a, b) => a + b, 0);
-      if (fullDocTokens <= share) {
-        remainingBudget -= fullDocTokens;
-        includedPages[idx] = processed[idx].pageCount;
-        activeIndices.delete(idx);
-        budgetReleased = true;
-      }
-    }
-
-    if (!budgetReleased) {
-      for (const idx of Array.from(activeIndices)) {
-        let acc = 0;
-        let pCount = 0;
-        for (const pageTokens of processed[idx].pageTokenEstimates) {
-          if (acc + pageTokens <= share) {
-            acc += pageTokens;
-            pCount++;
-          } else {
-            break;
-          }
-        }
-        if (pCount === 0 && processed[idx].pageCount > 0) {
-          pCount = 1;
-        }
-        includedPages[idx] = pCount;
-        processed[idx].isTruncated = pCount < processed[idx].pageCount;
-      }
-      break;
-    }
-  }
-
-  return processed.map((d, idx) => ({
-    ...d,
-    includedPageCount: includedPages[idx],
-    isTruncated: includedPages[idx] < d.pageCount,
   }));
 };
 
@@ -657,6 +616,14 @@ function ChatPanel({
 
       const filename = filePath.split(/[/\\]/).pop() || "document.pdf";
       setExtractingName(filename);
+      const attachmentId = crypto.randomUUID();
+
+      // Store ephemeral chunks + embeddings on attach
+      const attachResult = await chatAttachEphemeralDocument(sessionId, attachmentId, filePath);
+      if ("err" in attachResult) {
+        console.warn("[EphemeralStore] Document attach warning:", attachResult.err);
+      }
+
       const res = await chatExtractPdfText(filePath);
       if ("err" in res) {
         setStatus(`Extraction failed: ${res.err}`);
@@ -667,7 +634,7 @@ function ChatPanel({
 
       const doc = res.ok;
       const newDoc: AttachedDoc = {
-        id: crypto.randomUUID(),
+        id: attachmentId,
         filePath,
         sourceName: doc.sourceName,
         pageCount: doc.pageCount,
@@ -697,6 +664,9 @@ function ChatPanel({
   };
 
   const handleRemoveAttachment = (id: string) => {
+    void chatDetachEphemeralDocument(sessionId, id).then((res) => {
+      console.log(`[EphemeralStore] Detached document ${id}:`, res);
+    });
     setSessionAttachments((prev) => ({
       ...prev,
       [sessionId]: (prev[sessionId] || []).filter((d) => d.id !== id),
@@ -1166,14 +1136,18 @@ function ChatPanel({
     [attachedDocs, resolvedDocBudget]
   );
 
+  // Compute estimated attached document token consumption for UI Context Ring.
+  // Note: These values represent the dynamic smart retrieval context ceiling enforced on the Rust backend per turn.
   const attachedDocTokens = useMemo(() => {
+    if (budgetedDocs.length === 0) return 0;
     let sum = 0;
     for (const doc of budgetedDocs) {
-      const includedCount = doc.includedPageCount;
-      sum += doc.pageTokenEstimates.slice(0, includedCount).reduce((a, b) => a + b, 0);
+      const fullDocTokens = doc.pageTokenEstimates.reduce((a, b) => a + b, 0);
+      const effectiveCap = fullDocTokens <= 1500 ? fullDocTokens : resolvedDocBudget;
+      sum += Math.min(fullDocTokens, effectiveCap > 0 ? effectiveCap : 2000);
     }
     return sum;
-  }, [budgetedDocs]);
+  }, [budgetedDocs, resolvedDocBudget]);
 
   const historyTokens = useMemo(() => {
     let chatCharacters = 0;
@@ -1217,29 +1191,26 @@ function ChatPanel({
   }, [contextPercentage]);
 
   const isDeadEnd = useMemo(() => {
-    const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
-    const vaultTokens = isSingleConsumer ? 0 : resolvedVaultBudget;
-
-    // Safety cap ceiling or user-configured manual context limit
+    if (totalContextLimit > 0 && totalContextLimit < 2000) return true;
     const activeLimit = getChatContextAuto()
       ? getContextBudgetCeiling(currentModel, currentProvider)
       : totalContextLimit;
-
-    const cappedHistory = Math.min(historyTokens, resolvedHistoryBudget);
-    const netSpaceForPrompt =
-      activeLimit - systemReserve - 1500 - attachedDocTokens - vaultTokens - cappedHistory;
-    return netSpaceForPrompt < 1000; // less than 1000 tokens left for prompt + history
+    const isSingleConsumer = sessionId === "temporary-session" || selectedNodeIds.length === 0;
+    const activeVaultBudget = isSingleConsumer ? 0 : resolvedVaultBudget;
+    const activeDocBudget = budgetedDocs.length > 0 ? resolvedDocBudget : 0;
+    const totalResolved = activeDocBudget + activeVaultBudget + resolvedHistoryBudget;
+    return activeLimit - systemReserve - 1500 - totalResolved < 0;
   }, [
-    sessionId,
-    selectedNodeIds,
-    resolvedVaultBudget,
-    attachedDocTokens,
     totalContextLimit,
-    systemReserve,
     currentModel,
     currentProvider,
-    historyTokens,
+    sessionId,
+    selectedNodeIds,
+    budgetedDocs.length,
+    resolvedDocBudget,
+    resolvedVaultBudget,
     resolvedHistoryBudget,
+    systemReserve,
   ]);
 
   const canSend = useMemo(
@@ -1276,19 +1247,13 @@ function ChatPanel({
               <FileIcon size={14} />
             </span>
             <span className="chip-name">{doc.sourceName}</span>
-            <span className="chip-pages">
-              {doc.isTruncated
-                ? `pp. 1–${doc.includedPageCount} of ${doc.pageCount}`
-                : `${doc.pageCount} pg`}
+            <span className="chip-pages">{`${doc.pageCount} pg`}</span>
+            <span
+              className="chip-retrieval"
+              title="Smart per-turn vector retrieval is active for this document"
+            >
+              Smart Retrieval
             </span>
-            {doc.isTruncated && (
-              <span
-                className="chip-truncated"
-                title="Document was truncated to fit the token budget"
-              >
-                <AlertIcon size={12} /> Truncated
-              </span>
-            )}
             {doc.needsOcrModels && (
               <span className="chip-ocr-warn" title="OCR models needed for full extraction">
                 <AlertIcon size={12} /> OCR
@@ -2147,7 +2112,9 @@ function ChatPanel({
                   <span>{formatTokens(systemReserve)}</span>
                 </div>
                 <div className="tooltip-row indent">
-                  <span>Chat History:</span>
+                  <span>
+                    Chat History{historyTokens > resolvedHistoryBudget ? " (Compacted)" : ""}:
+                  </span>
                   <span>{formatTokens(historyTokens)}</span>
                 </div>
                 {attachedDocTokens > 0 && (
@@ -2262,7 +2229,7 @@ function ChatPanel({
               <GearIcon size={14} />
             </span>
             <span className="banner-text">
-              Older messages will be dropped to fit this model's context.
+              Older messages are compacted into a summary recap to fit this model's context.
             </span>
           </div>
         ) : null}

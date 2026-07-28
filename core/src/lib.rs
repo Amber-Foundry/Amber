@@ -13,6 +13,7 @@ use tauri::{Emitter, Manager};
 mod auth;
 mod chat;
 pub mod embed;
+pub mod ephemeral;
 pub mod ingest;
 pub mod ipc_types;
 pub mod llm;
@@ -1858,6 +1859,11 @@ pub fn run() {
             get_model_context_limit,
             llm_chat,
             chat_extract_pdf_text,
+            chat_attach_ephemeral_document,
+            chat_detach_ephemeral_document,
+            chat_clear_ephemeral_session,
+            chat_get_ephemeral_chunks,
+            chat_query_ephemeral_chunks,
             onboarding_extract_proposals,
             onboarding_commit,
             save_markdown_file,
@@ -4692,10 +4698,81 @@ async fn llm_chat(
 ) -> Result<String, String> {
     let db_path = state.db_path.clone();
     // Kept in signature for Tauri IPC contract; history is loaded from DB instead.
-    let _ = user_prompt;
     let persona_instruction = "You are Amber, a personal memory assistant. Only help capture, organize, and recall the user's notes, ideas, and projects.";
 
-    let mut system_prompt = if session_id == "temporary-session" {
+    // Ephemeral document assembly: evaluate small-document bypass & broad-question fallback
+    let retrieved_doc_content: Option<String> = {
+        let store_arc = ephemeral::get_ephemeral_store();
+        if let Ok(store) = store_arc.read() {
+            let (bypass, reason) = store.should_bypass_retrieval(session_id, &user_prompt);
+
+            if bypass {
+                // Whole-document mode: assemble chunks capped to 3000-token budget ceiling
+                let all_chunks = store.get_budget_capped_session_chunks(session_id, 3000);
+                if !all_chunks.is_empty() {
+                    let mut content =
+                        format!("<!-- RETRIEVAL MODE: FULL DOCUMENT BYPASS ({reason}) -->\n\n");
+                    for chunk in &all_chunks {
+                        let page_str = chunk
+                            .source_page_indices
+                            .iter()
+                            .map(|p| (p + 1).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let header = if let Some(heading) = &chunk.heading_context {
+                            format!(
+                                "### [Document Section (Pages: {}), Heading: {}]\n",
+                                page_str, heading
+                            )
+                        } else {
+                            format!("### [Document Section (Pages: {})]\n", page_str)
+                        };
+                        content.push_str(&header);
+                        content.push_str(&chunk.text);
+                        content.push_str("\n\n");
+                    }
+                    Some(content)
+                } else {
+                    attached_document
+                }
+            } else {
+                // Smart top-K retrieval mode
+                let query_vec = ephemeral::embed_query(&user_prompt);
+                let top_chunks =
+                    store.query_session_chunks(session_id, &user_prompt, &query_vec, 5);
+                if !top_chunks.is_empty() {
+                    let mut content =
+                        "<!-- RETRIEVAL MODE: SMART RETRIEVAL (Top-5 Chunks) -->\n\n".to_string();
+                    for chunk in &top_chunks {
+                        let page_str = chunk
+                            .source_page_indices
+                            .iter()
+                            .map(|p| (p + 1).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let header = if let Some(heading) = &chunk.heading_context {
+                            format!(
+                                "### [Retrieved Chunk (Pages: {}), Heading: {}]\n",
+                                page_str, heading
+                            )
+                        } else {
+                            format!("### [Retrieved Chunk (Pages: {})]\n", page_str)
+                        };
+                        content.push_str(&header);
+                        content.push_str(&chunk.text);
+                        content.push_str("\n\n");
+                    }
+                    Some(content)
+                } else {
+                    attached_document
+                }
+            }
+        } else {
+            attached_document
+        }
+    };
+
+    let vault_memory_context = if session_id == "temporary-session" {
         "[Off the Record Mode: Context assembly has been bypassed. No personal memories or notes are accessible in this session.]".to_string()
     } else {
         let conn = open_connection(&db_path)?;
@@ -4753,28 +4830,17 @@ async fn llm_chat(
     ```\n\
     Always output fully valid JSON (double quotes for keys and string values). Do not embed comments inside the JSON.";
 
-    if charts_enabled {
-        if system_prompt.is_empty() {
-            system_prompt = format!("{persona_instruction} {chart_instruction}");
-        } else {
-            system_prompt = format!("{persona_instruction}{chart_instruction}");
-        }
-    } else if system_prompt.is_empty() {
-        system_prompt = persona_instruction.to_string();
+    let system_directives = if charts_enabled {
+        format!("{persona_instruction}{chart_instruction}")
     } else {
-        system_prompt = format!("{persona_instruction}\n\n{system_prompt}");
-    }
+        persona_instruction.to_string()
+    };
 
-    if let Some(attached_doc) = attached_document.filter(|s| !s.is_empty()) {
-        system_prompt = format!(
-            "{}\n\n[AUXILIARY DOCUMENT]\n\
-             The user attached this document for reference. Use it to answer their questions and cite it when relevant.\n\
-             <attached_document>\n\
-             {}\n\
-             </attached_document>",
-            system_prompt, attached_doc
-        );
-    }
+    let prompt_components = llm::assembler::PromptComponents {
+        system_directives,
+        vault_memory_context,
+        retrieved_doc_content,
+    };
 
     let parsed_provider = match provider.trim().to_lowercase().as_str() {
         "ollama" => llm::client::LlmProvider::Ollama,
@@ -4791,9 +4857,12 @@ async fn llm_chat(
     // Load recent conversation history (token-budgeted) so the model sees previous turns without overflowing
     let messages: Vec<llm::client::LlmMessage> = {
         let conn = open_connection(&db_path)?;
-        let history =
-            chat::get_recent_chat_history(&conn, session_id, max_history_tokens.unwrap_or(4000))
-                .map_err(|e| e.to_string())?;
+        let history = chat::get_recent_chat_history_with_compaction(
+            &conn,
+            session_id,
+            max_history_tokens.unwrap_or(4000),
+        )
+        .map_err(|e| e.to_string())?;
         history
             .into_iter()
             .map(|msg| llm::client::LlmMessage {
@@ -4803,7 +4872,7 @@ async fn llm_chat(
             .collect()
     };
 
-    llm::client::LlmClient::complete(&client, &system_prompt, &messages).await
+    llm::client::LlmClient::complete_components(&client, &prompt_components, &messages).await
 }
 
 #[derive(Serialize, serde::Deserialize, Debug, Clone)]
@@ -4818,213 +4887,386 @@ pub struct ChatPdfExtraction {
     pub page_token_estimates: Vec<usize>,
 }
 
-#[tauri::command]
-async fn chat_extract_pdf_text(file_path: String) -> IpcResponse<ChatPdfExtraction> {
+struct PdfPageExtractionResult {
+    source_name: String,
+    total_pages: usize,
+    needs_ocr_models: bool,
+    ocr_confidence: Option<f32>,
+    page_markdowns: Vec<String>,
+    page_token_estimates: Vec<usize>,
+    all_ingest_blocks: Vec<ingest::IngestBlock>,
+}
+
+fn extract_pdf_page_blocks(file_path: &str) -> Result<PdfPageExtractionResult, String> {
     use crate::ocr::engine::OcrEngine;
+    let path = Path::new(file_path);
+    let source_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Attached Document")
+        .to_string();
 
-    let result = tauri::async_runtime::spawn_blocking(move || -> Result<ChatPdfExtraction, String> {
-        let path = Path::new(&file_path);
-        let source_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("Attached Document")
-            .to_string();
+    let rasterizer = ocr::PdfRasterizer::new()
+        .map_err(|e| format!("Failed to initialize PDF rasterizer: {e}"))?;
+    let document = rasterizer
+        .load_document_from_file(path)
+        .map_err(|e| format!("Failed to load PDF file: {e}"))?;
+    let page_infos = ocr::PdfRasterizer::scan_loaded_document(&document)
+        .map_err(|e| format!("Failed to scan PDF pages: {e}"))?;
 
-        let rasterizer = ocr::PdfRasterizer::new()
-            .map_err(|e| format!("Failed to initialize PDF rasterizer: {e}"))?;
-        let document = rasterizer
-            .load_document_from_file(path)
-            .map_err(|e| format!("Failed to load PDF file: {e}"))?;
-        let page_infos = ocr::PdfRasterizer::scan_loaded_document(&document)
-            .map_err(|e| format!("Failed to scan PDF pages: {e}"))?;
+    let total_pages = page_infos.len();
+    if total_pages == 0 {
+        return Err("PDF document contains no pages.".to_string());
+    }
 
-        let total_pages = page_infos.len();
-        if total_pages == 0 {
-            return Err("PDF document contains no pages.".to_string());
+    let mut has_ocr_or_hybrid = false;
+    for p in &page_infos {
+        if p.page_type == ocr::PdfPageType::Ocr || p.page_type == ocr::PdfPageType::Hybrid {
+            has_ocr_or_hybrid = true;
+            break;
         }
+    }
 
-        let mut has_ocr_or_hybrid = false;
-        for p in &page_infos {
-            if p.page_type == ocr::PdfPageType::Ocr || p.page_type == ocr::PdfPageType::Hybrid {
-                has_ocr_or_hybrid = true;
-                break;
+    let ocr_models_available = ocr::ocr_models_exist();
+    let needs_ocr_models = has_ocr_or_hybrid && !ocr_models_available;
+
+    let mut cached_ocr_engine: Option<ocr::BundledOcrEngine> = None;
+    let mut total_ocr_confidence_sum = 0.0;
+    let mut ocr_pass_count = 0;
+
+    let rasterizer_config = ocr::PdfRasterizerConfig { dpi: 150 };
+    let mut page_markdowns = Vec::new();
+    let mut page_token_estimates = Vec::new();
+    let mut all_ingest_blocks = Vec::new();
+
+    for (i, p) in page_infos.iter().enumerate() {
+        let (raw_blocks, page_width, page_height) = match p.page_type {
+            ocr::PdfPageType::Digital => {
+                let raw_blocks =
+                    ocr::PdfRasterizer::extract_digital_blocks_from_document(&document, i)
+                        .map_err(|e| {
+                            format!("Failed extracting digital blocks on page {}: {e}", i + 1)
+                        })?;
+                (raw_blocks, p.width_pts, p.height_pts)
             }
-        }
+            ocr::PdfPageType::Ocr => {
+                if !ocr_models_available {
+                    (Vec::new(), p.width_pts, p.height_pts)
+                } else {
+                    if cached_ocr_engine.is_none() {
+                        cached_ocr_engine = Some(
+                            ocr::BundledOcrEngine::new()
+                                .map_err(|e| format!("Failed initializing OCR engine: {e}"))?,
+                        );
+                    }
+                    let ocr_engine = cached_ocr_engine
+                        .as_mut()
+                        .ok_or_else(|| "OCR engine not initialized".to_string())?;
+                    let page_img = rasterizer
+                        .render_loaded_page(&document, i, &rasterizer_config)
+                        .map_err(|e| format!("Failed rendering page {} for OCR: {e}", i + 1))?;
+                    let (image_width, image_height) =
+                        (page_img.width() as f32, page_img.height() as f32);
+                    let ocr_output = ocr_engine
+                        .recognize(&page_img)
+                        .map_err(|e| format!("OCR recognition failed on page {}: {e}", i + 1))?;
 
-        let ocr_models_available = ocr::ocr_models_exist();
-        let needs_ocr_models = has_ocr_or_hybrid && !ocr_models_available;
+                    total_ocr_confidence_sum += ocr_output.avg_confidence;
+                    ocr_pass_count += 1;
 
-        let mut cached_ocr_engine: Option<ocr::BundledOcrEngine> = None;
-        let mut total_ocr_confidence_sum = 0.0;
-        let mut ocr_pass_count = 0;
-        let mut page_token_estimates = Vec::new();
+                    let ocr_blocks = crate::ingest::coords::normalize_blocks_to_pdf_points(
+                        ocr_output
+                            .blocks
+                            .into_iter()
+                            .map(|b| {
+                                ingest::layout::RawLayoutBlock::new(b.text, b.bbox)
+                                    .with_confidence(b.confidence)
+                            })
+                            .collect(),
+                        image_width,
+                        image_height,
+                        p.width_pts,
+                        p.height_pts,
+                    );
+                    (ocr_blocks, p.width_pts, p.height_pts)
+                }
+            }
+            ocr::PdfPageType::Hybrid => {
+                let digital_blocks =
+                    ocr::PdfRasterizer::extract_digital_blocks_from_document(&document, i)
+                        .map_err(|e| {
+                            format!("Failed extracting digital blocks on page {}: {e}", i + 1)
+                        })?;
+                let page_area = p.width_pts * p.height_pts;
 
-        let rasterizer_config = ocr::PdfRasterizerConfig { dpi: 150 };
+                let run_ocr = if !ocr_models_available {
+                    false
+                } else {
+                    if digital_blocks.len() < 2 {
+                        true
+                    } else {
+                        let text_area: f32 = digital_blocks
+                            .iter()
+                            .map(|block| block.bbox.width.max(0.0) * block.bbox.height.max(0.0))
+                            .sum();
+                        text_area / page_area.max(1.0) < 0.01
+                    }
+                };
 
-        let mut page_markdowns = Vec::new();
+                if run_ocr {
+                    if cached_ocr_engine.is_none() {
+                        cached_ocr_engine = Some(
+                            ocr::BundledOcrEngine::new()
+                                .map_err(|e| format!("Failed initializing OCR engine: {e}"))?,
+                        );
+                    }
+                    let ocr_engine = cached_ocr_engine
+                        .as_mut()
+                        .ok_or_else(|| "OCR engine not initialized".to_string())?;
+                    let page_img = rasterizer
+                        .render_loaded_page(&document, i, &rasterizer_config)
+                        .map_err(|e| format!("Failed rendering page {} for OCR: {e}", i + 1))?;
+                    let (image_width, image_height) =
+                        (page_img.width() as f32, page_img.height() as f32);
+                    let ocr_output = ocr_engine
+                        .recognize(&page_img)
+                        .map_err(|e| format!("OCR recognition failed on page {}: {e}", i + 1))?;
 
-        for (i, p) in page_infos.iter().enumerate() {
-            let (raw_blocks, page_width, page_height) = match p.page_type {
-                ocr::PdfPageType::Digital => {
-                    let raw_blocks =
-                        ocr::PdfRasterizer::extract_digital_blocks_from_document(&document, i)
-                            .map_err(|e| {
-                                format!("Failed extracting digital blocks on page {}: {e}", i + 1)
-                            })?;
+                    total_ocr_confidence_sum += ocr_output.avg_confidence;
+                    ocr_pass_count += 1;
+
+                    let ocr_blocks = crate::ingest::coords::normalize_blocks_to_pdf_points(
+                        ocr_output
+                            .blocks
+                            .into_iter()
+                            .map(|b| {
+                                ingest::layout::RawLayoutBlock::new(b.text, b.bbox)
+                                    .with_confidence(b.confidence)
+                            })
+                            .collect(),
+                        image_width,
+                        image_height,
+                        p.width_pts,
+                        p.height_pts,
+                    );
+
+                    let raw_blocks = crate::ingest::job::merge_hybrid_raw_blocks(
+                        digital_blocks,
+                        ocr_blocks,
+                        crate::ingest::HybridMergeStrategy::OcrPreferred,
+                    );
                     (raw_blocks, p.width_pts, p.height_pts)
+                } else {
+                    (digital_blocks, p.width_pts, p.height_pts)
                 }
-                ocr::PdfPageType::Ocr => {
-                    if !ocr_models_available {
-                        (Vec::new(), p.width_pts, p.height_pts)
-                    } else {
-                        if cached_ocr_engine.is_none() {
-                            cached_ocr_engine = Some(
-                                ocr::BundledOcrEngine::new()
-                                    .map_err(|e| format!("Failed initializing OCR engine: {e}"))?,
-                            );
-                        }
-                        let ocr_engine = cached_ocr_engine
-                            .as_mut()
-                            .ok_or_else(|| "OCR engine not initialized".to_string())?;
-                        let page_img = rasterizer
-                            .render_loaded_page(&document, i, &rasterizer_config)
-                            .map_err(|e| format!("Failed rendering page {} for OCR: {e}", i + 1))?;
-                        let (image_width, image_height) =
-                            (page_img.width() as f32, page_img.height() as f32);
-                        let ocr_output = ocr_engine.recognize(&page_img).map_err(|e| {
-                            format!("OCR recognition failed on page {}: {e}", i + 1)
-                        })?;
-
-                        total_ocr_confidence_sum += ocr_output.avg_confidence;
-                        ocr_pass_count += 1;
-
-                        let raw_blocks = crate::ingest::coords::normalize_blocks_to_pdf_points(
-                            ocr_output
-                                .blocks
-                                .into_iter()
-                                .map(|b| {
-                                    ingest::layout::RawLayoutBlock::new(b.text, b.bbox)
-                                        .with_confidence(b.confidence)
-                                })
-                                .collect(),
-                            image_width,
-                            image_height,
-                            p.width_pts,
-                            p.height_pts,
-                        );
-                        (raw_blocks, p.width_pts, p.height_pts)
-                    }
-                }
-                ocr::PdfPageType::Hybrid => {
-                    let digital_blocks =
-                        ocr::PdfRasterizer::extract_digital_blocks_from_document(&document, i)
-                            .map_err(|e| {
-                                format!("Failed extracting digital blocks on page {}: {e}", i + 1)
-                            })?;
-                    let page_area = p.width_pts * p.height_pts;
-
-                    let run_ocr = if !ocr_models_available {
-                        false
-                    } else {
-                        if digital_blocks.len() < 2 {
-                            true
-                        } else {
-                            let text_area: f32 = digital_blocks
-                                .iter()
-                                .map(|block| block.bbox.width.max(0.0) * block.bbox.height.max(0.0))
-                                .sum();
-                            text_area / page_area.max(1.0) < 0.01
-                        }
-                    };
-
-                    if run_ocr {
-                        if cached_ocr_engine.is_none() {
-                            cached_ocr_engine = Some(
-                                ocr::BundledOcrEngine::new()
-                                    .map_err(|e| format!("Failed initializing OCR engine: {e}"))?,
-                            );
-                        }
-                        let ocr_engine = cached_ocr_engine
-                            .as_mut()
-                            .ok_or_else(|| "OCR engine not initialized".to_string())?;
-                        let page_img = rasterizer
-                            .render_loaded_page(&document, i, &rasterizer_config)
-                            .map_err(|e| format!("Failed rendering page {} for OCR: {e}", i + 1))?;
-                        let (image_width, image_height) =
-                            (page_img.width() as f32, page_img.height() as f32);
-                        let ocr_output = ocr_engine.recognize(&page_img).map_err(|e| {
-                            format!("OCR recognition failed on page {}: {e}", i + 1)
-                        })?;
-
-                        total_ocr_confidence_sum += ocr_output.avg_confidence;
-                        ocr_pass_count += 1;
-
-                        let ocr_blocks = crate::ingest::coords::normalize_blocks_to_pdf_points(
-                            ocr_output
-                                .blocks
-                                .into_iter()
-                                .map(|b| {
-                                    ingest::layout::RawLayoutBlock::new(b.text, b.bbox)
-                                        .with_confidence(b.confidence)
-                                })
-                                .collect(),
-                            image_width,
-                            image_height,
-                            p.width_pts,
-                            p.height_pts,
-                        );
-
-                        let raw_blocks = crate::ingest::job::merge_hybrid_raw_blocks(
-                            digital_blocks,
-                            ocr_blocks,
-                            crate::ingest::HybridMergeStrategy::OcrPreferred,
-                        );
-                        (raw_blocks, p.width_pts, p.height_pts)
-                    } else {
-                        (digital_blocks, p.width_pts, p.height_pts)
-                    }
-                }
-            };
-
-            let layout_blocks = ingest::layout::analyze_layout(raw_blocks, page_width, page_height);
-            let page_ingest_blocks = crate::ingest::assemble_markdown_blocks(&layout_blocks, i);
-
-            let mut page_markdown = crate::ingest::join_ingest_blocks(&page_ingest_blocks);
-            if p.page_type != ocr::PdfPageType::Digital && !ocr_models_available {
-                page_markdown.push_str("\n\n* [Warning: OCR models not installed. Scanned text could not be extracted from this page.] *\n");
             }
-
-            let page_token_est = crate::llm::assembler::count_tokens(&page_markdown);
-            page_token_estimates.push(page_token_est);
-            page_markdowns.push(page_markdown);
-        }
-
-        let assembled_markdown = page_markdowns.join("\n\n--- PAGE_BREAK ---\n\n");
-        let prompt_injection_flagged = ingest::security::scan_prompt_injection(&assembled_markdown);
-
-        let ocr_confidence = if ocr_pass_count > 0 {
-            Some((total_ocr_confidence_sum / (ocr_pass_count as f32)).clamp(0.0, 1.0))
-        } else {
-            None
         };
 
-        Ok(ChatPdfExtraction {
-            source_name,
-            page_count: total_pages,
-            text: assembled_markdown,
-            ocr_confidence,
-            needs_ocr_models,
-            prompt_injection_flagged,
-            page_token_estimates,
-        })
+        let layout_blocks = ingest::layout::analyze_layout(raw_blocks, page_width, page_height);
+        let page_ingest_blocks = crate::ingest::assemble_markdown_blocks(&layout_blocks, i);
+
+        let mut page_markdown = crate::ingest::join_ingest_blocks(&page_ingest_blocks);
+        if p.page_type != ocr::PdfPageType::Digital && !ocr_models_available {
+            page_markdown.push_str("\n\n* [Warning: OCR models not installed. Scanned text could not be extracted from this page.] *\n");
+        }
+
+        let page_token_est = crate::llm::assembler::count_tokens(&page_markdown);
+        page_token_estimates.push(page_token_est);
+        page_markdowns.push(page_markdown);
+        all_ingest_blocks.extend(page_ingest_blocks);
+    }
+
+    let ocr_confidence = if ocr_pass_count > 0 {
+        Some((total_ocr_confidence_sum / (ocr_pass_count as f32)).clamp(0.0, 1.0))
+    } else {
+        None
+    };
+
+    Ok(PdfPageExtractionResult {
+        source_name,
+        total_pages,
+        needs_ocr_models,
+        ocr_confidence,
+        page_markdowns,
+        page_token_estimates,
+        all_ingest_blocks,
     })
-    .await;
+}
+
+#[tauri::command]
+async fn chat_extract_pdf_text(file_path: String) -> IpcResponse<ChatPdfExtraction> {
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<ChatPdfExtraction, String> {
+            let extracted = extract_pdf_page_blocks(&file_path)?;
+            let assembled_markdown = extracted.page_markdowns.join("\n\n--- PAGE_BREAK ---\n\n");
+            let prompt_injection_flagged =
+                ingest::security::scan_prompt_injection(&assembled_markdown);
+
+            Ok(ChatPdfExtraction {
+                source_name: extracted.source_name,
+                page_count: extracted.total_pages,
+                text: assembled_markdown,
+                ocr_confidence: extracted.ocr_confidence,
+                needs_ocr_models: extracted.needs_ocr_models,
+                prompt_injection_flagged,
+                page_token_estimates: extracted.page_token_estimates,
+            })
+        })
+        .await;
 
     match result {
         Ok(res) => into_ipc(res),
         Err(join_err) => into_ipc(Err(format!(
             "Failed to spawn PDF extraction task: {join_err}"
         ))),
+    }
+}
+
+#[tauri::command]
+async fn chat_attach_ephemeral_document(
+    session_id: String,
+    attachment_id: String,
+    file_path: String,
+) -> IpcResponse<ephemeral::EphemeralAttachmentSummary> {
+    let result = tauri::async_runtime::spawn_blocking(
+        move || -> Result<ephemeral::EphemeralAttachmentSummary, String> {
+            let extracted = extract_pdf_page_blocks(&file_path)?;
+            let assembled_markdown = extracted.page_markdowns.join("\n\n--- PAGE_BREAK ---\n\n");
+            let prompt_injection_flagged =
+                ingest::security::scan_prompt_injection(&assembled_markdown);
+
+            // Chunk ingest blocks using standard 350-token window with 60-token overlap (include margin blocks for full coverage)
+            let mut chunk_specs =
+                ingest::chunk_ingest_blocks(&extracted.all_ingest_blocks, 350, 60, true);
+            if chunk_specs.is_empty() && !assembled_markdown.trim().is_empty() {
+                chunk_specs = ephemeral::fallback_chunk_markdown_text(
+                    &assembled_markdown,
+                    extracted.total_pages,
+                    350,
+                );
+            }
+
+            // Compute 384-dimensional GIST embeddings ONCE on attach
+            let (embedding_vectors, embeddings_computed) =
+                ephemeral::compute_ephemeral_chunk_embeddings(&chunk_specs);
+
+            let total_tokens = chunk_specs.iter().map(|c| c.token_count).sum();
+            let total_chunks = chunk_specs.len();
+
+            let ephemeral_chunks: Vec<ephemeral::EphemeralChunk> = chunk_specs
+                .into_iter()
+                .enumerate()
+                .map(|(idx, spec)| {
+                    let vec = embedding_vectors
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or_else(|| vec![0.0f32; 384]);
+                    ephemeral::EphemeralChunk {
+                        chunk_index: spec.chunk_index,
+                        text: spec.text,
+                        token_count: spec.token_count,
+                        heading_context: spec.heading_context,
+                        source_page_indices: spec.source_page_indices,
+                        embedding: vec,
+                        ocr_confidence: spec.ocr_confidence,
+                        tables_unstructured: spec.tables_unstructured,
+                    }
+                })
+                .collect();
+
+            let summary = ephemeral::EphemeralAttachmentSummary {
+                session_id: session_id.clone(),
+                attachment_id: attachment_id.clone(),
+                source_name: extracted.source_name,
+                file_path,
+                total_chunks,
+                total_tokens,
+                page_count: extracted.total_pages,
+                ocr_confidence: extracted.ocr_confidence,
+                prompt_injection_flagged,
+                needs_ocr_models: extracted.needs_ocr_models,
+                embeddings_computed,
+            };
+
+            let store_arc = ephemeral::get_ephemeral_store();
+            let mut store = store_arc
+                .write()
+                .map_err(|e| format!("Failed acquiring ephemeral store lock: {e}"))?;
+            store.insert_attachment(summary.clone(), ephemeral_chunks);
+
+            Ok(summary)
+        },
+    )
+    .await;
+
+    match result {
+        Ok(res) => into_ipc(res),
+        Err(join_err) => into_ipc(Err(format!(
+            "Failed spawning ephemeral attach task: {join_err}"
+        ))),
+    }
+}
+
+#[tauri::command]
+async fn chat_detach_ephemeral_document(
+    session_id: String,
+    attachment_id: String,
+) -> IpcResponse<bool> {
+    let store_arc = ephemeral::get_ephemeral_store();
+    match store_arc.write() {
+        Ok(mut store) => {
+            let removed = store.remove_attachment(&session_id, &attachment_id);
+            into_ipc(Ok(removed))
+        }
+        Err(e) => into_ipc(Err(format!("Failed acquiring ephemeral store lock: {e}"))),
+    }
+}
+
+#[tauri::command]
+async fn chat_clear_ephemeral_session(session_id: String) -> IpcResponse<usize> {
+    let store_arc = ephemeral::get_ephemeral_store();
+    match store_arc.write() {
+        Ok(mut store) => {
+            let count = store.clear_session(&session_id);
+            into_ipc(Ok(count))
+        }
+        Err(e) => into_ipc(Err(format!("Failed acquiring ephemeral store lock: {e}"))),
+    }
+}
+
+#[tauri::command]
+async fn chat_get_ephemeral_chunks(
+    session_id: String,
+    attachment_id: String,
+) -> IpcResponse<Vec<ephemeral::EphemeralChunk>> {
+    let store_arc = ephemeral::get_ephemeral_store();
+    match store_arc.read() {
+        Ok(store) => {
+            let chunks = store
+                .get_attachment_chunks(&session_id, &attachment_id)
+                .cloned()
+                .unwrap_or_default();
+            into_ipc(Ok(chunks))
+        }
+        Err(e) => into_ipc(Err(format!("Failed acquiring ephemeral store lock: {e}"))),
+    }
+}
+
+#[tauri::command]
+async fn chat_query_ephemeral_chunks(
+    session_id: String,
+    user_prompt: String,
+    top_k: Option<usize>,
+) -> IpcResponse<Vec<ephemeral::EphemeralChunk>> {
+    let k = top_k.unwrap_or(5);
+    let store_arc = ephemeral::get_ephemeral_store();
+    match store_arc.read() {
+        Ok(store) => {
+            let query_vec = ephemeral::embed_query(&user_prompt);
+            let chunks = store.query_session_chunks(&session_id, &user_prompt, &query_vec, k);
+            into_ipc(Ok(chunks))
+        }
+        Err(e) => into_ipc(Err(format!("Failed acquiring ephemeral store lock: {e}"))),
     }
 }
 

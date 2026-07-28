@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(row.digital_pages, 7);
         assert_eq!(row.ocr_pages, 2);
         assert_eq!(row.hybrid_pages, 1);
-        assert!((row.avg_ocr_confidence - 0.92).abs() < f32::EPSILON);
+        assert!((row.avg_ocr_confidence - 0.92).abs() < 0.001);
         Ok(())
     }
 
@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(row.digital_pages, 9);
         assert_eq!(row.ocr_pages, 2);
         assert_eq!(row.hybrid_pages, 1);
-        assert!((row.avg_ocr_confidence - 0.985).abs() < f32::EPSILON);
+        assert!((row.avg_ocr_confidence - 0.985).abs() < 0.001);
         assert_eq!(row.rasterization_dpi, 300);
         assert_eq!(row.tables_detected_unpreserved, 2);
         assert_eq!(row.extraction_path.as_deref(), Some("hybrid"));

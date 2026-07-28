@@ -233,7 +233,7 @@ pub fn get_chat_history(
     Ok(messages)
 }
 
-pub fn get_recent_chat_history(
+pub fn get_recent_chat_history_with_compaction(
     db: &Connection,
     session_id: &str,
     max_tokens: usize,
@@ -267,6 +267,7 @@ pub fn get_recent_chat_history(
         })?;
 
     let mut selected_messages = Vec::new();
+    let mut evicted_messages = Vec::new();
     let mut accumulated_tokens = 0;
 
     for row in rows {
@@ -274,16 +275,76 @@ pub fn get_recent_chat_history(
             eprintln!("Database error decoding chat history row: {err}");
             "Failed decoding chat history row".to_string()
         })?;
-        let count = msg.content.len();
-        let msg_tokens = count.div_ceil(4);
-        if accumulated_tokens + msg_tokens > max_tokens {
-            break;
+        let msg_tokens = crate::llm::assembler::count_tokens(&msg.content);
+        if accumulated_tokens + msg_tokens <= max_tokens {
+            accumulated_tokens += msg_tokens;
+            selected_messages.push(msg);
+        } else {
+            evicted_messages.push(msg);
         }
-        accumulated_tokens += msg_tokens;
-        selected_messages.push(msg);
     }
 
     selected_messages.reverse();
+    evicted_messages.reverse();
+
+    if !evicted_messages.is_empty() {
+        let mut turn_summaries = Vec::new();
+        let mut current_user: Option<String> = None;
+
+        for msg in &evicted_messages {
+            if msg.role == "user" {
+                current_user = Some(
+                    msg.content
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
+                        .trim()
+                        .replace('\n', " "),
+                );
+            } else if msg.role == "assistant" {
+                if let Some(user_q) = current_user.take() {
+                    let assistant_a: String = msg
+                        .content
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
+                        .trim()
+                        .replace('\n', " ");
+                    turn_summaries.push(format!(
+                        "- User: \"{}\" ➔ Assistant: \"{}\"",
+                        user_q, assistant_a
+                    ));
+                }
+            }
+        }
+
+        if let Some(remaining_user) = current_user {
+            turn_summaries.push(format!("- User: \"{}\"", remaining_user));
+        }
+
+        if !turn_summaries.is_empty() {
+            let recap_text = format!(
+                "[EARLIER CONVERSATION RECAP]\n\
+                 (The following turns were discussed in earlier parts of this session and compacted to conserve context headroom):\n\
+                 {}\n\
+                 Keep this prior context and assistant responses in mind if the user refers to earlier parts of the chat.",
+                turn_summaries.join("\n")
+            );
+
+            let recap_msg = ChatMessage {
+                id: "recap_summary".to_string(),
+                role: "system".to_string(),
+                content: recap_text,
+                created_at: String::new(),
+            };
+
+            let mut final_messages = Vec::with_capacity(selected_messages.len() + 1);
+            final_messages.push(recap_msg);
+            final_messages.extend(selected_messages);
+            return Ok(final_messages);
+        }
+    }
+
     Ok(selected_messages)
 }
 
@@ -697,21 +758,23 @@ mod tests {
 
         // If max_tokens is 20, we can hold all:
         // m3 (2) + m2 (5) + m1 (10) = 17 tokens
-        let history = get_recent_chat_history(&conn, sess_id, 20)?;
+        let history = get_recent_chat_history_with_compaction(&conn, sess_id, 20)?;
         assert_eq!(history.len(), 3);
         assert_eq!(history[0].id, "m1");
         assert_eq!(history[1].id, "m2");
         assert_eq!(history[2].id, "m3");
 
-        // If max_tokens is 8, we can hold m3 (2) + m2 (5) = 7 tokens
-        let history = get_recent_chat_history(&conn, sess_id, 8)?;
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].id, "m2");
-        assert_eq!(history[1].id, "m3");
+        // If max_tokens is 8, m1 gets evicted, producing a recap header + m2 + m3
+        let history = get_recent_chat_history_with_compaction(&conn, sess_id, 8)?;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].id, "recap_summary");
+        assert_eq!(history[1].id, "m2");
+        assert_eq!(history[2].id, "m3");
 
-        // If max_tokens is 1, we can hold nothing (m3 requires 2 tokens)
-        let history = get_recent_chat_history(&conn, sess_id, 1)?;
-        assert_eq!(history.len(), 0);
+        // If max_tokens is 1, recent messages fit 0 items, but evicted turns produce 1 recap message
+        let history = get_recent_chat_history_with_compaction(&conn, sess_id, 1)?;
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, "recap_summary");
 
         // Multi-byte UTF-8 character estimation check (e.g. Chinese characters where each is 3 bytes)
         // 8 characters = 24 bytes.
@@ -726,12 +789,13 @@ mod tests {
             sess_utf8,
         )?;
 
-        // With max_tokens = 2, it is excluded (requires 6 tokens)
-        let history_utf8_2 = get_recent_chat_history(&conn, sess_utf8, 2)?;
-        assert_eq!(history_utf8_2.len(), 0);
+        // With max_tokens = 2, the message is evicted, producing a recap header
+        let history_utf8_2 = get_recent_chat_history_with_compaction(&conn, sess_utf8, 2)?;
+        assert_eq!(history_utf8_2.len(), 1);
+        assert_eq!(history_utf8_2[0].id, "recap_summary");
 
-        // With max_tokens = 6, it is included
-        let history_utf8_6 = get_recent_chat_history(&conn, sess_utf8, 6)?;
+        // With max_tokens = 6, it is included directly
+        let history_utf8_6 = get_recent_chat_history_with_compaction(&conn, sess_utf8, 6)?;
         assert_eq!(history_utf8_6.len(), 1);
         assert_eq!(history_utf8_6[0].id, "utf8_msg");
 
@@ -748,14 +812,66 @@ mod tests {
             sess_ceil,
         )?;
 
-        // With max_tokens = 0, we can hold nothing (short_msg requires 1 token)
-        let history_ceil_0 = get_recent_chat_history(&conn, sess_ceil, 0)?;
-        assert_eq!(history_ceil_0.len(), 0);
+        // With max_tokens = 0, short_msg is evicted, producing a recap header
+        let history_ceil_0 = get_recent_chat_history_with_compaction(&conn, sess_ceil, 0)?;
+        assert_eq!(history_ceil_0.len(), 1);
+        assert_eq!(history_ceil_0[0].id, "recap_summary");
 
         // With max_tokens = 1, we can hold the message
-        let history_ceil_1 = get_recent_chat_history(&conn, sess_ceil, 1)?;
+        let history_ceil_1 = get_recent_chat_history_with_compaction(&conn, sess_ceil, 1)?;
         assert_eq!(history_ceil_1.len(), 1);
         assert_eq!(history_ceil_1[0].id, "short_msg");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_recent_chat_history_with_compaction_recap() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let conn = setup_test_db()?;
+        let sess_id = "test_session_compaction";
+        create_session(
+            &conn,
+            sess_id.to_string(),
+            Some("Compaction Test".to_string()),
+        )?;
+
+        // Add Turn 1 (will be evicted)
+        append_message(
+            &conn,
+            "m1".to_string(),
+            "user".to_string(),
+            "What is Linear Regression and regularization?".to_string(),
+            sess_id,
+        )?;
+        append_message(
+            &conn,
+            "m2".to_string(),
+            "assistant".to_string(),
+            "Linear regression predicts values and regularization prevents overfitting."
+                .to_string(),
+            sess_id,
+        )?;
+
+        // Add Turn 2 (will fit in max_tokens)
+        append_message(
+            &conn,
+            "m3".to_string(),
+            "user".to_string(),
+            "Tell me about Maximum Likelihood Estimation now.".to_string(),
+            sess_id,
+        )?;
+
+        // Budget max_tokens to 15 BPE tokens so Turn 1 (m1 and m2) gets evicted and Turn 2 (m3) fits
+        let history = get_recent_chat_history_with_compaction(&conn, sess_id, 15)?;
+
+        // History must contain 2 entries: 1 system recap message + 1 recent user message (m3)
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].id, "recap_summary");
+        assert_eq!(history[0].role, "system");
+        assert!(history[0].content.contains("[EARLIER CONVERSATION RECAP]"));
+        assert!(history[0].content.contains("Linear Regression"));
+        assert_eq!(history[1].id, "m3");
 
         Ok(())
     }

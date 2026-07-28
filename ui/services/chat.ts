@@ -9,6 +9,7 @@ import {
   chatCreateSession as ipcChatCreateSession,
   chatDeleteSession as ipcChatDeleteSession,
   chatUpdateSessionSummary as ipcChatUpdateSessionSummary,
+  chatClearEphemeralSession,
   type ChatMessage,
   type ChatSession,
 } from "../ipc";
@@ -59,6 +60,7 @@ export async function chatCreateSession(id: string, summary?: string): Promise<v
 }
 
 export async function chatDeleteSession(id: string): Promise<void> {
+  void chatClearEphemeralSession(id);
   return unwrapIpcResult(ipcChatDeleteSession(id));
 }
 

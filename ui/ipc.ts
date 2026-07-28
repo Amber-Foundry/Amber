@@ -117,6 +117,69 @@ export function chatExtractPdfText(filePath: string) {
   return invokeTyped<ChatPdfExtraction>("chat_extract_pdf_text", { filePath });
 }
 
+export type EphemeralChunk = {
+  chunkIndex: number;
+  text: string;
+  tokenCount: number;
+  headingContext: string | null;
+  sourcePageIndices: number[];
+  embedding: number[];
+  ocrConfidence: number | null;
+  tablesUnstructured: boolean;
+};
+
+export type EphemeralAttachmentSummary = {
+  sessionId: string;
+  attachmentId: string;
+  sourceName: string;
+  filePath: string;
+  totalChunks: number;
+  totalTokens: number;
+  pageCount: number;
+  ocrConfidence: number | null;
+  promptInjectionFlagged: boolean;
+  needsOcrModels: boolean;
+  embeddingsComputed: boolean;
+};
+
+export function chatAttachEphemeralDocument(
+  sessionId: string,
+  attachmentId: string,
+  filePath: string
+) {
+  return invokeTyped<EphemeralAttachmentSummary>("chat_attach_ephemeral_document", {
+    sessionId,
+    attachmentId,
+    filePath,
+  });
+}
+
+export function chatDetachEphemeralDocument(sessionId: string, attachmentId: string) {
+  return invokeTyped<boolean>("chat_detach_ephemeral_document", {
+    sessionId,
+    attachmentId,
+  });
+}
+
+export function chatClearEphemeralSession(sessionId: string) {
+  return invokeTyped<number>("chat_clear_ephemeral_session", { sessionId });
+}
+
+export function chatGetEphemeralChunks(sessionId: string, attachmentId: string) {
+  return invokeTyped<EphemeralChunk[]>("chat_get_ephemeral_chunks", {
+    sessionId,
+    attachmentId,
+  });
+}
+
+export function chatQueryEphemeralChunks(sessionId: string, userPrompt: string, topK?: number) {
+  return invokeTyped<EphemeralChunk[]>("chat_query_ephemeral_chunks", {
+    sessionId,
+    userPrompt,
+    topK,
+  });
+}
+
 export function chatGetHistory(sessionId: string) {
   return invokeTyped<ChatMessage[]>("chat_get_history", { sessionId });
 }

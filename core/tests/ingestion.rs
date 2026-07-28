@@ -764,3 +764,38 @@ fn fixtures_are_present_on_disk() -> Result<(), Box<dyn Error>> {
     }
     Ok(())
 }
+
+#[test]
+fn chat_attachment_chunking_reuses_chunk_ingest_blocks_without_db() -> Result<(), Box<dyn Error>> {
+    if skip_if_pdfium_unavailable().is_err() {
+        return Ok(());
+    }
+
+    let rasterizer = PdfRasterizer::new()?;
+    let path = fixture_path("digital_two_column.pdf");
+    let doc = rasterizer.load_document_from_file(&path)?;
+
+    let mut all_blocks = Vec::new();
+    let page_infos = PdfRasterizer::scan_loaded_document(&doc)?;
+
+    for (i, p) in page_infos.iter().enumerate() {
+        let raw_blocks = PdfRasterizer::extract_digital_blocks_from_document(&doc, i)?;
+        let layout_blocks = analyze_layout(raw_blocks, p.width_pts, p.height_pts);
+        let page_ingest_blocks = assemble_markdown_blocks(&layout_blocks, i);
+        all_blocks.extend(page_ingest_blocks);
+    }
+
+    let chunks = chunk_ingest_blocks(&all_blocks, 350, 60, false);
+    assert!(
+        !chunks.is_empty(),
+        "expected non-empty chunks from digital_two_column.pdf"
+    );
+
+    for chunk in &chunks {
+        assert!(!chunk.text.is_empty(), "chunk text must not be empty");
+        assert!(chunk.token_count > 0, "token count must be positive");
+        assert_eq!(chunk.chunk_type, "import");
+    }
+
+    Ok(())
+}
