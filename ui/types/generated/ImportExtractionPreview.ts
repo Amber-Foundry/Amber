@@ -3,4 +3,14 @@
 /**
  * Literal PDF extraction text for the Job Log "View Extraction" surface.
  */
-export type ImportExtractionPreview = { jobId: string, sourceName: string, markdown: string, status: string, totalPages: number, digitalPages: number, ocrPages: number, hybridPages: number, changesetId: string | null, };
+export type ImportExtractionPreview = {
+  jobId: string;
+  sourceName: string;
+  markdown: string;
+  status: string;
+  totalPages: number;
+  digitalPages: number;
+  ocrPages: number;
+  hybridPages: number;
+  changesetId: string | null;
+};
