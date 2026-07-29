@@ -1,4 +1,4 @@
-//! Amber privacy tiers — four tiers, two independent axes.
+//! Amber privacy tiers — three simplified tiers, two independent axes.
 //!
 //! ## Axis 1: Egress (where may AI see this?)
 //!
@@ -6,8 +6,7 @@
 //! |-------------|-----------|-------------------------|
 //! | `open`      | full      | full                    |
 //! | `local_only`| omit      | full                    |
-//! | `locked`    | stub      | full when session unlocked; stub otherwise |
-//! | `redacted`  | omit      | omit (assembler never includes encrypted nodes) |
+//! | `redacted`  | omit      | full when session unlocked; omit otherwise |
 //!
 //! ## Axis 2: Disclosure (what is visible before unlock?)
 //!
@@ -15,43 +14,32 @@
 //! |-------------|----------------------------|--------------|--------------------|
 //! | `open`      | visible                    | visible      | no                 |
 //! | `local_only`| visible                    | visible      | no                 |
-//! | `locked`    | visible                    | gated        | no                 |
 //! | `redacted`  | hidden (`[REDACTED]`)      | gated        | yes                |
 //!
 //! ## Durable indexes (embeddings, exports)
 //!
 //! Persisted vectors must not store cleartext that the tier withholds from cloud context.
-//! Session unlock gates UI reading and *ephemeral* local LLM context — not promotion of
-//! locked content into durable indexes.
 //!
 //! | Tier        | Embedding policy                          |
 //! |-------------|-------------------------------------------|
 //! | `open`      | full cleartext                            |
 //! | `local_only`| full cleartext (local ONNX / local Ollama)|
-//! | `locked`    | pointer stub always                       |
 //! | `redacted`  | skip (delete existing vectors)            |
 //!
 //! Effective tier resolves as the strictest of node, sub-vault, and vault tiers.
-//! All subsystems (`llm::assembler`, `embed::job`, UI helpers) should follow this matrix.
+//! All subsystems (`llm::assembler`, `embed::job`, UI helpers) follow this matrix.
 
 pub const TIER_OPEN: &str = "open";
 pub const TIER_LOCAL_ONLY: &str = "local_only";
-pub const TIER_LOCKED: &str = "locked";
 pub const TIER_REDACTED: &str = "redacted";
 
 const OPEN: &str = TIER_OPEN;
 const LOCAL_ONLY: &str = TIER_LOCAL_ONLY;
-const LOCKED: &str = TIER_LOCKED;
 const REDACTED: &str = TIER_REDACTED;
 
 /// Whether full node content may be sent to a cloud LLM.
 pub fn allows_cloud_content(tier: &str) -> bool {
     normalize_tier(Some(tier)) == OPEN
-}
-
-/// Whether a pointer stub (title + id) may be sent to a cloud LLM.
-pub fn allows_cloud_stub(tier: &str) -> bool {
-    normalize_tier(Some(tier)) == LOCKED
 }
 
 /// Whether node/vault payload is encrypted at rest (`encrypted_payload`).
@@ -73,19 +61,9 @@ pub fn embedding_should_skip(tier: &str) -> bool {
     normalize_tier(Some(tier)) == REDACTED
 }
 
-/// Whether embeddings must use a pointer stub instead of cleartext chunks.
-pub fn embedding_uses_stub(tier: &str) -> bool {
-    normalize_tier(Some(tier)) == LOCKED
-}
-
-/// Local LLM context for locked tier: stub unless the redacted session is unlocked.
-pub fn local_llm_locked_uses_full_content_when_unlocked(is_unlocked: bool) -> bool {
-    is_unlocked
-}
-
-/// Whether a node must be omitted from local LLM context assembly.
-pub fn omits_from_local_llm(tier: &str) -> bool {
-    normalize_tier(Some(tier)) == REDACTED
+/// Whether a node must be omitted from local LLM context assembly when locked.
+pub fn omits_from_local_llm(tier: &str, is_unlocked: bool) -> bool {
+    normalize_tier(Some(tier)) == REDACTED && !is_unlocked
 }
 
 /// Whether local-only nodes must not embed via a non-loopback Ollama endpoint.
@@ -97,27 +75,20 @@ pub fn embedding_blocks_on_remote_ollama(tier: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmContextPolicy {
     Full,
-    Stub,
     Omit,
 }
 
 pub fn cloud_llm_context_policy(tier: &str) -> LlmContextPolicy {
     if allows_cloud_content(tier) {
         LlmContextPolicy::Full
-    } else if allows_cloud_stub(tier) {
-        LlmContextPolicy::Stub
     } else {
         LlmContextPolicy::Omit
     }
 }
 
 pub fn local_llm_context_policy(tier: &str, is_unlocked: bool) -> LlmContextPolicy {
-    if omits_from_local_llm(tier) {
+    if omits_from_local_llm(tier, is_unlocked) {
         LlmContextPolicy::Omit
-    } else if allows_cloud_stub(tier)
-        && !local_llm_locked_uses_full_content_when_unlocked(is_unlocked)
-    {
-        LlmContextPolicy::Stub
     } else {
         LlmContextPolicy::Full
     }
@@ -125,7 +96,7 @@ pub fn local_llm_context_policy(tier: &str, is_unlocked: bool) -> LlmContextPoli
 
 /// Unrestricted/debug scopes: full content for non-redacted tiers.
 pub fn unrestricted_llm_context_policy(tier: &str) -> LlmContextPolicy {
-    if omits_from_local_llm(tier) {
+    if normalize_tier(Some(tier)) == REDACTED {
         LlmContextPolicy::Omit
     } else {
         LlmContextPolicy::Full
@@ -135,7 +106,6 @@ pub fn unrestricted_llm_context_policy(tier: &str) -> LlmContextPolicy {
 fn normalize_tier(tier: Option<&str>) -> &'static str {
     match tier {
         Some(LOCAL_ONLY) => LOCAL_ONLY,
-        Some(LOCKED) => LOCKED,
         Some(REDACTED) => REDACTED,
         _ => OPEN,
     }
@@ -145,8 +115,7 @@ pub fn get_privacy_rank(tier: Option<&str>) -> u8 {
     match normalize_tier(tier) {
         OPEN => 0,
         LOCAL_ONLY => 1,
-        LOCKED => 2,
-        REDACTED => 3,
+        REDACTED => 2,
         _ => 0,
     }
 }
@@ -172,28 +141,20 @@ pub fn get_effective_privacy(
     resolve_chain_effective_privacy([node_tier, sub_vault_tier, vault_tier])
 }
 
-pub fn generate_pointer_stub(node_title: &str, node_id: &str) -> String {
-    format!(
-        "[LOCKED NODE STUB] Title: {} (ID: {}) - Content withheld due to privacy constraints.",
-        node_title, node_id
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        allows_cloud_content, allows_cloud_stub, cloud_llm_context_policy,
-        embedding_blocks_on_remote_ollama, embedding_should_skip, embedding_uses_stub,
-        encrypts_at_rest, get_effective_privacy, get_privacy_rank, hides_metadata_until_unlock,
-        local_llm_context_policy, local_llm_locked_uses_full_content_when_unlocked,
-        omits_from_local_llm, unrestricted_llm_context_policy, LlmContextPolicy, TIER_LOCAL_ONLY,
-        TIER_LOCKED, TIER_OPEN, TIER_REDACTED,
+        allows_cloud_content, cloud_llm_context_policy, embedding_blocks_on_remote_ollama,
+        embedding_should_skip, encrypts_at_rest, get_effective_privacy, get_privacy_rank,
+        hides_metadata_until_unlock, local_llm_context_policy, omits_from_local_llm,
+        unrestricted_llm_context_policy, LlmContextPolicy, TIER_LOCAL_ONLY, TIER_OPEN,
+        TIER_REDACTED,
     };
 
     #[test]
-    fn privacy_waterfall_parent_locked_beats_node_open() {
-        let effective = get_effective_privacy(Some("open"), Some("locked"), None);
-        assert_eq!(effective, "locked");
+    fn privacy_waterfall_parent_local_only_beats_node_open() {
+        let effective = get_effective_privacy(Some("open"), Some("local_only"), None);
+        assert_eq!(effective, "local_only");
     }
 
     #[test]
@@ -209,8 +170,8 @@ mod tests {
     }
 
     #[test]
-    fn privacy_waterfall_redacted_beats_locked_across_hierarchy() {
-        let effective = get_effective_privacy(Some("open"), Some("locked"), Some("redacted"));
+    fn privacy_waterfall_redacted_beats_local_only_across_hierarchy() {
+        let effective = get_effective_privacy(Some("open"), Some("local_only"), Some("redacted"));
         assert_eq!(effective, "redacted");
     }
 
@@ -224,9 +185,8 @@ mod tests {
     #[test]
     fn egress_policy_matrix() {
         assert!(allows_cloud_content(TIER_OPEN));
-        assert!(!allows_cloud_content(TIER_LOCKED));
-        assert!(allows_cloud_stub(TIER_LOCKED));
-        assert!(!allows_cloud_stub(TIER_OPEN));
+        assert!(!allows_cloud_content(TIER_LOCAL_ONLY));
+        assert!(!allows_cloud_content(TIER_REDACTED));
         assert_eq!(
             cloud_llm_context_policy(TIER_LOCAL_ONLY),
             LlmContextPolicy::Omit
@@ -241,49 +201,38 @@ mod tests {
     #[test]
     fn disclosure_and_embedding_policy_matrix() {
         assert!(encrypts_at_rest(TIER_REDACTED));
-        assert!(!encrypts_at_rest(TIER_LOCKED));
+        assert!(!encrypts_at_rest(TIER_LOCAL_ONLY));
         assert!(hides_metadata_until_unlock(TIER_REDACTED));
-        assert!(!hides_metadata_until_unlock(TIER_LOCKED));
+        assert!(!hides_metadata_until_unlock(TIER_LOCAL_ONLY));
         assert!(embedding_should_skip(TIER_REDACTED));
-        assert!(!embedding_should_skip(TIER_LOCKED));
-        assert!(embedding_uses_stub(TIER_LOCKED));
-        assert!(!embedding_uses_stub(TIER_OPEN));
-    }
-
-    #[test]
-    fn locked_local_llm_respects_session_unlock() {
-        assert!(!local_llm_locked_uses_full_content_when_unlocked(false));
-        assert!(local_llm_locked_uses_full_content_when_unlocked(true));
+        assert!(!embedding_should_skip(TIER_LOCAL_ONLY));
     }
 
     #[test]
     fn llm_context_policy_matrix() {
         assert_eq!(cloud_llm_context_policy(TIER_OPEN), LlmContextPolicy::Full);
         assert_eq!(
-            cloud_llm_context_policy(TIER_LOCKED),
-            LlmContextPolicy::Stub
-        );
-        assert_eq!(
             cloud_llm_context_policy(TIER_LOCAL_ONLY),
             LlmContextPolicy::Omit
         );
         assert_eq!(
-            local_llm_context_policy(TIER_LOCKED, false),
-            LlmContextPolicy::Stub
-        );
-        assert_eq!(
-            local_llm_context_policy(TIER_LOCKED, true),
-            LlmContextPolicy::Full
-        );
-        assert_eq!(
-            local_llm_context_policy(TIER_REDACTED, true),
+            local_llm_context_policy(TIER_REDACTED, false),
             LlmContextPolicy::Omit
         );
         assert_eq!(
-            unrestricted_llm_context_policy(TIER_LOCKED),
+            local_llm_context_policy(TIER_REDACTED, true),
             LlmContextPolicy::Full
         );
-        assert!(omits_from_local_llm(TIER_REDACTED));
+        assert_eq!(
+            local_llm_context_policy(TIER_LOCAL_ONLY, false),
+            LlmContextPolicy::Full
+        );
+        assert_eq!(
+            unrestricted_llm_context_policy(TIER_REDACTED),
+            LlmContextPolicy::Omit
+        );
+        assert!(omits_from_local_llm(TIER_REDACTED, false));
+        assert!(!omits_from_local_llm(TIER_REDACTED, true));
         assert!(embedding_blocks_on_remote_ollama(TIER_LOCAL_ONLY));
     }
 
@@ -291,11 +240,10 @@ mod tests {
     fn commit_2_privacy_decision_table_matrix() {
         use super::resolve_chain_effective_privacy;
 
-        // Matrix tests: (Ancestor Tier, Descendant Tier) -> Expected Effective Tier
+        // Matrix tests: 3 tiers (Ancestor Tier, Descendant Tier) -> Expected Effective Tier
         let cases = [
             (Some(TIER_OPEN), Some(TIER_OPEN), TIER_OPEN),
             (Some(TIER_OPEN), Some(TIER_LOCAL_ONLY), TIER_LOCAL_ONLY),
-            (Some(TIER_OPEN), Some(TIER_LOCKED), TIER_LOCKED),
             (Some(TIER_OPEN), Some(TIER_REDACTED), TIER_REDACTED),
             (Some(TIER_LOCAL_ONLY), Some(TIER_OPEN), TIER_LOCAL_ONLY),
             (
@@ -303,15 +251,9 @@ mod tests {
                 Some(TIER_LOCAL_ONLY),
                 TIER_LOCAL_ONLY,
             ),
-            (Some(TIER_LOCAL_ONLY), Some(TIER_LOCKED), TIER_LOCKED),
             (Some(TIER_LOCAL_ONLY), Some(TIER_REDACTED), TIER_REDACTED),
-            (Some(TIER_LOCKED), Some(TIER_OPEN), TIER_LOCKED),
-            (Some(TIER_LOCKED), Some(TIER_LOCAL_ONLY), TIER_LOCKED),
-            (Some(TIER_LOCKED), Some(TIER_LOCKED), TIER_LOCKED),
-            (Some(TIER_LOCKED), Some(TIER_REDACTED), TIER_REDACTED),
             (Some(TIER_REDACTED), Some(TIER_OPEN), TIER_REDACTED),
             (Some(TIER_REDACTED), Some(TIER_LOCAL_ONLY), TIER_REDACTED),
-            (Some(TIER_REDACTED), Some(TIER_LOCKED), TIER_REDACTED),
             (Some(TIER_REDACTED), Some(TIER_REDACTED), TIER_REDACTED),
         ];
 
@@ -328,10 +270,10 @@ mod tests {
     fn multi_level_n_depth_privacy_inheritance_propagation() {
         use super::resolve_chain_effective_privacy;
 
-        // Level 1: Locked -> Level 2: None/Open -> Level 3: Open => Locked
+        // Level 1: Local Only -> Level 2: None/Open -> Level 3: Open => Local Only
         assert_eq!(
-            resolve_chain_effective_privacy([Some(TIER_LOCKED), None, Some(TIER_OPEN)]),
-            TIER_LOCKED
+            resolve_chain_effective_privacy([Some(TIER_LOCAL_ONLY), None, Some(TIER_OPEN)]),
+            TIER_LOCAL_ONLY
         );
 
         // Level 1: Open -> Level 2: None -> Level 3: Redacted => Redacted

@@ -5,8 +5,8 @@ use rusqlite::Connection;
 use tiktoken_rs::CoreBPE;
 
 use crate::privacy::{
-    cloud_llm_context_policy, generate_pointer_stub, get_effective_privacy,
-    local_llm_context_policy, unrestricted_llm_context_policy, LlmContextPolicy,
+    cloud_llm_context_policy, get_effective_privacy, local_llm_context_policy,
+    unrestricted_llm_context_policy, LlmContextPolicy,
 };
 
 const ATTENTION_SINK_TOKENS: usize = 50;
@@ -283,7 +283,6 @@ pub fn build_context(
 
         let block = match policy {
             LlmContextPolicy::Omit => continue,
-            LlmContextPolicy::Stub => generate_pointer_stub(&node.title, &node.id),
             LlmContextPolicy::Full => format!(
                 "<document title=\"{}\">\n{}\n\n{}\n</document>",
                 escape_xml_attr(&node.title),
@@ -479,12 +478,11 @@ mod tests {
         let conn = setup_in_memory_db();
         let node_ids = vec![
             "node_local_only".to_string(),
-            "node_locked".to_string(),
             "node_redacted".to_string(),
             "node_nested_redacted".to_string(),
         ];
 
-        // 1. Local scope (locked): local_only included; locked, redacted are stubbed.
+        // 1. Local scope (locked session): local_only included; redacted omitted when locked.
         let local_result = match build_context(
             &conn,
             node_ids.clone(),
@@ -501,13 +499,11 @@ mod tests {
         // local_only is included
         assert!(local_result.contains("<document title=\"Local Only Node\">"));
         assert!(local_result.contains("local detail"));
-        // locked is stubbed since we aren't unlocked
-        assert!(local_result.contains("[LOCKED NODE STUB] Title: Locked Node"));
-        // redacted is fully omitted, even for local models
+        // redacted is fully omitted when session is locked
         assert!(!local_result.contains("Redacted Node"));
         assert!(!local_result.contains("Nested Redacted Node"));
 
-        // 1.5 Local scope (unlocked): locked is fully included.
+        // 1.5 Local scope (unlocked session): redacted node is included when unlocked.
         let local_unlocked_result = match build_context(
             &conn,
             node_ids.clone(),
@@ -520,11 +516,10 @@ mod tests {
             Ok(value) => value,
             Err(err) => panic!("local scope assembler failed: {err}"),
         };
-        assert!(local_unlocked_result.contains("<document title=\"Locked Node\">"));
-        assert!(local_unlocked_result.contains("locked detail"));
-        assert!(!local_unlocked_result.contains("Redacted Node"));
+        assert!(local_unlocked_result.contains("<document title=\"Redacted Node\">"));
+        assert!(local_unlocked_result.contains("redacted detail"));
 
-        // 2. Cloud scope: locked is stubbed; local_only and redacted are completely omitted.
+        // 2. Cloud scope: local_only and redacted are completely omitted.
         let cloud_result = match build_context(
             &conn,
             node_ids,
@@ -538,8 +533,6 @@ mod tests {
             Err(err) => panic!("cloud scope assembler failed: {err}"),
         };
 
-        // locked is stubbed
-        assert!(cloud_result.contains("[LOCKED NODE STUB] Title: Locked Node"));
         // local_only is completely omitted
         assert!(!cloud_result.contains("Local Only Node"));
         // redacted is completely omitted

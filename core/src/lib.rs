@@ -217,7 +217,7 @@ fn fetch_private_referenced_nodes(
                 Some(container_tier.as_str()),
             );
 
-            if effective == "redacted" || effective == "locked" {
+            if effective != "open" {
                 private_nodes.insert(id);
             }
         }
@@ -1418,7 +1418,7 @@ pub fn is_node_private(conn: &Connection, node_id: &str) -> Result<bool, String>
         privacy_tier.as_deref(),
     )?;
 
-    Ok(effective == "redacted" || effective == "locked")
+    Ok(effective != "open")
 }
 
 pub fn log_memory_agent_error(conn: &Connection, raw_response: &str) -> Result<(), String> {
@@ -5538,7 +5538,7 @@ mod tests {
             unique_node_ids.insert(node_id.clone());
             tx.execute(
                 "INSERT INTO nodes (id, vault_id, sub_vault_id, privacy_tier, deleted_at)
-                 VALUES (?1, 'vault_root', NULL, 'locked', NULL);",
+                 VALUES (?1, 'vault_root', NULL, 'redacted', NULL);",
                 [node_id],
             )
             .unwrap_or_else(|err| panic!("expected node insert to succeed: {err}"));
