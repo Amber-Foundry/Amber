@@ -144,7 +144,7 @@ pub fn count_coverage(conn: &Connection, model: &str) -> Result<(i64, i64), Stri
         .query_row(
             "SELECT COUNT(*) FROM nodes n
              JOIN vaults v ON n.vault_id = v.id
-             LEFT JOIN sub_vaults sv ON n.sub_vault_id = sv.id
+             LEFT JOIN vaults sv ON n.sub_vault_id = sv.id
              WHERE n.deleted_at IS NULL
                AND v.deleted_at IS NULL
                AND (n.sub_vault_id IS NULL OR sv.deleted_at IS NULL)
@@ -161,7 +161,7 @@ pub fn count_coverage(conn: &Connection, model: &str) -> Result<(i64, i64), Stri
             "SELECT COUNT(DISTINCT ne.node_id) FROM node_embeddings ne
              JOIN nodes n ON ne.node_id = n.id
              JOIN vaults v ON n.vault_id = v.id
-             LEFT JOIN sub_vaults sv ON n.sub_vault_id = sv.id
+             LEFT JOIN vaults sv ON n.sub_vault_id = sv.id
              WHERE ne.model = ?1
                AND ne.chunk_index = 0
                AND ne.chunk_type = 'primary'

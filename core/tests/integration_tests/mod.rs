@@ -5,4 +5,5 @@ mod memory_agent;
 mod migration_integrity;
 mod onboarding_commit;
 mod onboarding_default_vaults;
+mod recursive_vaults;
 mod ui_metadata_migration;

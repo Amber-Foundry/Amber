@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -484,44 +485,8 @@ fn fetch_vault_by_id(
         .query_row(
             "SELECT id, parent_vault_id, name, icon, description, privacy_tier, priority_profile, summary_node_id,
                     sort_order, created_at, updated_at, deleted_at, meta, ui_metadata, encrypted_payload
-             FROM (
-                SELECT id,
-                       NULL AS parent_vault_id,
-                       name,
-                       icon,
-                       description,
-                       privacy_tier,
-                       priority_profile,
-                       summary_node_id,
-                       sort_order,
-                       created_at,
-                       updated_at,
-                       deleted_at,
-                       meta,
-                       ui_metadata,
-                       encrypted_payload
-                FROM vaults
-                WHERE deleted_at IS NULL
-                UNION ALL
-                SELECT id,
-                       vault_id AS parent_vault_id,
-                       name,
-                       icon,
-                       description,
-                       COALESCE(privacy_tier, 'open') AS privacy_tier,
-                       COALESCE(priority_profile, 'standard') AS priority_profile,
-                       summary_node_id,
-                       sort_order,
-                       created_at,
-                       updated_at,
-                       deleted_at,
-                       meta,
-                       ui_metadata,
-                       encrypted_payload
-                FROM sub_vaults
-                WHERE deleted_at IS NULL
-             )
-             WHERE id = ?1
+             FROM vaults
+             WHERE id = ?1 AND deleted_at IS NULL
              LIMIT 1;",
             [vault_id],
             raw_vault_from_row,
@@ -1915,44 +1880,139 @@ pub(crate) fn generate_id(conn: &Connection, prefix: &str) -> Result<String, Str
     .map_err(|err| format!("Failed generating id: {err}"))
 }
 
-pub(crate) fn resolve_vault_effective_privacy(
+pub const MAX_VAULT_NESTING_DEPTH: usize = 32;
+
+pub fn check_vault_parent_assignment(
+    conn: &Connection,
+    vault_id: Option<&str>,
+    proposed_parent_id: &str,
+) -> Result<(), String> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM vaults WHERE id = ?1 AND deleted_at IS NULL);",
+            [proposed_parent_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| format!("Failed checking parent vault existence: {err}"))?;
+    if !exists {
+        return Err(format!("Parent vault '{proposed_parent_id}' not found"));
+    }
+
+    let mut current_id = proposed_parent_id.to_string();
+    let mut depth = 1usize;
+    let mut visited = HashSet::new();
+    if let Some(vid) = vault_id {
+        visited.insert(vid.to_string());
+    }
+
+    while !current_id.is_empty() {
+        if !visited.insert(current_id.clone()) {
+            return Err(format!(
+                "Cycle detected: vault assignment would create a circular vault relationship involving '{current_id}'"
+            ));
+        }
+
+        if depth >= MAX_VAULT_NESTING_DEPTH {
+            return Err(format!(
+                "Maximum vault nesting depth ({MAX_VAULT_NESTING_DEPTH} levels) reached."
+            ));
+        }
+
+        let parent: Option<String> = conn
+            .query_row(
+                "SELECT parent_vault_id FROM vaults WHERE id = ?1 AND deleted_at IS NULL LIMIT 1;",
+                [current_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| format!("Failed checking parent vault cycle: {err}"))?
+            .flatten();
+
+        match parent {
+            Some(next_parent) => {
+                current_id = next_parent;
+                depth += 1;
+            }
+            None => break,
+        }
+    }
+
+    Ok(())
+}
+
+pub fn fetch_descendant_vault_ids(
+    conn: &Connection,
+    root_vault_id: &str,
+) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "WITH RECURSIVE vault_tree(id, depth) AS (
+                SELECT id, 0 AS depth
+                FROM vaults
+                WHERE id = ?1 AND deleted_at IS NULL
+                UNION ALL
+                SELECT v.id, vt.depth + 1
+                FROM vaults v
+                JOIN vault_tree vt ON v.parent_vault_id = vt.id
+                WHERE v.deleted_at IS NULL AND vt.depth < ?2
+             )
+             SELECT id FROM vault_tree;",
+        )
+        .map_err(|err| format!("Failed preparing descendant query: {err}"))?;
+
+    let rows = stmt
+        .query_map(
+            params![root_vault_id, MAX_VAULT_NESTING_DEPTH as i64],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|err| format!("Failed querying descendant vaults: {err}"))?;
+
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(row.map_err(|err| format!("Failed decoding descendant vault id: {err}"))?);
+    }
+    Ok(ids)
+}
+
+pub fn resolve_vault_effective_privacy(
     conn: &Connection,
     vault_id: &str,
 ) -> Result<String, String> {
     let mut current_id = Some(vault_id.to_string());
     let mut strictest = "open".to_string();
+    let mut visited = HashSet::new();
+    let mut depth = 0usize;
 
     while let Some(id) = current_id {
+        if !visited.insert(id.clone()) {
+            eprintln!("[privacy] cycle detected in vault hierarchy at '{id}'; breaking chain as '{strictest}'");
+            break;
+        }
+
+        if depth >= MAX_VAULT_NESTING_DEPTH {
+            eprintln!("[privacy] depth cap ({MAX_VAULT_NESTING_DEPTH}) reached at '{id}'; breaking chain as '{strictest}'");
+            break;
+        }
+
         let record = match conn.query_row(
             "SELECT parent_vault_id, privacy_tier
-             FROM (
-                SELECT id, NULL AS parent_vault_id, privacy_tier
-                FROM vaults
-                WHERE deleted_at IS NULL
-                UNION ALL
-                SELECT id, vault_id AS parent_vault_id, COALESCE(privacy_tier, 'open') AS privacy_tier
-                FROM sub_vaults
-                WHERE deleted_at IS NULL
-             )
-             WHERE id = ?1
+             FROM vaults
+             WHERE id = ?1 AND deleted_at IS NULL
              LIMIT 1;",
             [id.as_str()],
-            |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, String>(1)?,
-                ))
-            },
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
         ) {
             Ok(record) => record,
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 eprintln!(
-                    "[privacy] vault or subvault '{id}' missing or deleted; treating chain as '{strictest}'"
+                    "[privacy] vault '{id}' missing or deleted; treating chain as '{strictest}'"
                 );
                 return Ok(strictest);
             }
             Err(err) => {
-                return Err(format!("Failed resolving vault privacy for {vault_id}: {err}"));
+                return Err(format!(
+                    "Failed resolving vault privacy for {vault_id}: {err}"
+                ));
             }
         };
 
@@ -1960,6 +2020,7 @@ pub(crate) fn resolve_vault_effective_privacy(
             privacy::get_effective_privacy(Some(record.1.as_str()), None, Some(strictest.as_str()))
                 .to_string();
         current_id = record.0;
+        depth += 1;
     }
 
     Ok(strictest)
@@ -2035,12 +2096,9 @@ pub async fn execute_memory_extraction_pipeline(
         let mut vault_map = std::collections::HashMap::new();
         let mut vault_stmt = conn
             .prepare(
-                "SELECT id, NULL AS parent_vault_id, privacy_tier FROM vaults WHERE deleted_at IS NULL
-                 UNION ALL
-                 SELECT id, vault_id AS parent_vault_id, COALESCE(privacy_tier, 'open') AS privacy_tier
-                 FROM sub_vaults WHERE deleted_at IS NULL;",
+                "SELECT id, parent_vault_id, COALESCE(privacy_tier, 'open') AS privacy_tier FROM vaults WHERE deleted_at IS NULL;",
             )
-            .map_err(|err| format!("Failed preparing vaults union query: {err}"))?;
+            .map_err(|err| format!("Failed preparing vaults query: {err}"))?;
 
         let vault_rows = vault_stmt
             .query_map([], |row| {
@@ -3298,6 +3356,10 @@ fn vault_create(input: VaultCreateInput, state: tauri::State<'_, DbState>) -> Ip
         let meta = input.meta.unwrap_or_else(|| "{}".to_string());
         let session_key = redacted::get_session_key(&state);
 
+        if let Some(ref parent_id) = input.parent_vault_id {
+            check_vault_parent_assignment(&tx, None, parent_id)?;
+        }
+
         let parent_tier = if let Some(parent_vault_id) = input.parent_vault_id.as_deref() {
             Some(resolve_vault_effective_privacy(&tx, parent_vault_id)?)
         } else {
@@ -3341,43 +3403,24 @@ fn vault_create(input: VaultCreateInput, state: tauri::State<'_, DbState>) -> Ip
             input.icon.clone()
         };
 
-        if let Some(parent_vault_id) = input.parent_vault_id {
-            tx.execute(
-                "INSERT INTO sub_vaults (
-                    id, vault_id, name, icon, description, privacy_tier, priority_profile, sort_order, meta, encrypted_payload
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);",
-                params![
-                    id,
-                    parent_vault_id,
-                    stored_name,
-                    stored_icon,
-                    stored_description,
-                    privacy_tier,
-                    priority_profile,
-                    sort_order,
-                    meta,
-                    encrypted_payload
-                ],
-            )
-            .map_err(|err| format!("Failed inserting sub-vault: {err}"))?;
-        } else {
-            tx.execute(
-                "INSERT INTO vaults (id, name, icon, description, privacy_tier, priority_profile, sort_order, meta, encrypted_payload)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);",
-                params![
-                    id,
-                    stored_name,
-                    stored_icon,
-                    stored_description,
-                    privacy_tier,
-                    priority_profile,
-                    sort_order,
-                    meta,
-                    encrypted_payload
-                ],
-            )
-            .map_err(|err| format!("Failed inserting vault: {err}"))?;
-        }
+        tx.execute(
+            "INSERT INTO vaults (
+                id, parent_vault_id, name, icon, description, privacy_tier, priority_profile, sort_order, meta, encrypted_payload
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);",
+            params![
+                id,
+                input.parent_vault_id,
+                stored_name,
+                stored_icon,
+                stored_description,
+                privacy_tier,
+                priority_profile,
+                sort_order,
+                meta,
+                encrypted_payload
+            ],
+        )
+        .map_err(|err| format!("Failed inserting vault: {err}"))?;
 
         tx.commit()
             .map_err(|err| format!("Failed committing vault_create: {err}"))?;
@@ -3395,43 +3438,8 @@ fn vault_list(state: tauri::State<'_, DbState>) -> IpcResponse<Vec<Vault>> {
             .prepare(
                 "SELECT id, parent_vault_id, name, icon, description, privacy_tier, priority_profile, summary_node_id,
                         sort_order, created_at, updated_at, deleted_at, meta, ui_metadata, encrypted_payload
-                 FROM (
-                    SELECT id,
-                           NULL AS parent_vault_id,
-                           name,
-                           icon,
-                           description,
-                           privacy_tier,
-                           priority_profile,
-                           summary_node_id,
-                           sort_order,
-                           created_at,
-                           updated_at,
-                           deleted_at,
-                           meta,
-                           ui_metadata,
-                           encrypted_payload
-                    FROM vaults
-                    WHERE deleted_at IS NULL
-                    UNION ALL
-                    SELECT id,
-                           vault_id AS parent_vault_id,
-                           name,
-                           icon,
-                           description,
-                           COALESCE(privacy_tier, 'open') AS privacy_tier,
-                           COALESCE(priority_profile, 'standard') AS priority_profile,
-                           summary_node_id,
-                           sort_order,
-                           created_at,
-                           updated_at,
-                           deleted_at,
-                           meta,
-                           ui_metadata,
-                           encrypted_payload
-                    FROM sub_vaults
-                    WHERE deleted_at IS NULL
-                 )
+                 FROM vaults
+                 WHERE deleted_at IS NULL
                  ORDER BY sort_order ASC, created_at ASC;",
             )
             .map_err(|err| format!("Failed preparing vault_list query: {err}"))?;
@@ -3464,11 +3472,7 @@ fn vault_update_position(
 
         let current_meta: String = tx
             .query_row(
-                "SELECT COALESCE(ui_metadata, '{}') FROM (
-                    SELECT ui_metadata FROM vaults WHERE id = ?1 AND deleted_at IS NULL
-                    UNION ALL
-                    SELECT ui_metadata FROM sub_vaults WHERE id = ?1 AND deleted_at IS NULL
-                 ) LIMIT 1;",
+                "SELECT COALESCE(ui_metadata, '{}') FROM vaults WHERE id = ?1 AND deleted_at IS NULL;",
                 [&vault_id],
                 |row| row.get(0),
             )
@@ -3492,23 +3496,10 @@ fn vault_update_position(
             )
             .map_err(|err| format!("Failed updating vaults position: {err}"))?;
 
-        let affected_sub = if affected_vaults == 0 {
-            tx.execute(
-                "UPDATE sub_vaults
-                 SET ui_metadata = ?2,
-                     updated_at = datetime('now')
-                 WHERE id = ?1 AND deleted_at IS NULL;",
-                params![&vault_id, &updated_meta],
-            )
-            .map_err(|err| format!("Failed updating sub_vaults position: {err}"))?
-        } else {
-            0
-        };
-
         tx.commit()
             .map_err(|err| format!("Failed committing vault_update_position transaction: {err}"))?;
 
-        Ok(affected_vaults + affected_sub > 0)
+        Ok(affected_vaults > 0)
     })())
 }
 
@@ -3526,11 +3517,7 @@ fn vault_update_color_theme(
 
         let current_meta: String = tx
             .query_row(
-                "SELECT ui_metadata FROM (
-                    SELECT ui_metadata FROM vaults WHERE id = ?1 AND deleted_at IS NULL
-                    UNION ALL
-                    SELECT ui_metadata FROM sub_vaults WHERE id = ?1 AND deleted_at IS NULL
-                 ) LIMIT 1;",
+                "SELECT COALESCE(ui_metadata, '{}') FROM vaults WHERE id = ?1 AND deleted_at IS NULL;",
                 [&vault_id],
                 |row| row.get(0),
             )
@@ -3554,24 +3541,11 @@ fn vault_update_color_theme(
             )
             .map_err(|err| format!("Failed updating vaults color theme: {err}"))?;
 
-        let affected_sub = if affected_vaults == 0 {
-            tx.execute(
-                "UPDATE sub_vaults
-                 SET ui_metadata = ?2,
-                     updated_at = datetime('now')
-                 WHERE id = ?1 AND deleted_at IS NULL;",
-                params![&vault_id, &updated_meta],
-            )
-            .map_err(|err| format!("Failed updating sub_vaults color theme: {err}"))?
-        } else {
-            0
-        };
-
         tx.commit().map_err(|err| {
             format!("Failed committing vault_update_color_theme transaction: {err}")
         })?;
 
-        Ok(affected_vaults + affected_sub > 0)
+        Ok(affected_vaults > 0)
     })())
 }
 
@@ -3602,11 +3576,10 @@ fn door_list_all(state: tauri::State<'_, DbState>) -> IpcResponse<Vec<Door>> {
                         d.orphan_reason, d.orphan_since, d.created_at, d.updated_at,
                         tn.privacy_tier AS target_node_privacy,
                         tv.privacy_tier AS target_vault_privacy,
-                        tsv.privacy_tier AS target_sub_vault_privacy
+                        NULL AS target_sub_vault_privacy
                  FROM doors d
                  LEFT JOIN nodes tn ON d.target_node_id = tn.id AND tn.deleted_at IS NULL
                  LEFT JOIN vaults tv ON tn.vault_id = tv.id AND tv.deleted_at IS NULL
-                 LEFT JOIN sub_vaults tsv ON tn.sub_vault_id = tsv.id AND tsv.deleted_at IS NULL
                  WHERE d.orphan_since IS NULL;"
             )
             .map_err(|err| format!("Failed preparing door_list_all query: {err}"))?;
@@ -3679,18 +3652,9 @@ fn vault_delete(vault_id: String, state: tauri::State<'_, DbState>) -> IpcRespon
                 [&vault_id],
             )
             .map_err(|err| format!("Failed deleting vault: {err}"))?;
-        let affected_sub_vaults = tx
-            .execute(
-                "UPDATE sub_vaults
-                 SET deleted_at = datetime('now'),
-                     updated_at = datetime('now')
-                 WHERE id = ?1 AND deleted_at IS NULL;",
-                [&vault_id],
-            )
-            .map_err(|err| format!("Failed deleting sub-vault: {err}"))?;
         tx.commit()
             .map_err(|err| format!("Failed committing vault_delete: {err}"))?;
-        Ok(affected_vaults + affected_sub_vaults > 0)
+        Ok(affected_vaults > 0)
     })())
 }
 
@@ -3732,10 +3696,6 @@ fn vault_update(input: VaultUpdateInput, state: tauri::State<'_, DbState>) -> Ip
                 "SELECT EXISTS(
                     SELECT 1
                     FROM vaults
-                    WHERE id = ?1 AND deleted_at IS NULL AND encrypted_payload IS NOT NULL
-                    UNION ALL
-                    SELECT 1
-                    FROM sub_vaults
                     WHERE id = ?1 AND deleted_at IS NULL AND encrypted_payload IS NOT NULL
                 );",
                 [&vault_id],
@@ -3808,36 +3768,13 @@ fn vault_update(input: VaultUpdateInput, state: tauri::State<'_, DbState>) -> Ip
             .map_err(|err| format!("Failed updating vault: {err}"))?;
 
         if affected_vaults == 0 {
-            tx.execute(
-                "UPDATE sub_vaults
-                 SET name = ?2,
-                     privacy_tier = ?3,
-                     priority_profile = ?4,
-                     icon = ?5,
-                     description = ?6,
-                     encrypted_payload = ?7,
-                     updated_at = datetime('now')
-                 WHERE id = ?1 AND deleted_at IS NULL;",
-                params![
-                    &vault_id,
-                    &stored_name,
-                    &next_privacy_tier,
-                    &next_priority_profile,
-                    &stored_icon,
-                    &stored_description,
-                    &next_encrypted_payload
-                ],
-            )
-            .map_err(|err| format!("Failed updating sub-vault: {err}"))?;
+            return Err(format!("Vault not found or deleted: {vault_id}"));
         }
 
         let affected_node_ids = if next_effective_privacy != current_effective_privacy {
-            let mut stmt = if affected_vaults > 0 {
-                tx.prepare("SELECT id FROM nodes WHERE vault_id = ?1 AND deleted_at IS NULL;")
-            } else {
-                tx.prepare("SELECT id FROM nodes WHERE sub_vault_id = ?1 AND deleted_at IS NULL;")
-            }
-            .map_err(|err| format!("Failed preparing node query: {err}"))?;
+            let mut stmt = tx
+                .prepare("SELECT id FROM nodes WHERE vault_id = ?1 AND deleted_at IS NULL;")
+                .map_err(|err| format!("Failed preparing node query: {err}"))?;
 
             let rows = stmt
                 .query_map([&vault_id], |row| row.get::<_, String>(0))
@@ -4144,6 +4081,11 @@ fn node_create(input: NodeCreateInput, state: tauri::State<'_, DbState>) -> IpcR
             input.summary.clone()
         };
 
+        let target_vault_id = match &input.sub_vault_id {
+            Some(sv_id) if !sv_id.trim().is_empty() => sv_id.clone(),
+            _ => input.vault_id.clone(),
+        };
+
         tx.execute(
             "INSERT INTO nodes (
                 id, vault_id, sub_vault_id, node_type, title, summary, detail, source, source_type,
@@ -4151,8 +4093,8 @@ fn node_create(input: NodeCreateInput, state: tauri::State<'_, DbState>) -> IpcR
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);",
             params![
                 id,
-                input.vault_id,
-                input.sub_vault_id,
+                target_vault_id,
+                None::<String>,
                 node_type,
                 stored_title,
                 stored_summary,
@@ -4313,6 +4255,11 @@ fn node_update(input: NodeUpdateInput, state: tauri::State<'_, DbState>) -> IpcR
             next_summary.clone()
         };
 
+        let effective_target_vault_id = match &next_sub_vault_id {
+            Some(sv_id) if !sv_id.trim().is_empty() => sv_id.clone(),
+            _ => next_vault_id,
+        };
+
         tx.execute(
             "UPDATE nodes
              SET vault_id = ?2,
@@ -4333,8 +4280,8 @@ fn node_update(input: NodeUpdateInput, state: tauri::State<'_, DbState>) -> IpcR
              WHERE id = ?1 AND deleted_at IS NULL;",
             params![
                 input.id,
-                next_vault_id,
-                next_sub_vault_id,
+                effective_target_vault_id,
+                None::<String>,
                 next_node_type,
                 stored_title,
                 stored_summary,
@@ -5716,6 +5663,7 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE vaults (
                 id TEXT PRIMARY KEY,
+                parent_vault_id TEXT,
                 privacy_tier TEXT NOT NULL DEFAULT 'open',
                 deleted_at TEXT
              );
