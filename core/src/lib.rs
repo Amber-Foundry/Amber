@@ -4718,6 +4718,24 @@ async fn llm_chat(
             attached_document
         }
     };
+    let parsed_provider = match provider.trim().to_lowercase().as_str() {
+        "ollama" => llm::client::LlmProvider::Ollama,
+        "lmstudio" => llm::client::LlmProvider::LmStudio,
+        "anthropic" => llm::client::LlmProvider::Anthropic,
+        "openai" => llm::client::LlmProvider::OpenAi,
+        "google" => llm::client::LlmProvider::Google,
+        "xai" => llm::client::LlmProvider::XAi,
+        _ => return Err("Unsupported provider. Use 'ollama', 'lmstudio', 'anthropic', 'openai', 'google', or 'xai'.".to_string()),
+    };
+
+    // SECURITY INVARIANT (Milestone 2.4.6 Commit 5):
+    // If destination is a Cloud LLM, context assembly scope MUST be forced to "cloud"
+    // regardless of what assembler scope UI state was passed.
+    let effective_scope = if parsed_provider.is_cloud() {
+        "cloud".to_string()
+    } else {
+        scope
+    };
 
     let vault_memory_context = if session_id == "temporary-session" {
         "[Off the Record Mode: Context assembly has been bypassed. No personal memories or notes are accessible in this session.]".to_string()
@@ -4727,7 +4745,7 @@ async fn llm_chat(
             &conn,
             node_ids,
             llm::assembler::AssemblerConfig {
-                scope,
+                scope: effective_scope,
                 max_tokens: max_assembler_tokens.unwrap_or(DEFAULT_ASSEMBLER_MAX_TOKENS),
                 is_unlocked: is_redacted_unlocked,
             },
@@ -4773,7 +4791,7 @@ async fn llm_chat(
       \"layout\": {\n\
         \"title\": \"Fruit Counts\"\n\
       }\n\
-    }\n\
+      }\n\
     ```\n\
     Always output fully valid JSON (double quotes for keys and string values). Do not embed comments inside the JSON.";
 
@@ -4787,16 +4805,6 @@ async fn llm_chat(
         system_directives,
         vault_memory_context,
         retrieved_doc_content,
-    };
-
-    let parsed_provider = match provider.trim().to_lowercase().as_str() {
-        "ollama" => llm::client::LlmProvider::Ollama,
-        "lmstudio" => llm::client::LlmProvider::LmStudio,
-        "anthropic" => llm::client::LlmProvider::Anthropic,
-        "openai" => llm::client::LlmProvider::OpenAi,
-        "google" => llm::client::LlmProvider::Google,
-        "xai" => llm::client::LlmProvider::XAi,
-        _ => return Err("Unsupported provider. Use 'ollama', 'lmstudio', 'anthropic', 'openai', 'google', or 'xai'.".to_string()),
     };
 
     let client = llm::client::UniversalClient::new(parsed_provider, endpoint, model);
