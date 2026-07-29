@@ -64,12 +64,13 @@ pub fn expand_vault_scope(
             [],
             |row| row.get(0),
         )
-        .unwrap_or(false);
+        .map_err(|err| format!("Failed checking schema for parent_vault_id column: {err}"))?;
 
     if !has_parent_col {
         return Ok(vaults.clone());
     }
 
+    let max_depth = crate::MAX_VAULT_NESTING_DEPTH;
     let placeholders = vec!["?"; vaults.len()].join(", ");
     let query = format!(
         "WITH RECURSIVE vault_tree AS (
@@ -80,7 +81,7 @@ pub fn expand_vault_scope(
             SELECT v.id, vt.depth + 1
             FROM vaults v
             JOIN vault_tree vt ON v.parent_vault_id = vt.id
-            WHERE v.deleted_at IS NULL AND vt.depth < 32
+            WHERE v.deleted_at IS NULL AND vt.depth < {max_depth}
         )
         SELECT DISTINCT id FROM vault_tree;"
     );

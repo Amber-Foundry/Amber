@@ -1887,6 +1887,17 @@ pub fn check_vault_parent_assignment(
     vault_id: Option<&str>,
     proposed_parent_id: &str,
 ) -> Result<(), String> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM vaults WHERE id = ?1 AND deleted_at IS NULL);",
+            [proposed_parent_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| format!("Failed checking parent vault existence: {err}"))?;
+    if !exists {
+        return Err(format!("Parent vault '{proposed_parent_id}' not found"));
+    }
+
     let mut current_id = proposed_parent_id.to_string();
     let mut depth = 1usize;
     let mut visited = HashSet::new();
