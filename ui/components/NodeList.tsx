@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, useDeferredValue, useCallback } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useDeferredValue,
+  useCallback,
+  Fragment,
+} from "react";
 import { createPortal } from "react-dom";
 import type { Node, Vault } from "../ipc";
 import { createNode, getNodes } from "../services/nodes";
@@ -180,11 +188,26 @@ function NodeList({
     return nodesByContainer.get(selectedVault.id) ?? [];
   }, [nodesByContainer, selectedVault]);
 
-  const parentVaultId = selectedVault?.parentVaultId;
-  const backButtonHasParent = Boolean(parentVaultId);
-  const backButtonLabel = backButtonHasParent
-    ? `Back to ${getVaultDisplayLabel(parentVaultId as string, vaultById, isRedactedUnlocked)}`
-    : "Back to Vaults";
+  const ancestorVaults = useMemo(() => {
+    if (!selectedVault) {
+      return [];
+    }
+    const list: Vault[] = [];
+    const visited = new Set<string>();
+    let currId: string | null | undefined = selectedVault.id;
+    while (currId) {
+      if (visited.has(currId)) break;
+      visited.add(currId);
+      const v: Vault | undefined = vaultById[currId];
+      if (v) {
+        list.push(v);
+        currId = v.parentVaultId;
+      } else {
+        break;
+      }
+    }
+    return list.reverse();
+  }, [selectedVault, vaultById]);
 
   const normalizedQuery = resolvedQuery.trim().toLowerCase();
 
@@ -314,140 +337,35 @@ function NodeList({
     setCreateModalError("");
   }
 
-  function renderVaultSection(vault: Vault, depth = 0) {
-    const childVaults = childVaultsByParent.get(vault.id) ?? [];
-    const vaultNodes = nodesByContainer.get(vault.id) ?? [];
-    const indentClass = depth > 0 ? " nested" : "";
-    const effectiveTier =
-      vaultEffectivePrivacyById[vault.id] ?? getVaultEffectivePrivacy(vault.id, vaultById);
-    const isRedactedLocked = effectiveTier === "redacted" && !isRedactedUnlocked;
-    const isLocked = effectiveTier === "locked" && !isRedactedUnlocked;
+  const breadcrumbsRef = useRef<HTMLElement | null>(null);
 
-    return (
-      <div
-        key={vault.id}
-        className={`vault-section${indentClass}`}
-        style={{ marginLeft: depth * 14 }}
-      >
-        <button
-          type="button"
-          className={`vault-card ${selectedVaultId === vault.id ? "active" : ""}`}
-          onClick={() => onSelectVault?.(vault.id)}
-        >
-          <span className="vault-card-title">
-            <strong>{getPrivacyDisplayLabel(vault.name, effectiveTier, isRedactedUnlocked)}</strong>
-            {isRedactedLocked ? (
-              <small>[Metadata Locked]</small>
-            ) : (
-              vault.description && <small>{vault.description}</small>
-            )}
-          </span>
-          <span className="vault-card-meta">
-            <PrivacyBadge tier={effectiveTier} />
-            {isLocked && (
-              <span className="privacy-lock-icon">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <rect width="18" height="11" x="3" y="11" rx="2" />
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                </svg>
-              </span>
-            )}
-            <span className="vault-card-chevron">
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="m9 18 6-6-6-6" />
-              </svg>
-            </span>
-          </span>
-        </button>
-
-        {childVaults.length > 0 && (
-          <div className="vault-section-group">
-            {childVaults.map((child) => renderVaultSection(child, depth + 1))}
-          </div>
-        )}
-
-        {vaultNodes.length > 0 && (
-          <div className="node-cards nested-node-cards">
-            {vaultNodes.map((node) => {
-              const effectiveTier = getNodeEffectivePrivacy(node);
-              const isNodeRedactedLocked = effectiveTier === "redacted" && !isRedactedUnlocked;
-              const summaryText = isNodeRedactedLocked
-                ? "[Metadata Locked]"
-                : node.summary.slice(0, 120);
-
-              return (
-                <button
-                  type="button"
-                  key={node.id}
-                  className={`node-card ${selectedNodeId === node.id ? "active" : ""}`}
-                  onClick={() => onSelectNode(node.id)}
-                >
-                  <span className="node-card-title-row">
-                    <strong>
-                      {getPrivacyDisplayLabel(node.title, effectiveTier, isRedactedUnlocked)}
-                    </strong>
-                    <PrivacyBadge tier={effectiveTier} />
-                  </span>
-                  {!isNodeRedactedLocked && <ImportProvenanceBadges node={node} allNodes={nodes} />}
-                  <p>{getPrivacyDisplaySummary(summaryText, effectiveTier, isRedactedUnlocked)}</p>
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (breadcrumbsRef.current) {
+      breadcrumbsRef.current.scrollLeft = breadcrumbsRef.current.scrollWidth;
+    }
+  }, [selectedVaultId]);
 
   return (
     <aside className="pane pane-middle">
-      <button
-        type="button"
-        className="back-button"
-        onClick={() => {
-          if (selectedVault?.parentVaultId && onSelectVault) {
-            onSelectVault(selectedVault.parentVaultId);
-            return;
-          }
-          onBack();
-        }}
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M19 12H5" />
-          <path d="m12 19-7-7 7-7" />
-        </svg>
-        {backButtonLabel}
-      </button>
+      {ancestorVaults.length <= 1 && (
+        <button type="button" className="back-button" onClick={onBack}>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M19 12H5" />
+            <path d="m12 19-7-7 7-7" />
+          </svg>
+          Back to Vaults
+        </button>
+      )}
       <input
         ref={searchInputRef}
         type="search"
@@ -470,9 +388,119 @@ function NodeList({
       {error && <p className="pane-error">{error}</p>}
       {selectedVault && (
         <div className="vault-contents">
+          {ancestorVaults.length > 1 && (
+            <nav ref={breadcrumbsRef} className="breadcrumbs-nav" aria-label="Breadcrumbs">
+              <button type="button" className="breadcrumb-item" onClick={onBack}>
+                Vaults
+              </button>
+              {ancestorVaults.map((v, index) => {
+                const isLast = index === ancestorVaults.length - 1;
+                const effectiveTier =
+                  vaultEffectivePrivacyById[v.id] ?? getVaultEffectivePrivacy(v.id, vaultById);
+                const label = getPrivacyDisplayLabel(v.name, effectiveTier, isRedactedUnlocked);
+                return (
+                  <Fragment key={v.id}>
+                    <span className="breadcrumb-separator">
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="m9 18 6-6-6-6" />
+                      </svg>
+                    </span>
+                    {isLast ? (
+                      <span className="breadcrumb-item current">{label}</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="breadcrumb-item"
+                        onClick={() => onSelectVault?.(v.id)}
+                      >
+                        {label}
+                      </button>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </nav>
+          )}
+
           {selectedVaultChildren.length > 0 && (
             <div className="vault-section-group">
-              {selectedVaultChildren.map((child) => renderVaultSection(child, 0))}
+              {selectedVaultChildren.map((child) => {
+                const effectiveTier =
+                  vaultEffectivePrivacyById[child.id] ??
+                  getVaultEffectivePrivacy(child.id, vaultById);
+                const isRedactedLocked = effectiveTier === "redacted" && !isRedactedUnlocked;
+                const childSubvaultCount = (childVaultsByParent.get(child.id) ?? []).length;
+                const childNodeCount = (nodesByContainer.get(child.id) ?? []).length;
+
+                return (
+                  <button
+                    type="button"
+                    key={child.id}
+                    className="vault-card subvault-direct-card"
+                    onClick={() => onSelectVault?.(child.id)}
+                  >
+                    <span className="vault-card-title">
+                      <span className="folder-icon">
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
+                        </svg>
+                      </span>
+                      <strong>
+                        {getPrivacyDisplayLabel(child.name, effectiveTier, isRedactedUnlocked)}
+                      </strong>
+                      {isRedactedLocked ? (
+                        <small>[Metadata Locked]</small>
+                      ) : (
+                        child.description && <small>{child.description}</small>
+                      )}
+                    </span>
+                    <span className="vault-card-meta">
+                      <span className="count-badge">
+                        {childSubvaultCount > 0 &&
+                          `${childSubvaultCount} subvault${childSubvaultCount > 1 ? "s" : ""}`}
+                        {childSubvaultCount > 0 && childNodeCount > 0 && " • "}
+                        {childNodeCount > 0 &&
+                          `${childNodeCount} note${childNodeCount > 1 ? "s" : ""}`}
+                        {childSubvaultCount === 0 && childNodeCount === 0 && "Empty"}
+                      </span>
+                      <PrivacyBadge tier={effectiveTier} />
+                      <span className="vault-card-chevron">
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="m9 18 6-6-6-6" />
+                        </svg>
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
           {filteredNodes.length > 0 && (

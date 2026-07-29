@@ -5,7 +5,9 @@ const DEFAULT_PRIORITY =
 
 const TIMESTAMP = "2026-06-23T00:00:00Z";
 
-function baseVault(overrides: Partial<Vault> & Pick<Vault, "id" | "name" | "privacyTier">): Vault {
+export function baseVault(
+  overrides: Partial<Vault> & Pick<Vault, "id" | "name" | "privacyTier">
+): Vault {
   return {
     icon: null,
     description: null,
@@ -21,7 +23,7 @@ function baseVault(overrides: Partial<Vault> & Pick<Vault, "id" | "name" | "priv
   };
 }
 
-function baseNode(
+export function baseNode(
   overrides: Partial<Node> & Pick<Node, "id" | "vaultId" | "title" | "privacyTier">
 ): Node {
   return {

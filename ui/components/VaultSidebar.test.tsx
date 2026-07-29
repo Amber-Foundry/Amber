@@ -2,7 +2,13 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import VaultSidebar from "./VaultSidebar";
-import { vaultOpen, vaultRedacted, vaultLocked } from "../test/fixtures/privacyFixtures";
+import {
+  vaultOpen,
+  vaultRedacted,
+  vaultLocked,
+  baseVault,
+  baseNode,
+} from "../test/fixtures/privacyFixtures";
 
 vi.mock("../services/nodes", () => ({
   getAllNodes: vi.fn(),
@@ -127,5 +133,43 @@ describe("VaultSidebar privacy UI", () => {
     expect(
       within(modal as HTMLElement).getByPlaceholderText("Master password")
     ).toBeInTheDocument();
+  });
+
+  it("auto-expands parent vault branches when searching for a deep subvault or node", async () => {
+    const user = userEvent.setup();
+    mockListVaults.mockResolvedValue([
+      baseVault({ id: "v_root", name: "Personal", privacyTier: "open" }),
+      baseVault({ id: "v_sub1", name: "Skin Care", parentVaultId: "v_root", privacyTier: "open" }),
+      baseVault({
+        id: "v_sub2",
+        name: "Face Creams",
+        parentVaultId: "v_sub1",
+        privacyTier: "open",
+      }),
+    ]);
+    mockGetAllNodes.mockResolvedValue([
+      baseNode({
+        id: "node_1",
+        vaultId: "v_sub2",
+        title: "Hyaluronic Acid",
+        summary: "Moisturizer",
+        privacyTier: "open",
+      }),
+    ]);
+
+    renderSidebar(false);
+
+    await waitFor(() => {
+      expect(screen.getByText("Personal")).toBeInTheDocument();
+    });
+
+    const searchInput = screen.getByPlaceholderText("Search vaults");
+    await user.type(searchInput, "Hyaluronic");
+
+    await waitFor(() => {
+      expect(screen.getByText("Hyaluronic Acid")).toBeInTheDocument();
+      expect(screen.getByText("Skin Care")).toBeInTheDocument();
+      expect(screen.getByText("Face Creams")).toBeInTheDocument();
+    });
   });
 });

@@ -323,8 +323,8 @@
 /* Sub-Vaults and nodes indenting */
 .tree-child-list {
   list-style: none;
-  margin: 2px 0 0 10px;
-  padding: 0 0 0 16px;
+  margin: 2px 0 0 4px;
+  padding: 0 0 0 10px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -338,12 +338,12 @@
   content: "";
   position: absolute;
   top: -4px;
-  left: -14px;
-  width: 12px;
+  left: -8px;
+  width: 7px;
   height: 22px;
   border-left: 1.5px solid rgba(188, 108, 37, 0.25);
   border-bottom: 1.5px solid rgba(188, 108, 37, 0.25);
-  border-bottom-left-radius: 6px;
+  border-bottom-left-radius: 5px;
   pointer-events: none;
 }
 
@@ -351,8 +351,8 @@
   content: "";
   position: absolute;
   top: 18px;
-  bottom: -4px;
-  left: -14px;
+  height: 22px;
+  left: -8px;
   border-left: 1.5px solid rgba(188, 108, 37, 0.25);
   pointer-events: none;
 }
@@ -483,6 +483,7 @@
 .sidebar-scrollable-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: auto;
   margin-right: -4px;
   padding-right: 4px;
   display: flex;

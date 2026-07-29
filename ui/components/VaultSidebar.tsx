@@ -10,6 +10,7 @@ import {
   getPrivacyDisplayLabel,
   getPrivacyDisplaySummary,
   getPrivacyRank,
+  getVaultDisplayPath,
   getVaultEffectivePrivacy as getRecursiveVaultEffectivePrivacy,
 } from "../utils/privacy";
 import { getImportDocumentId, isImportChunkNode } from "../utils/importDocument";
@@ -77,7 +78,6 @@ function VaultSidebar({
   const [createModalError, setCreateModalError] = useState("");
   const [createSubvaultModalOpen, setCreateSubvaultModalOpen] = useState(false);
   const [createSubvaultParentVaultId, setCreateSubvaultParentVaultId] = useState("");
-  const [createSubvaultParentName, setCreateSubvaultParentName] = useState("");
   const [createSubvaultName, setCreateSubvaultName] = useState("");
   const [createSubvaultDescription, setCreateSubvaultDescription] = useState("");
   const [createSubvaultIcon, setCreateSubvaultIcon] = useState("");
@@ -271,9 +271,8 @@ function VaultSidebar({
     }
   }
 
-  async function onCreateSubVault(parentVaultId: string, parentName: string) {
+  async function onCreateSubVault(parentVaultId: string) {
     setCreateSubvaultParentVaultId(parentVaultId);
-    setCreateSubvaultParentName(parentName);
     setCreateSubvaultName("");
     setCreateSubvaultDescription("");
     setCreateSubvaultIcon("");
@@ -285,7 +284,6 @@ function VaultSidebar({
   function closeCreateSubvaultModal() {
     setCreateSubvaultModalOpen(false);
     setCreateSubvaultParentVaultId("");
-    setCreateSubvaultParentName("");
     setCreateSubvaultName("");
     setCreateSubvaultDescription("");
     setCreateSubvaultIcon("");
@@ -691,24 +689,32 @@ function VaultSidebar({
 
       matchNodes.add(listed.id);
       count++;
-      if (listed.subVaultId) {
-        matchSubVaults.add(listed.subVaultId);
-        const subVault = vaults.find((v) => v.id === listed.subVaultId);
-        if (subVault?.parentVaultId) {
-          matchVaults.add(subVault.parentVaultId);
-        }
+
+      // Expand all ancestor vaults up to root so the match is revealed at any depth N
+      let currContainerId: string | null | undefined = listed.subVaultId ?? listed.vaultId;
+      const visited = new Set<string>();
+      while (currContainerId) {
+        if (visited.has(currContainerId)) break;
+        visited.add(currContainerId);
+        matchSubVaults.add(currContainerId);
+        matchVaults.add(currContainerId);
+        const parentVault: Vault | undefined = vaultById[currContainerId];
+        currContainerId = parentVault?.parentVaultId ?? null;
       }
-      matchVaults.add(listed.vaultId);
     }
 
-    // Find matching vaults by name
+    // Find matching vaults by name and auto-expand their ancestor chains
     for (const vault of vaults) {
       if (vault.name.toLowerCase().includes(normalizedQuery)) {
-        if (vault.parentVaultId) {
-          matchSubVaults.add(vault.id);
-          matchVaults.add(vault.parentVaultId);
-        } else {
-          matchVaults.add(vault.id);
+        let currId: string | null | undefined = vault.id;
+        const visited = new Set<string>();
+        while (currId) {
+          if (visited.has(currId)) break;
+          visited.add(currId);
+          matchSubVaults.add(currId);
+          matchVaults.add(currId);
+          const v: Vault | undefined = vaultById[currId];
+          currId = v?.parentVaultId ?? null;
         }
         count++;
       }
@@ -723,7 +729,7 @@ function VaultSidebar({
       matchingNodeIds: matchNodes,
       resultCount: count,
     };
-  }, [allNodes, normalizedQuery, vaults, nodesById]);
+  }, [allNodes, normalizedQuery, vaults, nodesById, vaultById]);
 
   // ---------------------------------------------------------------------------
   // Helpers for determining match/dim state
@@ -748,6 +754,10 @@ function VaultSidebar({
   }
 
   function renderVault(vault: Vault, isFavSection: boolean) {
+    return renderVaultTreeItem(vault, isFavSection, 0);
+  }
+
+  function renderVaultTreeItem(vault: Vault, isFavSection: boolean, depth: number = 0) {
     const suffix = isFavSection ? "-fav" : "";
     const effectiveTier = getVaultEffectivePrivacy(vault);
     const children = childrenByParent.get(vault.id) ?? [];
@@ -757,18 +767,17 @@ function VaultSidebar({
       !isRedactedLocked && (children.length > 0 || vaultNodes.length > 0);
     const expanded = shouldExpand(vault.id, hasExpandableContent);
 
-    // Dimming logic: when searching, dim everything that is NOT on a match path
     const isDimmed = isSearching && !isVaultOnMatchPath(vault.id);
-    const isHighlighted = isSearching && isVaultOnMatchPath(vault.id);
+    const isHighlighted = isSearching && isSubVaultMatch(vault.id);
     const isFav = favoriteVaultIds.includes(vault.id);
     const vaultIconKey = isRedactedLocked ? "folder" : getVaultEmoji(vault);
 
     return (
       <li key={vault.id + suffix} className={isDimmed ? "tree-dimmed" : ""}>
         <div
-          className={`list-item ${selectedVaultId === vault.id ? "active" : ""} ${
-            isHighlighted ? "tree-match" : ""
-          }`}
+          className={`list-item ${depth > 0 ? "sub sub-vault-item" : "parent"} ${
+            selectedVaultId === vault.id ? "active" : ""
+          } ${isHighlighted ? "tree-match" : ""}`}
         >
           <button
             type="button"
@@ -796,7 +805,12 @@ function VaultSidebar({
             )}
           </button>
           <div className="vault-header">
-            <button type="button" className="list-main" onClick={() => onSelectVaultEntry(vault)}>
+            <button
+              type="button"
+              className="list-main"
+              onClick={() => onSelectVaultEntry(vault)}
+              title={getVaultDisplayPath(vault.id, vaultById, isRedactedUnlocked)}
+            >
               <span className="list-title-row">
                 <span className="vault-icon-emoji">
                   <VaultIcon icon={vaultIconKey} name={vault.name} size={16} />
@@ -839,33 +853,35 @@ function VaultSidebar({
               )}
             </button>
             <div className="list-actions">
-              <button
-                type="button"
-                className={`list-favorite ${isFav ? "is-fav" : ""}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleFavorite(vault.id);
-                }}
-                aria-label={isFav ? "Remove from Favorites" : "Add to Favorites"}
-              >
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill={isFav ? "currentColor" : "none"}
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
+              {depth === 0 && (
+                <button
+                  type="button"
+                  className={`list-favorite ${isFav ? "is-fav" : ""}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleFavorite(vault.id);
+                  }}
+                  aria-label={isFav ? "Remove from Favorites" : "Add to Favorites"}
                 >
-                  <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z" />
-                </svg>
-              </button>
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill={isFav ? "currentColor" : "none"}
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z" />
+                  </svg>
+                </button>
+              )}
               <button
                 type="button"
                 className="list-subvault"
-                onClick={() => onCreateSubVault(vault.id, vault.name)}
+                onClick={() => onCreateSubVault(vault.id)}
                 aria-label={`Create sub-vault under ${vault.name}`}
               >
                 +
@@ -906,225 +922,13 @@ function VaultSidebar({
           </div>
         </div>
 
-        {/* ----- Expanded children: Sub-Vaults and Nodes ----- */}
+        {/* ----- Expanded children: Nodes first, then Sub-Vaults ----- */}
         {expanded && (children.length > 0 || vaultNodes.length > 0) && (
           <ul className="tree-child-list">
-            {children.map((child) => {
-              const childEffectiveTier = getVaultEffectivePrivacy(child);
-              const childNodes = nodesByVaultId.get(child.id) ?? [];
-              const isChildRedactedLocked =
-                childEffectiveTier === "redacted" && !isRedactedUnlocked;
-              const childHasContent = !isChildRedactedLocked && childNodes.length > 0;
-              const childIsDimmed =
-                isSearching && !isSubVaultMatch(child.id) && !isVaultOnMatchPath(child.id);
-              const childIsHighlighted = isSearching && isSubVaultMatch(child.id);
-              const childExpanded =
-                childHasContent &&
-                ((isSearching && isSubVaultMatch(child.id)) || (expandedVaults[child.id] ?? false));
-              const childIconKey = isChildRedactedLocked ? "folder" : getVaultEmoji(child);
-
-              return (
-                <li key={child.id + suffix} className={childIsDimmed ? "tree-dimmed" : ""}>
-                  <div
-                    className={`list-item sub sub-vault-item ${
-                      selectedVaultId === child.id ? "active" : ""
-                    } ${childIsHighlighted ? "tree-match" : ""}`}
-                  >
-                    <button
-                      type="button"
-                      className={`tree-toggle ${!childHasContent ? "empty" : ""}`}
-                      onClick={() => onToggleExpand(child.id)}
-                      disabled={!childHasContent}
-                      aria-label={childExpanded ? `Collapse ${child.name}` : `Expand ${child.name}`}
-                    >
-                      {!childHasContent ? (
-                        ""
-                      ) : (
-                        <svg
-                          width="14"
-                          height="14"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          aria-hidden="true"
-                        >
-                          <path d={childExpanded ? "m6 9 6 6 6-6" : "m9 6 6 6-6 6"} />
-                        </svg>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      className="list-main"
-                      onClick={() => onSelectVaultEntry(child)}
-                    >
-                      <span className="list-title-row">
-                        <span className="vault-icon-emoji">
-                          <VaultIcon icon={childIconKey} name={child.name} size={16} />
-                        </span>
-                        <span className="list-title-text">
-                          {getPrivacyDisplayLabel(
-                            child.name,
-                            childEffectiveTier,
-                            isRedactedUnlocked
-                          )}
-                        </span>
-                        {childEffectiveTier === "locked" && (
-                          <span className="privacy-lock-icon">
-                            <svg
-                              width="14"
-                              height="14"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              aria-hidden="true"
-                            >
-                              <rect width="18" height="11" x="3" y="11" rx="2" />
-                              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                            </svg>
-                          </span>
-                        )}
-                      </span>
-                      {isChildRedactedLocked ? (
-                        <small>[Metadata Locked]</small>
-                      ) : (
-                        child.description && (
-                          <small>
-                            {getPrivacyDisplaySummary(
-                              child.description,
-                              childEffectiveTier,
-                              isRedactedUnlocked
-                            )}
-                          </small>
-                        )
-                      )}
-                    </button>
-                    <div className="list-actions">
-                      <button
-                        type="button"
-                        className="list-settings"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void onOpenVaultSettings(child);
-                        }}
-                        aria-label={`Update settings for ${child.name}`}
-                      >
-                        <svg
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          aria-hidden="true"
-                        >
-                          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-                          <circle cx="12" cy="12" r="3" />
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        className="list-delete"
-                        onClick={() => openDeleteVaultModal(child)}
-                        aria-label={`Delete ${child.name}`}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* ----- Inline nodes under sub-vault ----- */}
-                  {childExpanded && childNodes.length > 0 && (
-                    <ul className="tree-child-list">
-                      {childNodes.map((node) => {
-                        const nodeDimmed = isSearching && !isNodeMatch(node.id);
-                        const nodeHighlighted = isSearching && isNodeMatch(node.id);
-                        const nodeEffectiveTier = getEffectivePrivacy(
-                          node.privacyTier,
-                          null,
-                          childEffectiveTier
-                        );
-                        const isNodeRedactedLocked =
-                          nodeEffectiveTier === "redacted" && !isRedactedUnlocked;
-                        const isNodeLocked = nodeEffectiveTier === "locked";
-                        const nodeIconKey = isNodeRedactedLocked
-                          ? "folder"
-                          : isNodeLocked
-                            ? "lock"
-                            : "note";
-                        const summaryText = isNodeRedactedLocked
-                          ? "[Metadata Locked]"
-                          : node.summary.slice(0, 60);
-
-                        return (
-                          <li key={node.id + suffix} className={nodeDimmed ? "tree-dimmed" : ""}>
-                            <button
-                              type="button"
-                              className={`tree-node-item ${nodeHighlighted ? "tree-match" : ""}`}
-                              onClick={() => onSelectNodeEntry(node)}
-                            >
-                              <span className="tree-node-icon">
-                                {nodeIconKey === "lock" ? (
-                                  <svg
-                                    width="14"
-                                    height="14"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="2"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    aria-hidden="true"
-                                  >
-                                    <rect width="18" height="11" x="3" y="11" rx="2" />
-                                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                                  </svg>
-                                ) : (
-                                  <VaultIcon icon={nodeIconKey} name="" size={14} />
-                                )}
-                              </span>
-                              <span className="tree-node-text">
-                                <strong>
-                                  {getPrivacyDisplayLabel(
-                                    node.title,
-                                    nodeEffectiveTier,
-                                    isRedactedUnlocked
-                                  )}
-                                </strong>
-                                <small>
-                                  {getPrivacyDisplaySummary(
-                                    summaryText,
-                                    nodeEffectiveTier,
-                                    isRedactedUnlocked
-                                  )}
-                                </small>
-                              </span>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </li>
-              );
-            })}
-
-            {/* ----- Inline nodes directly under the vault (no sub-vault) ----- */}
             {vaultNodes.map((node) => {
               const nodeDimmed = isSearching && !isNodeMatch(node.id);
               const nodeHighlighted = isSearching && isNodeMatch(node.id);
-              const nodeEffectiveTier = getEffectivePrivacy(
-                node.privacyTier,
-                null,
-                getVaultEffectivePrivacy(vault)
-              );
+              const nodeEffectiveTier = getEffectivePrivacy(node.privacyTier, null, effectiveTier);
               const isNodeRedactedLocked = nodeEffectiveTier === "redacted" && !isRedactedUnlocked;
               const isNodeLocked = nodeEffectiveTier === "locked";
               const nodeIconKey = isNodeRedactedLocked ? "folder" : isNodeLocked ? "lock" : "note";
@@ -1138,6 +942,7 @@ function VaultSidebar({
                     type="button"
                     className={`tree-node-item ${nodeHighlighted ? "tree-match" : ""}`}
                     onClick={() => onSelectNodeEntry(node)}
+                    title={node.title}
                   >
                     <span className="tree-node-icon">
                       {nodeIconKey === "lock" ? (
@@ -1175,6 +980,7 @@ function VaultSidebar({
                 </li>
               );
             })}
+            {children.map((child) => renderVaultTreeItem(child, isFavSection, depth + 1))}
           </ul>
         )}
       </li>
@@ -1519,8 +1325,8 @@ function VaultSidebar({
             >
               <h3 className="modal-title">New Subvault</h3>
               <p className="modal-subtitle">
-                {createSubvaultParentName
-                  ? `Create a new subvault inside ${createSubvaultParentName}.`
+                {createSubvaultParentVaultId
+                  ? `Create a new subvault inside ${getVaultDisplayPath(createSubvaultParentVaultId, vaultById, isRedactedUnlocked)}.`
                   : "Create a new subvault."}
               </p>
               <div className="settings-fields-grid">
