@@ -2000,7 +2000,13 @@ pub fn resolve_vault_effective_privacy(
              WHERE id = ?1 AND deleted_at IS NULL
              LIMIT 1;",
             [id.as_str()],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                let parent = row.get::<_, Option<String>>(0)?;
+                let tier = row
+                    .get::<_, Option<String>>(1)?
+                    .unwrap_or_else(|| "open".to_string());
+                Ok((parent, tier))
+            },
         ) {
             Ok(record) => record,
             Err(rusqlite::Error::QueryReturnedNoRows) => {
