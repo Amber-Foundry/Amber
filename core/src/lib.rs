@@ -4144,6 +4144,11 @@ fn node_create(input: NodeCreateInput, state: tauri::State<'_, DbState>) -> IpcR
             input.summary.clone()
         };
 
+        let target_vault_id = match &input.sub_vault_id {
+            Some(sv_id) if !sv_id.trim().is_empty() => sv_id.clone(),
+            _ => input.vault_id.clone(),
+        };
+
         tx.execute(
             "INSERT INTO nodes (
                 id, vault_id, sub_vault_id, node_type, title, summary, detail, source, source_type,
@@ -4151,8 +4156,8 @@ fn node_create(input: NodeCreateInput, state: tauri::State<'_, DbState>) -> IpcR
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);",
             params![
                 id,
-                input.vault_id,
-                input.sub_vault_id,
+                target_vault_id,
+                None::<String>,
                 node_type,
                 stored_title,
                 stored_summary,
@@ -4313,6 +4318,11 @@ fn node_update(input: NodeUpdateInput, state: tauri::State<'_, DbState>) -> IpcR
             next_summary.clone()
         };
 
+        let effective_target_vault_id = match &next_sub_vault_id {
+            Some(sv_id) if !sv_id.trim().is_empty() => sv_id.clone(),
+            _ => next_vault_id,
+        };
+
         tx.execute(
             "UPDATE nodes
              SET vault_id = ?2,
@@ -4333,8 +4343,8 @@ fn node_update(input: NodeUpdateInput, state: tauri::State<'_, DbState>) -> IpcR
              WHERE id = ?1 AND deleted_at IS NULL;",
             params![
                 input.id,
-                next_vault_id,
-                next_sub_vault_id,
+                effective_target_vault_id,
+                None::<String>,
                 next_node_type,
                 stored_title,
                 stored_summary,

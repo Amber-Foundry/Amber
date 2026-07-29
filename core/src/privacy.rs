@@ -151,24 +151,25 @@ pub fn get_privacy_rank(tier: Option<&str>) -> u8 {
     }
 }
 
+pub fn resolve_chain_effective_privacy<'a>(
+    tiers: impl IntoIterator<Item = Option<&'a str>>,
+) -> &'static str {
+    let mut strictest = OPEN;
+    for tier in tiers {
+        let norm = normalize_tier(tier);
+        if get_privacy_rank(Some(norm)) > get_privacy_rank(Some(strictest)) {
+            strictest = norm;
+        }
+    }
+    strictest
+}
+
 pub fn get_effective_privacy(
     node_tier: Option<&str>,
     sub_vault_tier: Option<&str>,
     vault_tier: Option<&str>,
 ) -> &'static str {
-    let tiers = [
-        normalize_tier(node_tier),
-        normalize_tier(sub_vault_tier),
-        normalize_tier(vault_tier),
-    ];
-
-    let mut strictest = OPEN;
-    for tier in tiers {
-        if get_privacy_rank(Some(tier)) > get_privacy_rank(Some(strictest)) {
-            strictest = tier;
-        }
-    }
-    strictest
+    resolve_chain_effective_privacy([node_tier, sub_vault_tier, vault_tier])
 }
 
 pub fn generate_pointer_stub(node_title: &str, node_id: &str) -> String {
@@ -284,5 +285,69 @@ mod tests {
         );
         assert!(omits_from_local_llm(TIER_REDACTED));
         assert!(embedding_blocks_on_remote_ollama(TIER_LOCAL_ONLY));
+    }
+
+    #[test]
+    fn commit_2_privacy_decision_table_matrix() {
+        use super::resolve_chain_effective_privacy;
+
+        // Matrix tests: (Ancestor Tier, Descendant Tier) -> Expected Effective Tier
+        let cases = [
+            (Some(TIER_OPEN), Some(TIER_OPEN), TIER_OPEN),
+            (Some(TIER_OPEN), Some(TIER_LOCAL_ONLY), TIER_LOCAL_ONLY),
+            (Some(TIER_OPEN), Some(TIER_LOCKED), TIER_LOCKED),
+            (Some(TIER_OPEN), Some(TIER_REDACTED), TIER_REDACTED),
+            (Some(TIER_LOCAL_ONLY), Some(TIER_OPEN), TIER_LOCAL_ONLY),
+            (
+                Some(TIER_LOCAL_ONLY),
+                Some(TIER_LOCAL_ONLY),
+                TIER_LOCAL_ONLY,
+            ),
+            (Some(TIER_LOCAL_ONLY), Some(TIER_LOCKED), TIER_LOCKED),
+            (Some(TIER_LOCAL_ONLY), Some(TIER_REDACTED), TIER_REDACTED),
+            (Some(TIER_LOCKED), Some(TIER_OPEN), TIER_LOCKED),
+            (Some(TIER_LOCKED), Some(TIER_LOCAL_ONLY), TIER_LOCKED),
+            (Some(TIER_LOCKED), Some(TIER_LOCKED), TIER_LOCKED),
+            (Some(TIER_LOCKED), Some(TIER_REDACTED), TIER_REDACTED),
+            (Some(TIER_REDACTED), Some(TIER_OPEN), TIER_REDACTED),
+            (Some(TIER_REDACTED), Some(TIER_LOCAL_ONLY), TIER_REDACTED),
+            (Some(TIER_REDACTED), Some(TIER_LOCKED), TIER_REDACTED),
+            (Some(TIER_REDACTED), Some(TIER_REDACTED), TIER_REDACTED),
+        ];
+
+        for (ancestor, descendant, expected) in cases {
+            assert_eq!(
+                resolve_chain_effective_privacy([ancestor, descendant]),
+                expected,
+                "Failed resolving pair: ({ancestor:?}, {descendant:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_level_n_depth_privacy_inheritance_propagation() {
+        use super::resolve_chain_effective_privacy;
+
+        // Level 1: Locked -> Level 2: None/Open -> Level 3: Open => Locked
+        assert_eq!(
+            resolve_chain_effective_privacy([Some(TIER_LOCKED), None, Some(TIER_OPEN)]),
+            TIER_LOCKED
+        );
+
+        // Level 1: Open -> Level 2: None -> Level 3: Redacted => Redacted
+        assert_eq!(
+            resolve_chain_effective_privacy([Some(TIER_OPEN), None, Some(TIER_REDACTED)]),
+            TIER_REDACTED
+        );
+
+        // Level 1: Open -> Level 2: Open -> Level 3: Redacted -> Level 4: Open -> Level 5: Open => Redacted
+        let deep_chain = [
+            Some(TIER_OPEN),
+            Some(TIER_OPEN),
+            Some(TIER_REDACTED),
+            Some(TIER_OPEN),
+            Some(TIER_OPEN),
+        ];
+        assert_eq!(resolve_chain_effective_privacy(deep_chain), TIER_REDACTED);
     }
 }

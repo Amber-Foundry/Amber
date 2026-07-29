@@ -3,12 +3,4 @@
 /**
  * Payload for committing accepted onboarding rows to persistent nodes.
  */
-export type OnboardingNodeCommitInput = {
-  vaultId: string;
-  title: string;
-  summary: string;
-  detail?: string;
-  nodeType?: string;
-  sourceType?: string;
-  tags?: Array<string>;
-};
+export type OnboardingNodeCommitInput = { vaultId: string, title: string, summary: string, detail?: string, nodeType?: string, sourceType?: string, tags?: Array<string>, };
