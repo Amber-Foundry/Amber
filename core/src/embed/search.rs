@@ -48,6 +48,64 @@ pub struct DbNode {
     pub node_type: String,
 }
 
+pub fn expand_vault_scope(
+    conn: &Connection,
+    vaults: &HashSet<String>,
+) -> Result<HashSet<String>, String> {
+    if vaults.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let has_parent_col: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM pragma_table_info('vaults') WHERE name = 'parent_vault_id'
+            );",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+
+    if !has_parent_col {
+        return Ok(vaults.clone());
+    }
+
+    let placeholders = vec!["?"; vaults.len()].join(", ");
+    let query = format!(
+        "WITH RECURSIVE vault_tree AS (
+            SELECT id, 0 AS depth
+            FROM vaults
+            WHERE id IN ({placeholders}) AND deleted_at IS NULL
+            UNION ALL
+            SELECT v.id, vt.depth + 1
+            FROM vaults v
+            JOIN vault_tree vt ON v.parent_vault_id = vt.id
+            WHERE v.deleted_at IS NULL AND vt.depth < 32
+        )
+        SELECT DISTINCT id FROM vault_tree;"
+    );
+
+    let mut stmt = conn
+        .prepare(&query)
+        .map_err(|err| format!("Failed preparing vault scope expansion query: {err}"))?;
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> =
+        vaults.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params_refs), |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|err| format!("Failed expanding vault scope: {err}"))?;
+
+    let mut expanded = HashSet::new();
+    for r in rows {
+        let v_id = r.map_err(|err| format!("Failed reading expanded vault ID: {err}"))?;
+        expanded.insert(v_id);
+    }
+    Ok(expanded)
+}
+
 /// Find the top N similar nodes using cosine similarity over their primary embeddings.
 ///
 /// Only compares primary chunks (`chunk_type = 'primary'` and `chunk_index = 0`)
@@ -64,17 +122,28 @@ pub fn find_top_n_similar(
         return Ok(Vec::new());
     }
 
-    let (query_str, params_vec) = if let Some(vaults) = vaults {
-        if vaults.is_empty() {
+    let expanded_storage;
+    let target_vaults = if let Some(v_set) = vaults {
+        if v_set.is_empty() {
             return Ok(Vec::new());
         }
+        expanded_storage = expand_vault_scope(conn, v_set)?;
+        if expanded_storage.is_empty() {
+            return Ok(Vec::new());
+        }
+        Some(&expanded_storage)
+    } else {
+        None
+    };
+
+    let (query_str, params_vec) = if let Some(vaults) = target_vaults {
         let placeholders = vec!["?"; vaults.len()].join(", ");
         let query = format!(
             "SELECT n.id, n.vault_id, n.title, n.summary, n.node_type, ne.embedding
              FROM node_embeddings ne
              JOIN nodes n ON ne.node_id = n.id
              LEFT JOIN vaults v ON n.vault_id = v.id
-             LEFT JOIN sub_vaults sv ON n.sub_vault_id = sv.id
+             LEFT JOIN vaults sv ON n.sub_vault_id = sv.id
              WHERE ne.chunk_type = 'primary'
                AND ne.chunk_index = 0
                AND ne.model = ?
@@ -93,7 +162,7 @@ pub fn find_top_n_similar(
              FROM node_embeddings ne
              JOIN nodes n ON ne.node_id = n.id
              LEFT JOIN vaults v ON n.vault_id = v.id
-             LEFT JOIN sub_vaults sv ON n.sub_vault_id = sv.id
+             LEFT JOIN vaults sv ON n.sub_vault_id = sv.id
              WHERE ne.chunk_type = 'primary'
                AND ne.chunk_index = 0
                AND ne.model = ?
@@ -475,6 +544,72 @@ mod tests {
 
         let results_del_sv = find_top_n_similar(&conn, &query, model, 10, None)?;
         assert!(!results_del_sv.iter().any(|(node, _)| node.id == "n_del_sv"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_n_level_deep_nested_vector_search_retrieval() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let conn = setup_test_db()?;
+        let model = "test-model";
+        let query = vec![1.0, 0.0, 0.0];
+
+        // Create 3-level deep vault hierarchy: Root -> Level1 -> Level2 -> Level3
+        conn.execute(
+            "INSERT INTO vaults (id, name) VALUES ('v_root', 'Root Vault');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO vaults (id, parent_vault_id, name) VALUES ('v_l1', 'v_root', 'Level 1');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO vaults (id, parent_vault_id, name) VALUES ('v_l2', 'v_l1', 'Level 2');",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO vaults (id, parent_vault_id, name) VALUES ('v_l3', 'v_l2', 'Level 3');",
+            [],
+        )?;
+
+        // Create nodes at each nesting level
+        conn.execute("INSERT INTO nodes (id, vault_id, node_type, title, summary) VALUES ('n_root', 'v_root', 'concept', 'Root Note', 'Sum');", [])?;
+        conn.execute("INSERT INTO nodes (id, vault_id, node_type, title, summary) VALUES ('n_l3', 'v_l3', 'concept', 'Deep Note', 'Sum');", [])?;
+
+        for n_id in ["n_root", "n_l3"] {
+            upsert_embedding(
+                &conn,
+                &EmbeddingRow {
+                    node_id: n_id.to_string(),
+                    chunk_index: 0,
+                    chunk_type: "primary".to_string(),
+                    model: model.to_string(),
+                    embedding: vec![1.0, 0.0, 0.0],
+                    computed_at: "time".to_string(),
+                },
+            )?;
+        }
+
+        // Test 1: Search scoped to Root Vault must find both Root Note AND Deep Note (Level 3)
+        let root_scope = HashSet::from(["v_root".to_string()]);
+        let results = find_top_n_similar(&conn, &query, model, 10, Some(&root_scope))?;
+
+        assert_eq!(
+            results.len(),
+            2,
+            "Search scoped to root must return both root note and deep descendant note"
+        );
+        let result_ids: HashSet<String> = results.into_iter().map(|(n, _)| n.id).collect();
+        assert!(result_ids.contains("n_root"));
+        assert!(result_ids.contains("n_l3"));
+
+        // Test 2: Search scoped specifically to Level 2 must find Deep Note (Level 3) but NOT Root Note
+        let l2_scope = HashSet::from(["v_l2".to_string()]);
+        let results_l2 = find_top_n_similar(&conn, &query, model, 10, Some(&l2_scope))?;
+
+        assert_eq!(results_l2.len(), 1);
+        assert_eq!(results_l2[0].0.id, "n_l3");
 
         Ok(())
     }
