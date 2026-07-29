@@ -1339,7 +1339,7 @@ fn validate_import_start_input(
                 |row| row.get(0),
             )
             .optional()
-            .unwrap_or(None)
+            .map_err(|err| format!("Failed validating target subvault: {err}"))?
         } else {
             None
         };
