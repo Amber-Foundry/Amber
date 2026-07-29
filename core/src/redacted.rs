@@ -183,28 +183,16 @@ pub(crate) fn migrate_legacy_redacted_records(
     conn: &Connection,
     key: &SessionKey,
 ) -> Result<(), String> {
-    migrate_legacy_redacted_vaults(conn, key, false)?;
-    migrate_legacy_redacted_vaults(conn, key, true)?;
+    migrate_legacy_redacted_vaults(conn, key)?;
     migrate_legacy_redacted_nodes(conn, key)?;
     Ok(())
 }
 
-fn migrate_legacy_redacted_vaults(
-    conn: &Connection,
-    key: &SessionKey,
-    is_subvault: bool,
-) -> Result<(), String> {
-    let sql = if is_subvault {
-        "SELECT id, name, icon, description
-         FROM sub_vaults
-         WHERE deleted_at IS NULL
-           AND (encrypted_payload IS NULL OR encrypted_payload = '');"
-    } else {
-        "SELECT id, name, icon, description
+fn migrate_legacy_redacted_vaults(conn: &Connection, key: &SessionKey) -> Result<(), String> {
+    let sql = "SELECT id, name, icon, description
          FROM vaults
          WHERE deleted_at IS NULL
-           AND (encrypted_payload IS NULL OR encrypted_payload = '');"
-    };
+           AND (encrypted_payload IS NULL OR encrypted_payload = '');";
 
     let mut statement = conn
         .prepare(sql)
@@ -239,23 +227,13 @@ fn migrate_legacy_redacted_vaults(
             description,
         };
         let encrypted = encrypt_json(&payload, key)?;
-        let update_sql = if is_subvault {
-            "UPDATE sub_vaults
+        let update_sql = "UPDATE vaults
              SET name = ?2,
                  icon = NULL,
                  description = ?3,
                  encrypted_payload = ?4,
                  updated_at = datetime('now')
-             WHERE id = ?1;"
-        } else {
-            "UPDATE vaults
-             SET name = ?2,
-                 icon = NULL,
-                 description = ?3,
-                 encrypted_payload = ?4,
-                 updated_at = datetime('now')
-             WHERE id = ?1;"
-        };
+             WHERE id = ?1;";
 
         conn.execute(
             update_sql,
