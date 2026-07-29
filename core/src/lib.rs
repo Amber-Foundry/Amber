@@ -1339,7 +1339,7 @@ fn validate_import_start_input(
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|err| format!("Failed validating target subvault: {err}"))?
+            .unwrap_or(None)
         } else {
             None
         };
@@ -2085,12 +2085,9 @@ pub async fn execute_memory_extraction_pipeline(
         let mut vault_map = std::collections::HashMap::new();
         let mut vault_stmt = conn
             .prepare(
-                "SELECT id, NULL AS parent_vault_id, privacy_tier FROM vaults WHERE deleted_at IS NULL
-                 UNION ALL
-                 SELECT id, vault_id AS parent_vault_id, COALESCE(privacy_tier, 'open') AS privacy_tier
-                 FROM sub_vaults WHERE deleted_at IS NULL;",
+                "SELECT id, parent_vault_id, COALESCE(privacy_tier, 'open') AS privacy_tier FROM vaults WHERE deleted_at IS NULL;",
             )
-            .map_err(|err| format!("Failed preparing vaults union query: {err}"))?;
+            .map_err(|err| format!("Failed preparing vaults query: {err}"))?;
 
         let vault_rows = vault_stmt
             .query_map([], |row| {
@@ -3464,11 +3461,7 @@ fn vault_update_position(
 
         let current_meta: String = tx
             .query_row(
-                "SELECT COALESCE(ui_metadata, '{}') FROM (
-                    SELECT ui_metadata FROM vaults WHERE id = ?1 AND deleted_at IS NULL
-                    UNION ALL
-                    SELECT ui_metadata FROM sub_vaults WHERE id = ?1 AND deleted_at IS NULL
-                 ) LIMIT 1;",
+                "SELECT COALESCE(ui_metadata, '{}') FROM vaults WHERE id = ?1 AND deleted_at IS NULL;",
                 [&vault_id],
                 |row| row.get(0),
             )
@@ -3492,23 +3485,10 @@ fn vault_update_position(
             )
             .map_err(|err| format!("Failed updating vaults position: {err}"))?;
 
-        let affected_sub = if affected_vaults == 0 {
-            tx.execute(
-                "UPDATE sub_vaults
-                 SET ui_metadata = ?2,
-                     updated_at = datetime('now')
-                 WHERE id = ?1 AND deleted_at IS NULL;",
-                params![&vault_id, &updated_meta],
-            )
-            .map_err(|err| format!("Failed updating sub_vaults position: {err}"))?
-        } else {
-            0
-        };
-
         tx.commit()
             .map_err(|err| format!("Failed committing vault_update_position transaction: {err}"))?;
 
-        Ok(affected_vaults + affected_sub > 0)
+        Ok(affected_vaults > 0)
     })())
 }
 
@@ -3526,11 +3506,7 @@ fn vault_update_color_theme(
 
         let current_meta: String = tx
             .query_row(
-                "SELECT ui_metadata FROM (
-                    SELECT ui_metadata FROM vaults WHERE id = ?1 AND deleted_at IS NULL
-                    UNION ALL
-                    SELECT ui_metadata FROM sub_vaults WHERE id = ?1 AND deleted_at IS NULL
-                 ) LIMIT 1;",
+                "SELECT COALESCE(ui_metadata, '{}') FROM vaults WHERE id = ?1 AND deleted_at IS NULL;",
                 [&vault_id],
                 |row| row.get(0),
             )
@@ -3554,24 +3530,11 @@ fn vault_update_color_theme(
             )
             .map_err(|err| format!("Failed updating vaults color theme: {err}"))?;
 
-        let affected_sub = if affected_vaults == 0 {
-            tx.execute(
-                "UPDATE sub_vaults
-                 SET ui_metadata = ?2,
-                     updated_at = datetime('now')
-                 WHERE id = ?1 AND deleted_at IS NULL;",
-                params![&vault_id, &updated_meta],
-            )
-            .map_err(|err| format!("Failed updating sub_vaults color theme: {err}"))?
-        } else {
-            0
-        };
-
         tx.commit().map_err(|err| {
             format!("Failed committing vault_update_color_theme transaction: {err}")
         })?;
 
-        Ok(affected_vaults + affected_sub > 0)
+        Ok(affected_vaults > 0)
     })())
 }
 
@@ -3602,11 +3565,10 @@ fn door_list_all(state: tauri::State<'_, DbState>) -> IpcResponse<Vec<Door>> {
                         d.orphan_reason, d.orphan_since, d.created_at, d.updated_at,
                         tn.privacy_tier AS target_node_privacy,
                         tv.privacy_tier AS target_vault_privacy,
-                        tsv.privacy_tier AS target_sub_vault_privacy
+                        NULL AS target_sub_vault_privacy
                  FROM doors d
                  LEFT JOIN nodes tn ON d.target_node_id = tn.id AND tn.deleted_at IS NULL
                  LEFT JOIN vaults tv ON tn.vault_id = tv.id AND tv.deleted_at IS NULL
-                 LEFT JOIN sub_vaults tsv ON tn.sub_vault_id = tsv.id AND tsv.deleted_at IS NULL
                  WHERE d.orphan_since IS NULL;"
             )
             .map_err(|err| format!("Failed preparing door_list_all query: {err}"))?;
@@ -3679,18 +3641,9 @@ fn vault_delete(vault_id: String, state: tauri::State<'_, DbState>) -> IpcRespon
                 [&vault_id],
             )
             .map_err(|err| format!("Failed deleting vault: {err}"))?;
-        let affected_sub_vaults = tx
-            .execute(
-                "UPDATE sub_vaults
-                 SET deleted_at = datetime('now'),
-                     updated_at = datetime('now')
-                 WHERE id = ?1 AND deleted_at IS NULL;",
-                [&vault_id],
-            )
-            .map_err(|err| format!("Failed deleting sub-vault: {err}"))?;
         tx.commit()
             .map_err(|err| format!("Failed committing vault_delete: {err}"))?;
-        Ok(affected_vaults + affected_sub_vaults > 0)
+        Ok(affected_vaults > 0)
     })())
 }
 
@@ -3732,10 +3685,6 @@ fn vault_update(input: VaultUpdateInput, state: tauri::State<'_, DbState>) -> Ip
                 "SELECT EXISTS(
                     SELECT 1
                     FROM vaults
-                    WHERE id = ?1 AND deleted_at IS NULL AND encrypted_payload IS NOT NULL
-                    UNION ALL
-                    SELECT 1
-                    FROM sub_vaults
                     WHERE id = ?1 AND deleted_at IS NULL AND encrypted_payload IS NOT NULL
                 );",
                 [&vault_id],
@@ -3808,36 +3757,13 @@ fn vault_update(input: VaultUpdateInput, state: tauri::State<'_, DbState>) -> Ip
             .map_err(|err| format!("Failed updating vault: {err}"))?;
 
         if affected_vaults == 0 {
-            tx.execute(
-                "UPDATE sub_vaults
-                 SET name = ?2,
-                     privacy_tier = ?3,
-                     priority_profile = ?4,
-                     icon = ?5,
-                     description = ?6,
-                     encrypted_payload = ?7,
-                     updated_at = datetime('now')
-                 WHERE id = ?1 AND deleted_at IS NULL;",
-                params![
-                    &vault_id,
-                    &stored_name,
-                    &next_privacy_tier,
-                    &next_priority_profile,
-                    &stored_icon,
-                    &stored_description,
-                    &next_encrypted_payload
-                ],
-            )
-            .map_err(|err| format!("Failed updating sub-vault: {err}"))?;
+            return Err(format!("Vault not found or deleted: {vault_id}"));
         }
 
         let affected_node_ids = if next_effective_privacy != current_effective_privacy {
-            let mut stmt = if affected_vaults > 0 {
-                tx.prepare("SELECT id FROM nodes WHERE vault_id = ?1 AND deleted_at IS NULL;")
-            } else {
-                tx.prepare("SELECT id FROM nodes WHERE sub_vault_id = ?1 AND deleted_at IS NULL;")
-            }
-            .map_err(|err| format!("Failed preparing node query: {err}"))?;
+            let mut stmt = tx
+                .prepare("SELECT id FROM nodes WHERE vault_id = ?1 AND deleted_at IS NULL;")
+                .map_err(|err| format!("Failed preparing node query: {err}"))?;
 
             let rows = stmt
                 .query_map([&vault_id], |row| row.get::<_, String>(0))
