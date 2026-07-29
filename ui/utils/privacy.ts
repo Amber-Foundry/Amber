@@ -1,16 +1,17 @@
 /**
- * Amber privacy tiers — four tiers, two axes. Rust source of truth: core/src/privacy.rs
+ * Amber privacy tiers — three tiers (consolidated from 4-tier). Rust source of truth: core/src/privacy.rs
  *
- * Axis 1 (egress): open → cloud+local | local_only → local only | locked → cloud stub |
- *   redacted → omitted from cloud
- * Axis 2 (disclosure): open/local → full UI | locked → title visible, body gated |
- *   redacted → metadata hidden + encrypted at rest
+ * Tiers:
+ * 0: open -> No restrictions (cloud+local, full UI, searchable)
+ * 1: local_only -> Local LLM context only, barred from cloud egress
+ * 2: redacted -> Local encrypted payload, barred from LLMs and search until session unlock
  */
+export type PrivacyTier = "open" | "local_only" | "redacted";
+
 const PRIVACY_RANKS: Record<string, number> = {
   open: 0,
   local_only: 1,
-  locked: 2,
-  redacted: 3,
+  redacted: 2,
 };
 
 type VaultHierarchyLike = {
@@ -23,7 +24,11 @@ function normalizeTier(tier?: string | null): string {
   if (!tier) {
     return "open";
   }
-  return tier in PRIVACY_RANKS ? tier : "open";
+  const lower = tier.toLowerCase();
+  if (lower === "locked") {
+    return "redacted";
+  }
+  return lower in PRIVACY_RANKS ? lower : "open";
 }
 
 export const getPrivacyRank = (tier?: string | null): number => PRIVACY_RANKS[normalizeTier(tier)];
@@ -156,30 +161,33 @@ export function runPrivacyTests() {
   const mockVaults: Record<string, VaultHierarchyLike> = {
     vault_open: { name: "Open Vault", privacyTier: "open" },
     vault_local: { name: "Local Vault", privacyTier: "local_only" },
-    vault_locked: { name: "Locked Vault", privacyTier: "locked", parentVaultId: "vault_local" },
-    vault_redacted: { name: "Redacted Vault", privacyTier: "redacted" },
+    vault_redacted: {
+      name: "Redacted Vault",
+      privacyTier: "redacted",
+      parentVaultId: "vault_local",
+    },
   };
 
   // Test 1: Simple hierarchy
-  const tier = getVaultEffectivePrivacy("vault_locked", mockVaults);
-  if (tier !== "locked") {
-    throw new Error(`Privacy Test 1 Failed: Expected locked, got ${tier}`);
+  const tier = getVaultEffectivePrivacy("vault_redacted", mockVaults);
+  if (tier !== "redacted") {
+    throw new Error(`Privacy Test 1 Failed: Expected redacted, got ${tier}`);
   }
 
   // Test 2: Cycle detection (Self-referencing cycle A -> B -> A)
   const cyclicVaults: Record<string, VaultHierarchyLike> = {
     vault_a: { name: "Vault A", privacyTier: "open", parentVaultId: "vault_b" },
-    vault_b: { name: "Vault B", privacyTier: "locked", parentVaultId: "vault_a" },
+    vault_b: { name: "Vault B", privacyTier: "redacted", parentVaultId: "vault_a" },
   };
 
-  // This should not infinite loop and should resolve vault_a to locked (from vault_b)
+  // This should not infinite loop and should resolve vault_a to redacted (from vault_b)
   const tierA = getVaultEffectivePrivacy("vault_a", cyclicVaults);
   const tierB = getVaultEffectivePrivacy("vault_b", cyclicVaults);
-  if (tierA !== "locked") {
-    throw new Error(`Privacy Test 2 Failed: Expected locked for A, got ${tierA}`);
+  if (tierA !== "redacted") {
+    throw new Error(`Privacy Test 2 Failed: Expected redacted for A, got ${tierA}`);
   }
-  if (tierB !== "locked") {
-    throw new Error(`Privacy Test 2 Failed: Expected locked for B, got ${tierB}`);
+  if (tierB !== "redacted") {
+    throw new Error(`Privacy Test 2 Failed: Expected redacted for B, got ${tierB}`);
   }
 
   // Test 3: Self-referencing (A -> A)
@@ -192,10 +200,10 @@ export function runPrivacyTests() {
   }
 
   // Test 4: getVaultDisplayPath - Standard hierarchy
-  const displayPath1 = getVaultDisplayPath("vault_locked", mockVaults);
-  if (displayPath1 !== "Local Vault / Locked Vault") {
+  const displayPath1 = getVaultDisplayPath("vault_redacted", mockVaults, true);
+  if (displayPath1 !== "Local Vault / Redacted Vault") {
     throw new Error(
-      `Privacy Test 4 Failed: Expected 'Local Vault / Locked Vault', got '${displayPath1}'`
+      `Privacy Test 4 Failed: Expected 'Local Vault / Redacted Vault', got '${displayPath1}'`
     );
   }
 
@@ -218,7 +226,7 @@ export function runPrivacyTests() {
   }
 
   // Test 6: getVaultDisplayPath - Cycle breaking
-  const displayPathCycle = getVaultDisplayPath("vault_b", cyclicVaults);
+  const displayPathCycle = getVaultDisplayPath("vault_b", cyclicVaults, true);
   if (displayPathCycle !== "Vault A / Vault B") {
     throw new Error(
       `Privacy Test 6 Failed: Expected 'Vault A / Vault B', got '${displayPathCycle}'`
@@ -260,13 +268,9 @@ export function runPrivacyTests() {
   if (s6 !== "Custom Redacted") {
     throw new Error(`Privacy Test 9b Failed: Expected 'Custom Redacted', got '${s6}'`);
   }
-  const s7 = getPrivacyDisplaySummary("Secret info", "locked", false);
+  const s7 = getPrivacyDisplaySummary("Secret info", "local_only", false);
   if (s7 !== "Secret info") {
     throw new Error(`Privacy Test 9c Failed: Expected 'Secret info', got '${s7}'`);
-  }
-  const s8 = getPrivacyDisplaySummary("Secret info", "local_only", false);
-  if (s8 !== "Secret info") {
-    throw new Error(`Privacy Test 9d Failed: Expected 'Secret info', got '${s8}'`);
   }
 
   // Test 10: getPrivacyDisplaySummary - Privacy tiers with isUnlocked = true
