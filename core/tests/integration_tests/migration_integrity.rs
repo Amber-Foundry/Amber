@@ -748,6 +748,28 @@ fn test_security_regression_migration_0013_zero_locked_to_open_remaps(
         );
     }
 
+    // SECURITY CHECK 3: Zero previously-locked sub-vaults end up tagged 'open'
+    let sv_tier: String = conn.query_row(
+        "SELECT privacy_tier FROM vaults WHERE id = 'sv_sec_locked';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_ne!(
+        sv_tier, "open",
+        "SECURITY FAILURE: Sub-vault sv_sec_locked was tagged 'locked' pre-migration but ended up 'open'!"
+    );
+
+    // SECURITY CHECK 4: Zero previously-locked privacy_overrides end up tagged 'open'
+    let override_tier: String = conn.query_row(
+        "SELECT privacy_tier FROM privacy_overrides WHERE node_id = 'n_sec_locked';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_ne!(
+        override_tier, "open",
+        "SECURITY FAILURE: Privacy override for n_sec_locked was tagged 'locked' pre-migration but ended up 'open'!"
+    );
+
     Ok(())
 }
 

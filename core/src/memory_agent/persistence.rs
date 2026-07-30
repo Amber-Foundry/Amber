@@ -172,6 +172,7 @@ fn privacy_tier_value(tier: &str) -> i32 {
     match tier.trim().to_lowercase().as_str() {
         "open" => 0,
         "local_only" | "local" => 1,
+        // "locked" is preserved as a defensive fallback for legacy unmigrated data, mapping to rank 2 (redacted).
         "locked" | "redacted" => 2,
         _ => 0,
     }
@@ -598,5 +599,15 @@ mod tests {
         assert!(items[1].anomaly_warning.is_none());
 
         Ok(())
+    }
+
+    #[test]
+    fn test_privacy_tier_value_legacy_fallback() {
+        assert_eq!(privacy_tier_value("open"), 0);
+        assert_eq!(privacy_tier_value("local_only"), 1);
+        assert_eq!(privacy_tier_value("local"), 1);
+        assert_eq!(privacy_tier_value("redacted"), 2);
+        assert_eq!(privacy_tier_value("locked"), 2); // Legacy fallback
+        assert_eq!(privacy_tier_value("unknown"), 0);
     }
 }
