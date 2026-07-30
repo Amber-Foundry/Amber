@@ -302,18 +302,20 @@ pub fn get_recent_chat_history_with_compaction(
                         .replace('\n', " "),
                 );
             } else if msg.role == "assistant" {
+                let assistant_a: String = msg
+                    .content
+                    .chars()
+                    .take(80)
+                    .collect::<String>()
+                    .trim()
+                    .replace('\n', " ");
                 if let Some(user_q) = current_user.take() {
-                    let assistant_a: String = msg
-                        .content
-                        .chars()
-                        .take(80)
-                        .collect::<String>()
-                        .trim()
-                        .replace('\n', " ");
                     turn_summaries.push(format!(
                         "- User: \"{}\" ➔ Assistant: \"{}\"",
                         user_q, assistant_a
                     ));
+                } else {
+                    turn_summaries.push(format!("- Assistant: \"{}\"", assistant_a));
                 }
             }
         }

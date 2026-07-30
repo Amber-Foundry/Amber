@@ -109,10 +109,10 @@ pub fn unrestricted_llm_context_policy(tier: &str) -> LlmContextPolicy {
 }
 
 fn normalize_tier(tier: Option<&str>) -> &'static str {
-    match tier.map(|t| t.trim().to_lowercase()) {
-        Some(ref t) if t == LOCAL_ONLY => LOCAL_ONLY,
+    match tier.map(|t| t.trim()) {
+        Some(t) if t.eq_ignore_ascii_case(LOCAL_ONLY) => LOCAL_ONLY,
         // Defensive normalization: map legacy "locked" string inputs to REDACTED (matching frontend normalizeTier)
-        Some(ref t) if t == REDACTED || t == "locked" => REDACTED,
+        Some(t) if t.eq_ignore_ascii_case(REDACTED) || t.eq_ignore_ascii_case("locked") => REDACTED,
         _ => OPEN,
     }
 }

@@ -220,6 +220,13 @@ fn fetch_requested_nodes(
             if !seen_ids.insert(id.clone()) {
                 continue;
             }
+            let vault_id: Option<String> = row.get(5).ok();
+            let vault_effective_tier = if let Some(ref vid) = vault_id {
+                crate::resolve_vault_effective_privacy(db, vid).ok()
+            } else {
+                row.get(8).ok()
+            };
+
             nodes.push(AssemblerNode {
                 id,
                 title: row
@@ -234,12 +241,8 @@ fn fetch_requested_nodes(
                 node_privacy_tier: row.get(4).map_err(|err| {
                     format!("Failed decoding node privacy field in assembler: {err}")
                 })?,
-                sub_vault_privacy_tier: row.get(7).map_err(|err| {
-                    format!("Failed decoding sub-vault privacy field in assembler: {err}")
-                })?,
-                vault_privacy_tier: row.get(8).map_err(|err| {
-                    format!("Failed decoding vault privacy field in assembler: {err}")
-                })?,
+                sub_vault_privacy_tier: row.get(7).ok(),
+                vault_privacy_tier: vault_effective_tier,
             });
         }
     }

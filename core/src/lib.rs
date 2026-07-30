@@ -4104,7 +4104,7 @@ fn node_create(input: NodeCreateInput, state: tauri::State<'_, DbState>) -> IpcR
             params![
                 id,
                 target_vault_id,
-                None::<String>,
+                input.sub_vault_id,
                 node_type,
                 stored_title,
                 stored_summary,
@@ -4291,7 +4291,7 @@ fn node_update(input: NodeUpdateInput, state: tauri::State<'_, DbState>) -> IpcR
             params![
                 input.id,
                 effective_target_vault_id,
-                None::<String>,
+                next_sub_vault_id,
                 next_node_type,
                 stored_title,
                 stored_summary,
