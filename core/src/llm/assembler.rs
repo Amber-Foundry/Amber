@@ -5,8 +5,8 @@ use rusqlite::Connection;
 use tiktoken_rs::CoreBPE;
 
 use crate::privacy::{
-    cloud_llm_context_policy, generate_pointer_stub, get_effective_privacy,
-    local_llm_context_policy, unrestricted_llm_context_policy, LlmContextPolicy,
+    cloud_llm_context_policy, get_effective_privacy, local_llm_context_policy,
+    unrestricted_llm_context_policy, LlmContextPolicy,
 };
 
 const ATTENTION_SINK_TOKENS: usize = 50;
@@ -220,6 +220,13 @@ fn fetch_requested_nodes(
             if !seen_ids.insert(id.clone()) {
                 continue;
             }
+            let vault_id: Option<String> = row.get(5).ok();
+            let vault_effective_tier = if let Some(ref vid) = vault_id {
+                crate::resolve_vault_effective_privacy(db, vid).ok()
+            } else {
+                row.get(8).ok()
+            };
+
             nodes.push(AssemblerNode {
                 id,
                 title: row
@@ -234,12 +241,8 @@ fn fetch_requested_nodes(
                 node_privacy_tier: row.get(4).map_err(|err| {
                     format!("Failed decoding node privacy field in assembler: {err}")
                 })?,
-                sub_vault_privacy_tier: row.get(7).map_err(|err| {
-                    format!("Failed decoding sub-vault privacy field in assembler: {err}")
-                })?,
-                vault_privacy_tier: row.get(8).map_err(|err| {
-                    format!("Failed decoding vault privacy field in assembler: {err}")
-                })?,
+                sub_vault_privacy_tier: row.get(7).ok(),
+                vault_privacy_tier: vault_effective_tier,
             });
         }
     }
@@ -283,7 +286,6 @@ pub fn build_context(
 
         let block = match policy {
             LlmContextPolicy::Omit => continue,
-            LlmContextPolicy::Stub => generate_pointer_stub(&node.title, &node.id),
             LlmContextPolicy::Full => format!(
                 "<document title=\"{}\">\n{}\n\n{}\n</document>",
                 escape_xml_attr(&node.title),
@@ -407,16 +409,16 @@ mod tests {
                 id, vault_id, sub_vault_id, title, summary, detail, privacy_tier, priority, is_archived, deleted_at
             ) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, 0, NULL);",
             [
-                "node_local_only",
+                "node_open",
                 "vault_a",
-                "Local Only Node",
-                "local summary",
-                "local detail",
-                "local_only",
+                "Open Node",
+                "open summary",
+                "open detail",
+                "open",
                 "{\"access_count_30active\":6}",
             ],
         ) {
-            panic!("failed inserting node for assembler test: {err}");
+            panic!("failed inserting open node for assembler test: {err}");
         }
 
         if let Err(err) = conn.execute(
@@ -424,12 +426,12 @@ mod tests {
                 id, vault_id, sub_vault_id, title, summary, detail, privacy_tier, priority, is_archived, deleted_at
             ) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, 0, NULL);",
             [
-                "node_locked",
+                "node_local_only",
                 "vault_a",
-                "Locked Node",
-                "locked summary",
-                "locked detail",
-                "locked",
+                "Local Only Node",
+                "local summary",
+                "local detail",
+                "local_only",
                 "{\"access_count_30active\":6}",
             ],
         ) {
@@ -479,12 +481,11 @@ mod tests {
         let conn = setup_in_memory_db();
         let node_ids = vec![
             "node_local_only".to_string(),
-            "node_locked".to_string(),
             "node_redacted".to_string(),
             "node_nested_redacted".to_string(),
         ];
 
-        // 1. Local scope (locked): local_only included; locked, redacted are stubbed.
+        // 1. Local scope (locked session): local_only included; redacted omitted when locked.
         let local_result = match build_context(
             &conn,
             node_ids.clone(),
@@ -501,13 +502,11 @@ mod tests {
         // local_only is included
         assert!(local_result.contains("<document title=\"Local Only Node\">"));
         assert!(local_result.contains("local detail"));
-        // locked is stubbed since we aren't unlocked
-        assert!(local_result.contains("[LOCKED NODE STUB] Title: Locked Node"));
-        // redacted is fully omitted, even for local models
+        // redacted is fully omitted when session is locked
         assert!(!local_result.contains("Redacted Node"));
         assert!(!local_result.contains("Nested Redacted Node"));
 
-        // 1.5 Local scope (unlocked): locked is fully included.
+        // 1.5 Local scope (unlocked session): redacted node is included when unlocked.
         let local_unlocked_result = match build_context(
             &conn,
             node_ids.clone(),
@@ -520,11 +519,10 @@ mod tests {
             Ok(value) => value,
             Err(err) => panic!("local scope assembler failed: {err}"),
         };
-        assert!(local_unlocked_result.contains("<document title=\"Locked Node\">"));
-        assert!(local_unlocked_result.contains("locked detail"));
-        assert!(!local_unlocked_result.contains("Redacted Node"));
+        assert!(local_unlocked_result.contains("<document title=\"Redacted Node\">"));
+        assert!(local_unlocked_result.contains("redacted detail"));
 
-        // 2. Cloud scope: locked is stubbed; local_only and redacted are completely omitted.
+        // 2. Cloud scope: local_only and redacted are completely omitted.
         let cloud_result = match build_context(
             &conn,
             node_ids,
@@ -538,14 +536,115 @@ mod tests {
             Err(err) => panic!("cloud scope assembler failed: {err}"),
         };
 
-        // locked is stubbed
-        assert!(cloud_result.contains("[LOCKED NODE STUB] Title: Locked Node"));
         // local_only is completely omitted
         assert!(!cloud_result.contains("Local Only Node"));
         // redacted is completely omitted
         assert!(!cloud_result.contains("Redacted Node"));
         // nested redacted inheritance is completely omitted
         assert!(!cloud_result.contains("Nested Redacted Node"));
+    }
+
+    #[test]
+    fn test_security_cloud_call_egress_filtering_3tier_matrix() {
+        // SECURITY TEST: Verify cloud provider request assembled with a mix of all 3 tiers.
+        // Assert: Open is included, Local Only is excluded entirely, Redacted is excluded entirely.
+        let conn = setup_in_memory_db();
+        let node_ids = vec![
+            "node_open".to_string(),
+            "node_local_only".to_string(),
+            "node_redacted".to_string(),
+            "node_nested_redacted".to_string(),
+        ];
+
+        let vault_context = build_context(
+            &conn,
+            node_ids,
+            AssemblerConfig {
+                scope: "cloud".to_string(),
+                max_tokens: 4000,
+                is_unlocked: true, // Even if unlocked, cloud scope MUST exclude Local Only & Redacted
+            },
+        )
+        .expect("cloud prompt assembly failed");
+
+        let components = super::PromptComponents {
+            system_directives: "System directive".to_string(),
+            vault_memory_context: vault_context,
+            retrieved_doc_content: None,
+        };
+
+        let assembled = components.assemble_system_prompt();
+
+        // 1. Open content MUST be included
+        assert!(assembled.contains("<document title=\"Open Node\">"));
+        assert!(assembled.contains("open detail"));
+
+        // 2. Local Only content MUST be excluded entirely (zero cleartext, zero stubs)
+        assert!(!assembled.contains("Local Only Node"));
+        assert!(!assembled.contains("local detail"));
+
+        // 3. Redacted content MUST be excluded entirely from cloud calls
+        assert!(!assembled.contains("Redacted Node"));
+        assert!(!assembled.contains("redacted detail"));
+        assert!(!assembled.contains("Nested Redacted Node"));
+    }
+
+    #[test]
+    fn test_security_local_call_egress_filtering_3tier_matrix() {
+        // SECURITY TEST: Verify local provider request assembled with a mix of all 3 tiers.
+        // Assert: Open is included, Local Only IS included, Redacted is excluded when locked & included when unlocked.
+        let conn = setup_in_memory_db();
+        let node_ids = vec![
+            "node_open".to_string(),
+            "node_local_only".to_string(),
+            "node_redacted".to_string(),
+        ];
+
+        // Case A: Session is LOCKED (is_unlocked = false)
+        let locked_context = build_context(
+            &conn,
+            node_ids.clone(),
+            AssemblerConfig {
+                scope: "local".to_string(),
+                max_tokens: 4000,
+                is_unlocked: false,
+            },
+        )
+        .expect("local prompt assembly failed");
+
+        let locked_components = super::PromptComponents {
+            system_directives: "System directive".to_string(),
+            vault_memory_context: locked_context,
+            retrieved_doc_content: None,
+        };
+
+        let locked_assembled = locked_components.assemble_system_prompt();
+        assert!(locked_assembled.contains("<document title=\"Open Node\">"));
+        assert!(locked_assembled.contains("<document title=\"Local Only Node\">"));
+        assert!(!locked_assembled.contains("Redacted Node"));
+
+        // Case B: Session is UNLOCKED (is_unlocked = true)
+        let unlocked_context = build_context(
+            &conn,
+            node_ids,
+            AssemblerConfig {
+                scope: "local".to_string(),
+                max_tokens: 4000,
+                is_unlocked: true,
+            },
+        )
+        .expect("local prompt assembly failed");
+
+        let unlocked_components = super::PromptComponents {
+            system_directives: "System directive".to_string(),
+            vault_memory_context: unlocked_context,
+            retrieved_doc_content: None,
+        };
+
+        let unlocked_assembled = unlocked_components.assemble_system_prompt();
+        assert!(unlocked_assembled.contains("<document title=\"Open Node\">"));
+        assert!(unlocked_assembled.contains("<document title=\"Local Only Node\">"));
+        assert!(unlocked_assembled.contains("<document title=\"Redacted Node\">"));
     }
 
     #[test]
@@ -652,11 +751,11 @@ mod tests {
         let conn = setup_in_memory_db();
         // Insert nodes with different priority values to make sure priority sorting
         // is overridden by relevance ordering
-        let node_ids = vec!["node_locked".to_string(), "node_local_only".to_string()];
+        let node_ids = vec!["node_open".to_string(), "node_local_only".to_string()];
 
         let nodes = fetch_requested_nodes(&conn, &node_ids).unwrap();
         assert_eq!(nodes.len(), 2);
-        assert_eq!(nodes[0].id, "node_locked");
+        assert_eq!(nodes[0].id, "node_open");
         assert_eq!(nodes[1].id, "node_local_only");
 
         let context = build_context(
@@ -670,12 +769,12 @@ mod tests {
         )
         .unwrap();
 
-        // The assembled context should contain Locked Node document before Local Only Node document
-        let pos_locked = context.find("title=\"Locked Node\"").unwrap();
+        // The assembled context should contain Open Node document before Local Only Node document
+        let pos_open = context.find("title=\"Open Node\"").unwrap();
         let pos_local = context.find("title=\"Local Only Node\"").unwrap();
         assert!(
-            pos_locked < pos_local,
-            "Locked Node should come before Local Only Node to preserve relevance ordering!"
+            pos_open < pos_local,
+            "Open Node should come before Local Only Node to preserve relevance ordering!"
         );
     }
 

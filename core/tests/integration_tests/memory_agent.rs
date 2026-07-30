@@ -421,7 +421,7 @@ fn test_privacy_filtering_excludes_redacted_and_locked() -> Result<(), Box<dyn E
                 "Internal project secrets.",
             )?;
             conn.execute(
-                "INSERT INTO privacy_overrides (node_id, privacy_tier) VALUES ('node_locked', 'locked');",
+                "INSERT INTO privacy_overrides (node_id, privacy_tier) VALUES ('node_locked', 'redacted');",
                 [],
             )?;
 

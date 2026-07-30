@@ -12,7 +12,6 @@ describe("shouldOmitSpatialConnector", () => {
 
   it("shows connectors for non-redacted tiers regardless of unlock state", () => {
     expect(shouldOmitSpatialConnector("open", false)).toBe(false);
-    expect(shouldOmitSpatialConnector("locked", false)).toBe(false);
     expect(shouldOmitSpatialConnector("local_only", false)).toBe(false);
   });
 });

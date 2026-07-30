@@ -217,7 +217,7 @@ fn fetch_private_referenced_nodes(
                 Some(container_tier.as_str()),
             );
 
-            if effective == "redacted" || effective == "locked" {
+            if effective != "open" {
                 private_nodes.insert(id);
             }
         }
@@ -380,7 +380,7 @@ fn onboarding_default_vault_spec(vault_id: &str) -> Option<OnboardingDefaultVaul
             "Credentials",
             "key",
             "Local-only secrets and API keys.",
-            "locked",
+            "redacted",
             "pinned",
             "{}",
             1_i64,
@@ -732,7 +732,7 @@ fn run_seed_data(conn: &mut Connection) -> Result<(), String> {
             "Credentials",
             "key",
             "Local-only secrets and API keys.",
-            "locked",
+            "redacted",
             "pinned",
             1_i64,
             "{}"
@@ -1418,7 +1418,7 @@ pub fn is_node_private(conn: &Connection, node_id: &str) -> Result<bool, String>
         privacy_tier.as_deref(),
     )?;
 
-    Ok(effective == "redacted" || effective == "locked")
+    Ok(effective != "open")
 }
 
 pub fn log_memory_agent_error(conn: &Connection, raw_response: &str) -> Result<(), String> {
@@ -2000,7 +2000,17 @@ pub fn resolve_vault_effective_privacy(
              WHERE id = ?1 AND deleted_at IS NULL
              LIMIT 1;",
             [id.as_str()],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                let parent = row.get::<_, Option<String>>(0)?;
+                // If privacy_tier is NULL, the vault inherits from its parent ancestry chain.
+                // If there is no parent (top-level root vault) and tier is NULL, Amber defaults the top-level
+                // baseline to "open" (the standard creation default). For sub-vaults, NULL never loosens an ancestor's
+                // stricter tier because `get_privacy_rank` comparison monotonically preserves the strictest tier seen.
+                let tier = row
+                    .get::<_, Option<String>>(1)?
+                    .unwrap_or_else(|| "open".to_string());
+                Ok((parent, tier))
+            },
         ) {
             Ok(record) => record,
             Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -4094,7 +4104,7 @@ fn node_create(input: NodeCreateInput, state: tauri::State<'_, DbState>) -> IpcR
             params![
                 id,
                 target_vault_id,
-                None::<String>,
+                input.sub_vault_id,
                 node_type,
                 stored_title,
                 stored_summary,
@@ -4281,7 +4291,7 @@ fn node_update(input: NodeUpdateInput, state: tauri::State<'_, DbState>) -> IpcR
             params![
                 input.id,
                 effective_target_vault_id,
-                None::<String>,
+                next_sub_vault_id,
                 next_node_type,
                 stored_title,
                 stored_summary,
@@ -4718,6 +4728,24 @@ async fn llm_chat(
             attached_document
         }
     };
+    let parsed_provider = match provider.trim().to_lowercase().as_str() {
+        "ollama" => llm::client::LlmProvider::Ollama,
+        "lmstudio" => llm::client::LlmProvider::LmStudio,
+        "anthropic" => llm::client::LlmProvider::Anthropic,
+        "openai" => llm::client::LlmProvider::OpenAi,
+        "google" => llm::client::LlmProvider::Google,
+        "xai" => llm::client::LlmProvider::XAi,
+        _ => return Err("Unsupported provider. Use 'ollama', 'lmstudio', 'anthropic', 'openai', 'google', or 'xai'.".to_string()),
+    };
+
+    // SECURITY INVARIANT (Milestone 2.4.6 Commit 5):
+    // If destination is a Cloud LLM, context assembly scope MUST be forced to "cloud"
+    // regardless of what assembler scope UI state was passed.
+    let effective_scope = if parsed_provider.is_cloud() {
+        "cloud".to_string()
+    } else {
+        scope
+    };
 
     let vault_memory_context = if session_id == "temporary-session" {
         "[Off the Record Mode: Context assembly has been bypassed. No personal memories or notes are accessible in this session.]".to_string()
@@ -4727,7 +4755,7 @@ async fn llm_chat(
             &conn,
             node_ids,
             llm::assembler::AssemblerConfig {
-                scope,
+                scope: effective_scope,
                 max_tokens: max_assembler_tokens.unwrap_or(DEFAULT_ASSEMBLER_MAX_TOKENS),
                 is_unlocked: is_redacted_unlocked,
             },
@@ -4773,7 +4801,7 @@ async fn llm_chat(
       \"layout\": {\n\
         \"title\": \"Fruit Counts\"\n\
       }\n\
-    }\n\
+      }\n\
     ```\n\
     Always output fully valid JSON (double quotes for keys and string values). Do not embed comments inside the JSON.";
 
@@ -4787,16 +4815,6 @@ async fn llm_chat(
         system_directives,
         vault_memory_context,
         retrieved_doc_content,
-    };
-
-    let parsed_provider = match provider.trim().to_lowercase().as_str() {
-        "ollama" => llm::client::LlmProvider::Ollama,
-        "lmstudio" => llm::client::LlmProvider::LmStudio,
-        "anthropic" => llm::client::LlmProvider::Anthropic,
-        "openai" => llm::client::LlmProvider::OpenAi,
-        "google" => llm::client::LlmProvider::Google,
-        "xai" => llm::client::LlmProvider::XAi,
-        _ => return Err("Unsupported provider. Use 'ollama', 'lmstudio', 'anthropic', 'openai', 'google', or 'xai'.".to_string()),
     };
 
     let client = llm::client::UniversalClient::new(parsed_provider, endpoint, model);
@@ -5538,7 +5556,7 @@ mod tests {
             unique_node_ids.insert(node_id.clone());
             tx.execute(
                 "INSERT INTO nodes (id, vault_id, sub_vault_id, privacy_tier, deleted_at)
-                 VALUES (?1, 'vault_root', NULL, 'locked', NULL);",
+                 VALUES (?1, 'vault_root', NULL, 'redacted', NULL);",
                 [node_id],
             )
             .unwrap_or_else(|err| panic!("expected node insert to succeed: {err}"));

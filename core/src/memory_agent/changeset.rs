@@ -747,11 +747,14 @@ mod tests {
         let create_sql = "
             CREATE TABLE vaults (
                 id TEXT PRIMARY KEY,
+                parent_vault_id TEXT,
+                privacy_tier TEXT,
                 deleted_at TEXT
             );
             CREATE TABLE sub_vaults (
                 id TEXT PRIMARY KEY,
                 vault_id TEXT,
+                privacy_tier TEXT,
                 deleted_at TEXT
             );
             CREATE TABLE sessions (
@@ -766,6 +769,7 @@ mod tests {
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 detail TEXT,
+                privacy_tier TEXT,
                 version INTEGER NOT NULL DEFAULT 1,
                 is_archived INTEGER NOT NULL DEFAULT 0,
                 deleted_at TEXT
@@ -778,6 +782,10 @@ mod tests {
                 embedding BLOB NOT NULL,
                 computed_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (node_id, chunk_index, chunk_type)
+            );
+            CREATE TABLE privacy_overrides (
+                node_id TEXT PRIMARY KEY,
+                privacy_tier TEXT
             );
         ";
         if let Err(e) = conn.execute_batch(create_sql) {

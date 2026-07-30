@@ -32,6 +32,19 @@ pub enum LlmProvider {
     XAi,
 }
 
+impl LlmProvider {
+    pub fn is_cloud(&self) -> bool {
+        matches!(
+            self,
+            LlmProvider::Anthropic | LlmProvider::OpenAi | LlmProvider::Google | LlmProvider::XAi
+        )
+    }
+
+    pub fn is_local(&self) -> bool {
+        !self.is_cloud()
+    }
+}
+
 pub struct UniversalClient {
     pub provider: LlmProvider,
     pub endpoint: String,
