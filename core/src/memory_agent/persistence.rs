@@ -171,10 +171,8 @@ pub fn list_pending_changesets(
 fn privacy_tier_value(tier: &str) -> i32 {
     match tier.trim().to_lowercase().as_str() {
         "open" => 0,
-        "local_only" => 1,
-        "local" => 1,
-        "locked" => 2,
-        "redacted" => 3,
+        "local_only" | "local" => 1,
+        "locked" | "redacted" => 2,
         _ => 0,
     }
 }
@@ -542,7 +540,7 @@ mod tests {
 
         // Insert restricted vault and sub-vaults
         conn.execute(
-            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault-restricted', 'Vault Restricted', 'locked');",
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('vault-restricted', 'Vault Restricted', 'redacted');",
             [],
         )?;
         conn.execute(
@@ -586,14 +584,14 @@ mod tests {
         let items = list_changeset_items(&conn, &cs_id)?;
         assert_eq!(items.len(), 2);
 
-        // Item 0 targets sub-null-tier which inherits 'locked' (value 2). Source is 'open' (value 0).
+        // Item 0 targets sub-null-tier which inherits 'redacted' (value 2). Source is 'open' (value 0).
         // Since 2 > 0, it must trigger a Security Warning.
         assert!(items[0].anomaly_warning.is_some());
         let warning_text = items[0]
             .anomaly_warning
             .as_ref()
             .ok_or("Expected anomaly warning to be present")?;
-        assert!(warning_text.contains("Security Warning: Slated for Sub Null Tier (LOCKED)"));
+        assert!(warning_text.contains("Security Warning: Slated for Sub Null Tier (REDACTED)"));
 
         // Item 1 targets sub-open-tier which overrides parent and has 'open' (value 0). Source is 'open' (value 0).
         // Since 0 is not > 0, it must NOT trigger a Security Warning.
