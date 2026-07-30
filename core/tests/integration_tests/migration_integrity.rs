@@ -748,9 +748,9 @@ fn test_security_regression_migration_0013_zero_locked_to_open_remaps(
         );
     }
 
-    // SECURITY CHECK 3: Zero previously-locked sub-vaults end up tagged 'open'
+    // SECURITY CHECK 3: Zero previously-locked sub-vaults end up tagged 'open' (checking sub_vaults table directly)
     let sv_tier: String = conn.query_row(
-        "SELECT privacy_tier FROM vaults WHERE id = 'sv_sec_locked';",
+        "SELECT privacy_tier FROM sub_vaults WHERE id = 'sv_sec_locked';",
         [],
         |row| row.get(0),
     )?;

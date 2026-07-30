@@ -380,7 +380,7 @@ fn onboarding_default_vault_spec(vault_id: &str) -> Option<OnboardingDefaultVaul
             "Credentials",
             "key",
             "Local-only secrets and API keys.",
-            "locked",
+            "redacted",
             "pinned",
             "{}",
             1_i64,
@@ -732,7 +732,7 @@ fn run_seed_data(conn: &mut Connection) -> Result<(), String> {
             "Credentials",
             "key",
             "Local-only secrets and API keys.",
-            "locked",
+            "redacted",
             "pinned",
             1_i64,
             "{}"
@@ -2002,6 +2002,10 @@ pub fn resolve_vault_effective_privacy(
             [id.as_str()],
             |row| {
                 let parent = row.get::<_, Option<String>>(0)?;
+                // If privacy_tier is NULL, the vault inherits from its parent ancestry chain.
+                // If there is no parent (top-level root vault) and tier is NULL, Amber defaults the top-level
+                // baseline to "open" (the standard creation default). For sub-vaults, NULL never loosens an ancestor's
+                // stricter tier because `get_privacy_rank` comparison monotonically preserves the strictest tier seen.
                 let tier = row
                     .get::<_, Option<String>>(1)?
                     .unwrap_or_else(|| "open".to_string());

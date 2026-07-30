@@ -42,28 +42,33 @@ pub fn allows_cloud_content(tier: &str) -> bool {
     normalize_tier(Some(tier)) == OPEN
 }
 
+/// Whether a tier normalized to redacted.
+pub fn is_redacted(tier: &str) -> bool {
+    normalize_tier(Some(tier)) == REDACTED
+}
+
 /// Whether node/vault payload is encrypted at rest (`encrypted_payload`).
 /// Disclosure axis — use when persisting redacted tier content.
 #[allow(dead_code)]
 pub fn encrypts_at_rest(tier: &str) -> bool {
-    normalize_tier(Some(tier)) == REDACTED
+    is_redacted(tier)
 }
 
 /// Whether UI should hide metadata until the master-password session is active.
 /// Disclosure axis — mirror in `ui/utils/privacy.ts` display helpers.
 #[allow(dead_code)]
 pub fn hides_metadata_until_unlock(tier: &str) -> bool {
-    normalize_tier(Some(tier)) == REDACTED
+    is_redacted(tier)
 }
 
 /// Whether embeddings should be skipped and any existing vectors deleted.
 pub fn embedding_should_skip(tier: &str) -> bool {
-    normalize_tier(Some(tier)) == REDACTED
+    is_redacted(tier)
 }
 
 /// Whether a node must be omitted from local LLM context assembly when locked.
 pub fn omits_from_local_llm(tier: &str, is_unlocked: bool) -> bool {
-    normalize_tier(Some(tier)) == REDACTED && !is_unlocked
+    is_redacted(tier) && !is_unlocked
 }
 
 /// Whether local-only nodes must not embed via a non-loopback Ollama endpoint.
@@ -96,7 +101,7 @@ pub fn local_llm_context_policy(tier: &str, is_unlocked: bool) -> LlmContextPoli
 
 /// Unrestricted/debug scopes: full content for non-redacted tiers.
 pub fn unrestricted_llm_context_policy(tier: &str) -> LlmContextPolicy {
-    if normalize_tier(Some(tier)) == REDACTED {
+    if is_redacted(tier) {
         LlmContextPolicy::Omit
     } else {
         LlmContextPolicy::Full
@@ -104,9 +109,10 @@ pub fn unrestricted_llm_context_policy(tier: &str) -> LlmContextPolicy {
 }
 
 fn normalize_tier(tier: Option<&str>) -> &'static str {
-    match tier {
-        Some(LOCAL_ONLY) => LOCAL_ONLY,
-        Some(REDACTED) => REDACTED,
+    match tier.map(|t| t.trim().to_lowercase()) {
+        Some(ref t) if t == LOCAL_ONLY => LOCAL_ONLY,
+        // Defensive normalization: map legacy "locked" string inputs to REDACTED (matching frontend normalizeTier)
+        Some(ref t) if t == REDACTED || t == "locked" => REDACTED,
         _ => OPEN,
     }
 }

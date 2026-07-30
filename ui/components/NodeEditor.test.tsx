@@ -125,7 +125,7 @@ describe("NodeEditor privacy gating", () => {
     expect(document.querySelector(".editor-privacy select")).not.toBeInTheDocument();
   });
 
-  it("shows content lock for locked nodes and disables editing", async () => {
+  it("renders privacy select for unlocked redacted node", async () => {
     setupNodeMocks(nodeLocked);
 
     renderEditor(nodeLocked.id, true);
