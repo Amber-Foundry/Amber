@@ -26,10 +26,8 @@ pub fn deserialize_f32_vec(bytes: &[u8]) -> Result<Vec<f32>, String> {
         ));
     }
     let mut vec = Vec::with_capacity(bytes.len() / 4);
-    for chunk in bytes.chunks_exact(4) {
-        let arr = chunk
-            .try_into()
-            .map_err(|_| "Failed to slice byte chunk".to_string())?;
+    let (chunks, _) = bytes.as_chunks::<4>();
+    for &arr in chunks {
         vec.push(f32::from_le_bytes(arr));
     }
     Ok(vec)
