@@ -49,7 +49,7 @@ fn argon2id() -> Result<Argon2<'static>, String> {
     Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
 }
 
-fn generate_random_bytes<const N: usize>() -> [u8; N] {
+pub(crate) fn generate_random_bytes<const N: usize>() -> [u8; N] {
     let mut bytes = [0_u8; N];
     OsRng.fill_bytes(&mut bytes);
     bytes
@@ -103,7 +103,7 @@ pub(crate) fn derive_session_key(passphrase: &str, salt_b64: &str) -> Result<Ses
     let salt = STANDARD
         .decode(salt_b64)
         .map_err(|err| format!("Failed decoding redacted data salt: {err}"))?;
-    let mut output = [0_u8; 32];
+    let mut output = generate_random_bytes::<32>();
     argon2id()?
         .hash_password_into(passphrase.as_bytes(), &salt, &mut output)
         .map_err(|err| format!("Failed deriving redacted session key: {err}"))?;

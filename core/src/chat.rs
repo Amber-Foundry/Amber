@@ -7,7 +7,7 @@ fn ensure_session(db: &Connection, session_id: &str) -> Result<(), crate::AppErr
         params![session_id],
     )
     .map_err(|err| {
-        eprintln!("Database error in ensure_session for {session_id}: {err}");
+        eprintln!("Database error in ensure_session: {err}");
         "Failed ensuring chat session".to_string()
     })?;
     Ok(())

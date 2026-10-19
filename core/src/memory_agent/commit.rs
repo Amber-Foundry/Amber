@@ -1351,7 +1351,7 @@ mod tests {
         )?;
 
         // Encrypt seed payload
-        let key = [0_u8; 32];
+        let key = redacted::generate_random_bytes::<32>();
         let secret_payload = redacted::NodeSecretPayload {
             title: "Super Secret Title".to_string(),
             summary: "Super Secret Summary".to_string(),
@@ -2062,7 +2062,7 @@ mod tests {
         };
 
         // Commit with session key - should succeed and encrypt the node title/summary
-        let key = [0_u8; 32];
+        let key = redacted::generate_random_bytes::<32>();
         let result = commit_changeset_transaction(&mut conn, &input, db_path, Some(key))?;
         assert!(result);
 
@@ -2308,7 +2308,7 @@ mod tests {
         )?;
 
         // Setup session key
-        let key = [0_u8; 32];
+        let key = redacted::generate_random_bytes::<32>();
 
         let secret_payload = redacted::NodeSecretPayload {
             title: "Secret Title".to_string(),
