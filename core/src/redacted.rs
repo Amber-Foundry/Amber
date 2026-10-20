@@ -1,5 +1,5 @@
 use aes_gcm::{
-    aead::{Aead, KeyInit},
+    aead::{Aead, AeadCore, KeyInit},
     Aes256Gcm, Nonce,
 };
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -113,18 +113,17 @@ pub(crate) fn derive_session_key(passphrase: &str, salt_b64: &str) -> Result<Ses
 pub(crate) fn encrypt_json<T: Serialize>(payload: &T, key: &SessionKey) -> Result<String, String> {
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|err| format!("Failed initializing AES-256-GCM cipher: {err}"))?;
-    let nonce_bytes = generate_random_bytes::<12>();
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
     let plaintext =
         serde_json::to_vec(payload).map_err(|err| format!("Failed serializing payload: {err}"))?;
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
+        .encrypt(&nonce, plaintext.as_ref())
         .map_err(|_| "Failed encrypting redacted payload.".to_string())?;
 
     let envelope = EncryptedEnvelope {
         v: 1,
         alg: "aes-256-gcm".to_string(),
-        nonce: STANDARD.encode(nonce_bytes),
+        nonce: STANDARD.encode(nonce),
         ciphertext: STANDARD.encode(ciphertext),
     };
 
