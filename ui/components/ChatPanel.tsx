@@ -781,10 +781,11 @@ function ChatPanel({
   const [showChartsConfirmModal, setShowChartsConfirmModal] = useState(false);
 
   const [isExtracting, setIsExtracting] = useState(false);
+  const [extractionError, setExtractionError] = useState<string | null>(null);
 
   useEffect(() => {
-    onModalToggle?.(showChartsConfirmModal);
-  }, [showChartsConfirmModal, onModalToggle]);
+    onModalToggle?.(showChartsConfirmModal || Boolean(extractionError));
+  }, [showChartsConfirmModal, extractionError, onModalToggle]);
   const [activeDropdown, setActiveDropdown] = useState<"vault" | "mode" | "model" | null>(null);
 
   const handleToggleCharts = useCallback(() => {
@@ -796,19 +797,22 @@ function ChatPanel({
   }, [chartsEnabled, setChatChartsEnabled]);
 
   const handleForceExtract = useCallback(async () => {
-    if (isExtracting || isSending) return;
+    if (isExtracting || isSending || messages.length < 3) return;
     setIsExtracting(true);
+    setExtractionError(null);
     try {
       const { provider, endpoint, model } = await resolveLlmConfig();
       await extractMemoryForce(provider, endpoint, model);
       onRefreshPendingCount?.();
     } catch (err) {
       console.error("Manual extraction failed:", err);
-      setStatus(String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      setExtractionError(msg);
+      setStatus(msg);
     } finally {
       setIsExtracting(false);
     }
-  }, [isExtracting, isSending, onRefreshPendingCount, setIsExtracting, setStatus]);
+  }, [isExtracting, isSending, messages.length, onRefreshPendingCount, setIsExtracting, setStatus]);
 
   const [isConverting, setIsConverting] = useState(false);
 
@@ -1721,7 +1725,14 @@ function ChatPanel({
                 type="button"
                 className={`zen-pill extract-pill ${isExtracting ? "active" : ""}`}
                 onClick={() => void handleForceExtract()}
-                disabled={isExtracting || isSending}
+                disabled={isExtracting || isSending || messages.length < 3}
+                title={
+                  messages.length < 3
+                    ? "At least 3 messages required for memory extraction"
+                    : isExtracting
+                      ? "Extracting..."
+                      : "Extract Memory"
+                }
               >
                 <span className="zen-pill-icon">
                   {isExtracting ? <HourglassIcon size={16} /> : <BrainIcon size={16} />}
@@ -2151,7 +2162,14 @@ function ChatPanel({
               type="button"
               className={`zen-pill extract-pill ${isExtracting ? "active" : ""}`}
               onClick={() => void handleForceExtract()}
-              disabled={isExtracting || isSending}
+              disabled={isExtracting || isSending || messages.length < 3}
+              title={
+                messages.length < 3
+                  ? "At least 3 messages required for memory extraction"
+                  : isExtracting
+                    ? "Extracting..."
+                    : "Extract Memory"
+              }
             >
               <span className="zen-pill-icon">
                 {isExtracting ? <HourglassIcon size={16} /> : <BrainIcon size={16} />}
@@ -2321,6 +2339,33 @@ function ChatPanel({
                 }}
               >
                 Enable Charts
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {extractionError && (
+        <div className="modal-overlay charts-modal-overlay" data-testid="extraction-error-modal">
+          <div className="charts-modal-content">
+            <div className="charts-modal-header">
+              <span
+                className="charts-modal-icon error-icon"
+                style={{ color: "var(--color-danger, #ef4444)" }}
+              >
+                <AlertIcon size={20} />
+              </span>
+              <h3 className="charts-modal-title">Memory Extraction Unavailable</h3>
+            </div>
+            <div className="charts-modal-body">
+              <p className="charts-modal-text">{extractionError}</p>
+            </div>
+            <div className="charts-modal-actions">
+              <button
+                type="button"
+                className="charts-modal-btn confirm-btn"
+                onClick={() => setExtractionError(null)}
+              >
+                Dismiss
               </button>
             </div>
           </div>
