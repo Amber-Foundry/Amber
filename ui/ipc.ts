@@ -60,6 +60,13 @@ export type {
   EmbeddingStatus,
 };
 
+export function isTauriAvailable(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    ("__TAURI_INTERNALS__" in window || "__TAURI_IPC__" in window || "__TAURI__" in window)
+  );
+}
+
 export async function invokeTyped<T>(
   command: string,
   payload?: Record<string, unknown>
@@ -71,6 +78,16 @@ export async function invokeTyped<T>(
     } catch (error) {
       return { err: String(error) };
     }
+  }
+  if (!isTauriAvailable()) {
+    if (command === "is_auth_setup") return { ok: true } as unknown as IpcResult<T>;
+    if (command === "list_vaults") return { ok: [] } as unknown as IpcResult<T>;
+    if (command === "get_nodes" || command === "get_all_nodes")
+      return { ok: [] } as unknown as IpcResult<T>;
+    if (command === "settings_get") return { ok: null } as unknown as IpcResult<T>;
+    if (command === "settings_set") return { ok: true } as unknown as IpcResult<T>;
+    if (command === "list_tags") return { ok: [] } as unknown as IpcResult<T>;
+    return { err: `Tauri API not available in browser environment (${command})` };
   }
   try {
     return await invoke<IpcResult<T>>(command, payload);

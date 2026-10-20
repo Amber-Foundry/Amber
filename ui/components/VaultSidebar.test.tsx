@@ -115,7 +115,7 @@ describe("VaultSidebar privacy UI", () => {
     const user = userEvent.setup();
     mockListVaults.mockResolvedValue([vaultLocked]);
 
-    renderSidebar(false);
+    renderSidebar(true);
 
     await waitFor(() => {
       expect(screen.getByText("Locked Vault")).toBeInTheDocument();

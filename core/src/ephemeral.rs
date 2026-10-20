@@ -599,6 +599,26 @@ pub fn compute_fallback_text_vector(text: &str) -> Vec<f32> {
     vec
 }
 
+/// Compute a 384-dimensional embedding vector for an ephemeral query string.
+pub fn compute_ephemeral_query_vector(query: &str) -> Vec<f32> {
+    use crate::embed::engine::EmbedEngine;
+
+    if query.trim().is_empty() {
+        return vec![0.0f32; 384];
+    }
+
+    if let Ok(engine) =
+        crate::embed::BundledEmbedEngine::new(crate::embed::bundled::DEFAULT_BUNDLED_MODEL_ID, 384)
+    {
+        if let Ok(vectors) = engine.embed(&[query.to_string()]) {
+            if let Some(vec) = vectors.into_iter().next() {
+                return vec;
+            }
+        }
+    }
+    compute_fallback_text_vector(query)
+}
+
 /// Compute 384-dimensional query embedding vector using bundled GIST ONNX model (or normalized fallback).
 pub fn embed_query(query: &str) -> Vec<f32> {
     use crate::embed::engine::EmbedEngine;

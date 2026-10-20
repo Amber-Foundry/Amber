@@ -99,7 +99,7 @@ pub fn expand_vault_scope(
         })
         .map_err(|err| format!("Failed expanding vault scope: {err}"))?;
 
-    let mut expanded = HashSet::new();
+    let mut expanded = vaults.clone();
     for r in rows {
         let v_id = r.map_err(|err| format!("Failed reading expanded vault ID: {err}"))?;
         expanded.insert(v_id);
@@ -140,9 +140,12 @@ pub fn find_top_n_similar(
     let (query_str, params_vec) = if let Some(vaults) = target_vaults {
         let placeholders = vec!["?"; vaults.len()].join(", ");
         let query = format!(
-            "SELECT n.id, n.vault_id, n.title, n.summary, n.node_type, ne.embedding
+            "SELECT n.id, n.vault_id, n.title, n.summary, n.node_type, ne.embedding,
+                    n.sub_vault_id,
+                    COALESCE(o.privacy_tier, n.privacy_tier) AS node_privacy_tier
              FROM node_embeddings ne
              JOIN nodes n ON ne.node_id = n.id
+             LEFT JOIN privacy_overrides o ON n.id = o.node_id
              LEFT JOIN vaults v ON n.vault_id = v.id
              LEFT JOIN vaults sv ON n.sub_vault_id = sv.id
              WHERE ne.chunk_type = 'primary'
@@ -159,9 +162,12 @@ pub fn find_top_n_similar(
         p.extend(vaults.iter().cloned());
         (query, p)
     } else {
-        let query = "SELECT n.id, n.vault_id, n.title, n.summary, n.node_type, ne.embedding
+        let query = "SELECT n.id, n.vault_id, n.title, n.summary, n.node_type, ne.embedding,
+                    n.sub_vault_id,
+                    COALESCE(o.privacy_tier, n.privacy_tier) AS node_privacy_tier
              FROM node_embeddings ne
              JOIN nodes n ON ne.node_id = n.id
+             LEFT JOIN privacy_overrides o ON n.id = o.node_id
              LEFT JOIN vaults v ON n.vault_id = v.id
              LEFT JOIN vaults sv ON n.sub_vault_id = sv.id
              WHERE ne.chunk_type = 'primary'
@@ -194,13 +200,27 @@ pub fn find_top_n_similar(
                 node_type: row.get(4)?,
             };
             let embedding_bytes: Vec<u8> = row.get(5)?;
-            Ok((node, embedding_bytes))
+            let sub_vault_id: Option<String> = row.get(6)?;
+            let node_privacy_tier: Option<String> = row.get(7)?;
+            Ok((node, embedding_bytes, sub_vault_id, node_privacy_tier))
         })
         .map_err(|err| format!("Failed to execute search query: {}", err))?;
 
     let mut candidates = Vec::new();
     for row_res in rows {
-        let (node, bytes) = row_res.map_err(|err| format!("Failed to read row: {}", err))?;
+        let (node, bytes, sub_vault_id, node_privacy_tier) =
+            row_res.map_err(|err| format!("Failed to read row: {}", err))?;
+
+        let effective = crate::resolve_node_effective_privacy(
+            conn,
+            &node.vault_id,
+            sub_vault_id.as_deref(),
+            node_privacy_tier.as_deref(),
+        )?;
+
+        if crate::privacy::embedding_should_skip(&effective) {
+            continue;
+        }
 
         match deserialize_f32_vec(&bytes) {
             Ok(vec) => {
@@ -611,6 +631,84 @@ mod tests {
 
         assert_eq!(results_l2.len(), 1);
         assert_eq!(results_l2[0].0.id, "n_l3");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_top_n_similar_nested_vault_waterfall_privacy_filtering(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = setup_test_db()?;
+        let model = "test-model";
+        let query = vec![1.0, 0.0, 0.0];
+
+        // 1. Create a 5-level nested vault hierarchy
+        // v_lvl0 (open) -> v_lvl1 (open) -> v_lvl2 (redacted) -> v_lvl3 (open) -> v_lvl4 (open)
+        conn.execute(
+            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('v_lvl0', 'Level 0', 'open');",
+            [],
+        )?;
+        conn.execute("INSERT INTO vaults (id, parent_vault_id, name, privacy_tier) VALUES ('v_lvl1', 'v_lvl0', 'Level 1', 'open');", [])?;
+        conn.execute("INSERT INTO vaults (id, parent_vault_id, name, privacy_tier) VALUES ('v_lvl2', 'v_lvl1', 'Level 2', 'redacted');", [])?;
+        conn.execute("INSERT INTO vaults (id, parent_vault_id, name, privacy_tier) VALUES ('v_lvl3', 'v_lvl2', 'Level 3', 'open');", [])?;
+        conn.execute("INSERT INTO vaults (id, parent_vault_id, name, privacy_tier) VALUES ('v_lvl4', 'v_lvl3', 'Level 4', 'open');", [])?;
+
+        // 2. Insert nodes at various depths
+        conn.execute("INSERT INTO nodes (id, vault_id, node_type, title, summary) VALUES ('n_lvl0', 'v_lvl0', 'concept', 'L0 Note', 'Sum');", [])?;
+        conn.execute("INSERT INTO nodes (id, vault_id, node_type, title, summary) VALUES ('n_lvl1', 'v_lvl1', 'concept', 'L1 Note', 'Sum');", [])?;
+        conn.execute("INSERT INTO nodes (id, vault_id, node_type, title, summary) VALUES ('n_lvl3', 'v_lvl3', 'concept', 'L3 Note under Redacted Parent', 'Sum');", [])?;
+        conn.execute("INSERT INTO nodes (id, vault_id, node_type, title, summary) VALUES ('n_lvl4', 'v_lvl4', 'concept', 'L4 Note under Redacted Ancestor', 'Sum');", [])?;
+
+        // Insert a node in v_lvl1 with a direct privacy_overrides record setting it to redacted
+        conn.execute("INSERT INTO nodes (id, vault_id, node_type, title, summary) VALUES ('n_lvl1_override', 'v_lvl1', 'concept', 'L1 Overridden Note', 'Sum');", [])?;
+        conn.execute("INSERT INTO privacy_overrides (node_id, privacy_tier) VALUES ('n_lvl1_override', 'redacted');", [])?;
+
+        // Upsert embeddings for all nodes
+        for n_id in ["n_lvl0", "n_lvl1", "n_lvl3", "n_lvl4", "n_lvl1_override"] {
+            upsert_embedding(
+                &conn,
+                &EmbeddingRow {
+                    node_id: n_id.to_string(),
+                    chunk_index: 0,
+                    chunk_type: "primary".to_string(),
+                    model: model.to_string(),
+                    embedding: vec![1.0, 0.0, 0.0],
+                    computed_at: "time".to_string(),
+                },
+            )?;
+        }
+
+        // Test: Vector search scoped to root vault v_lvl0
+        let root_scope = HashSet::from(["v_lvl0".to_string()]);
+        let results = find_top_n_similar(&conn, &query, model, 10, Some(&root_scope))?;
+
+        let result_ids: HashSet<String> = results.into_iter().map(|(n, _)| n.id).collect();
+
+        // Open nodes in open vaults MUST be present
+        assert!(
+            result_ids.contains("n_lvl0"),
+            "L0 open node must be returned"
+        );
+        assert!(
+            result_ids.contains("n_lvl1"),
+            "L1 open node must be returned"
+        );
+
+        // Nodes in/under v_lvl2 (redacted) MUST be excluded by waterfall privacy
+        assert!(
+            !result_ids.contains("n_lvl3"),
+            "L3 node under redacted parent must be excluded"
+        );
+        assert!(
+            !result_ids.contains("n_lvl4"),
+            "L4 node under redacted ancestor must be excluded"
+        );
+
+        // Node with privacy override = redacted MUST be excluded
+        assert!(
+            !result_ids.contains("n_lvl1_override"),
+            "Node with redacted override must be excluded"
+        );
 
         Ok(())
     }

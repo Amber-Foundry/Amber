@@ -625,7 +625,6 @@ function NodeList({
                   >
                     <option value="open">Open (No restriction)</option>
                     <option value="local_only">Local Only (Never cloud synced)</option>
-                    <option value="locked">Locked (Requires unlock to access)</option>
                     <option value="redacted">Redacted (Hidden metadata/title)</option>
                   </select>
                 </label>

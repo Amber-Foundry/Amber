@@ -60,7 +60,11 @@ export async function chatCreateSession(id: string, summary?: string): Promise<v
 }
 
 export async function chatDeleteSession(id: string): Promise<void> {
-  void chatClearEphemeralSession(id);
+  try {
+    await chatClearEphemeralSession(id);
+  } catch (err) {
+    console.warn(`[chat] Failed clearing ephemeral session ${id}:`, err);
+  }
   return unwrapIpcResult(ipcChatDeleteSession(id));
 }
 

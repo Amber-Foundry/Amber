@@ -95,15 +95,13 @@ pub fn embed_node_with_config(
             EmbedError::InferenceFailed(format!("database failed loading node {node_id}: {err}"))
         })?;
 
-    let Some((title, mut summary, mut detail, vault_id, sub_vault_id, privacy_tier)) = node else {
+    let Some((title, summary, detail, vault_id, sub_vault_id, privacy_tier)) = node else {
         return Ok(false);
     };
 
     let settings = config::get_embedding_settings(conn).map_err(|err| {
         EmbedError::InferenceFailed(format!("embedding settings read failed: {err}"))
     })?;
-
-    let mut title = title;
 
     let effective_tier = crate::resolve_node_effective_privacy(
         conn,
@@ -130,13 +128,6 @@ pub fn embed_node_with_config(
             let _ = delete_node_embeddings(conn, node_id);
             return Ok(false);
         }
-    }
-
-    if crate::privacy::embedding_uses_stub(&effective_tier) {
-        let stub = crate::privacy::generate_pointer_stub(&title, node_id);
-        title = stub;
-        summary = String::new();
-        detail = None;
     }
 
     let chunks = chunk_node_text(&title, &summary, detail.as_deref(), chunk_config);
@@ -845,7 +836,7 @@ mod tests {
             Some("Changed Detail")
         ));
 
-        // Scenario 6: Privacy tier changes (open -> locked), text remains same
+        // Scenario 6: Privacy tier changes (open -> redacted), text remains same
         assert!(stored_text_columns_changed(
             "Title",
             "Summary",
@@ -853,21 +844,21 @@ mod tests {
             false,
             false,
             "open",
-            "locked",
+            "redacted",
             "Title",
             "Summary",
             Some("Detail")
         ));
 
-        // Scenario 7: Privacy tier stays locked, text remains same
+        // Scenario 7: Privacy tier stays redacted, text remains same
         assert!(!stored_text_columns_changed(
             "Title",
             "Summary",
             Some("Detail"),
             false,
             false,
-            "locked",
-            "locked",
+            "redacted",
+            "redacted",
             "Title",
             "Summary",
             Some("Detail")
@@ -946,33 +937,6 @@ mod tests {
             "nomic-embed-text"
         )?
         .is_none());
-
-        // 2. Set up a remote destination and a locked node, with is_unlocked = false.
-        conn.execute(
-            "INSERT INTO vaults (id, name, privacy_tier) VALUES ('v_locked', 'Locked Vault', 'locked');",
-            [],
-        )?;
-        conn.execute(
-            "INSERT INTO nodes (id, vault_id, node_type, title, summary, detail, source, source_type, priority, meta)
-             VALUES ('n_locked', 'v_locked', 'concept', 'Secret Title', 'Secret Summary', 'Secret Detail', 'test', 'manual', '{}', '{}');",
-            [],
-        )?;
-
-        // Try embedding n_locked when is_unlocked = false.
-        // It should embed the stub.
-        let is_embedded = embed_node(&mut conn, "n_locked", &engine, &cancel, false)?;
-        assert!(is_embedded);
-        assert_eq!(engine.calls(), 1);
-
-        let inputs = match engine.inputs.lock() {
-            Ok(guard) => guard,
-            Err(_) => panic!("Failed to lock inputs"),
-        };
-        assert_eq!(inputs.len(), 1);
-        let stub = crate::privacy::generate_pointer_stub("Secret Title", "n_locked");
-        assert!(inputs[0].contains(&stub));
-        assert!(!inputs[0].contains("Secret Summary"));
-        assert!(!inputs[0].contains("Secret Detail"));
 
         // 3. Set up a redacted node and verify it is skipped and deletes stale vectors.
         conn.execute(

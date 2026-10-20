@@ -1,3 +1,5 @@
+#![allow(clippy::double_must_use)]
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +32,19 @@ pub enum LlmProvider {
     OpenAi,
     Google,
     XAi,
+}
+
+impl LlmProvider {
+    pub fn is_cloud(&self) -> bool {
+        matches!(
+            self,
+            LlmProvider::Anthropic | LlmProvider::OpenAi | LlmProvider::Google | LlmProvider::XAi
+        )
+    }
+
+    pub fn is_local(&self) -> bool {
+        !self.is_cloud()
+    }
 }
 
 pub struct UniversalClient {

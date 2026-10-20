@@ -298,36 +298,41 @@ export default function ImportHub({
     let unlisten: (() => void) | undefined;
     let cancelled = false;
 
-    void getCurrentWindow()
-      .onDragDropEvent((event) => {
-        if (event.payload.type !== "drop") return;
-        const state = dragDropStateRef.current;
-        if (
-          !state.selectedFramework ||
-          !state.selectedVault ||
-          state.importBusy ||
-          state.starting
-        ) {
-          if (state.importBusy) setStartError(BUSY_IMPORT_MESSAGE);
-          return;
-        }
-        const pdfPath = event.payload.paths.find(isPdfPath);
-        if (!pdfPath) {
-          setStartError("Only PDF files are supported for import.");
-          return;
-        }
-        void state.beginImport(pdfPath);
-      })
-      .then((fn) => {
-        if (cancelled) {
-          fn();
-          return;
-        }
-        unlisten = fn;
-      })
-      .catch(() => {
-        // Non-Tauri / browser preview — drag-drop stays unavailable.
-      });
+    if (
+      typeof window !== "undefined" &&
+      ("__TAURI_INTERNALS__" in window || "__TAURI_IPC__" in window || "__TAURI__" in window)
+    ) {
+      void getCurrentWindow()
+        .onDragDropEvent((event) => {
+          if (event.payload.type !== "drop") return;
+          const state = dragDropStateRef.current;
+          if (
+            !state.selectedFramework ||
+            !state.selectedVault ||
+            state.importBusy ||
+            state.starting
+          ) {
+            if (state.importBusy) setStartError(BUSY_IMPORT_MESSAGE);
+            return;
+          }
+          const pdfPath = event.payload.paths.find(isPdfPath);
+          if (!pdfPath) {
+            setStartError("Only PDF files are supported for import.");
+            return;
+          }
+          void state.beginImport(pdfPath);
+        })
+        .then((fn) => {
+          if (cancelled) {
+            fn();
+            return;
+          }
+          unlisten = fn;
+        })
+        .catch(() => {
+          // Non-Tauri / browser preview — drag-drop stays unavailable.
+        });
+    }
 
     return () => {
       cancelled = true;

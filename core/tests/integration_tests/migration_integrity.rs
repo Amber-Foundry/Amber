@@ -673,3 +673,200 @@ fn test_migration_0012_unifies_sub_vaults_into_vaults() -> Result<(), Box<dyn st
 
     Ok(())
 }
+
+#[test]
+fn test_security_regression_migration_0013_zero_locked_to_open_remaps(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // CRITICAL SECURITY ASSERTION:
+    // Explicitly verify that zero rows previously tagged 'locked' are ever remapped to 'open'.
+    // A 'locked' -> 'open' remap would constitute a severe privacy failure, exposing protected
+    // content to cloud LLM calls.
+    let conn = Connection::open_in_memory()?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        "#,
+    )?;
+
+    // Apply migrations 1 through 12
+    apply_migrations_through_version(&conn, 12);
+
+    // Seed test data with 'locked' privacy_tier across all entity types
+    conn.execute(
+        "INSERT INTO vaults (id, name, privacy_tier) VALUES ('v_sec_locked', 'Sec Locked Vault', 'locked');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO sub_vaults (id, vault_id, name, privacy_tier) VALUES ('sv_sec_locked', 'v_sec_locked', 'Sec Subvault', 'locked');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO nodes (id, vault_id, title, summary, privacy_tier) VALUES ('n_sec_locked', 'v_sec_locked', 'Locked Secret', 'Summary', 'locked');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO privacy_overrides (node_id, privacy_tier) VALUES ('n_sec_locked', 'locked');",
+        [],
+    )?;
+
+    // Record tracked IDs before running migration 0013
+    let locked_vault_ids = vec!["v_sec_locked"];
+    let locked_node_ids = vec!["n_sec_locked"];
+
+    // Run migration 0013
+    apply_migrations_through_version(&conn, 13);
+
+    // SECURITY CHECK 1: Zero previously-locked vaults end up tagged 'open'
+    for id in &locked_vault_ids {
+        let tier: String = conn.query_row(
+            "SELECT privacy_tier FROM vaults WHERE id = ?1;",
+            params![id],
+            |row| row.get(0),
+        )?;
+        assert_ne!(
+            tier, "open",
+            "SECURITY FAILURE: Vault {id} was tagged 'locked' pre-migration but ended up 'open'!"
+        );
+    }
+
+    // SECURITY CHECK 2: Zero previously-locked nodes end up tagged 'open'
+    for id in &locked_node_ids {
+        let tier: String = conn.query_row(
+            "SELECT privacy_tier FROM nodes WHERE id = ?1;",
+            params![id],
+            |row| row.get(0),
+        )?;
+        assert_ne!(
+            tier, "open",
+            "SECURITY FAILURE: Node {id} was tagged 'locked' pre-migration but ended up 'open'!"
+        );
+    }
+
+    // SECURITY CHECK 3: Zero previously-locked sub-vaults end up tagged 'open' (checking sub_vaults table directly)
+    let sv_tier: String = conn.query_row(
+        "SELECT privacy_tier FROM sub_vaults WHERE id = 'sv_sec_locked';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_ne!(
+        sv_tier, "open",
+        "SECURITY FAILURE: Sub-vault sv_sec_locked was tagged 'locked' pre-migration but ended up 'open'!"
+    );
+
+    // SECURITY CHECK 4: Zero previously-locked privacy_overrides end up tagged 'open'
+    let override_tier: String = conn.query_row(
+        "SELECT privacy_tier FROM privacy_overrides WHERE node_id = 'n_sec_locked';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_ne!(
+        override_tier, "open",
+        "SECURITY FAILURE: Privacy override for n_sec_locked was tagged 'locked' pre-migration but ended up 'open'!"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_migration_0013_remaps_all_locked_data_to_redacted() -> Result<(), Box<dyn std::error::Error>>
+{
+    let conn = Connection::open_in_memory()?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        "#,
+    )?;
+
+    // Apply migrations 1 through 12
+    apply_migrations_through_version(&conn, 12);
+
+    // Seed mixed privacy tier dataset
+    conn.execute(
+        "INSERT INTO vaults (id, name, privacy_tier) VALUES ('v_open', 'Open Vault', 'open');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO vaults (id, name, privacy_tier) VALUES ('v_local', 'Local Vault', 'local_only');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO vaults (id, name, privacy_tier) VALUES ('v_locked', 'Locked Vault', 'locked');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO vaults (id, name, privacy_tier) VALUES ('v_redacted', 'Redacted Vault', 'redacted');",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO nodes (id, vault_id, title, summary, privacy_tier) VALUES ('n_locked', 'v_locked', 'Locked Node', 'Sum', 'locked');",
+        [],
+    )?;
+
+    // Apply migration 0013
+    apply_migrations_through_version(&conn, 13);
+
+    // Assert previously 'locked' items are now 'redacted'
+    let v_locked_tier: String = conn.query_row(
+        "SELECT privacy_tier FROM vaults WHERE id = 'v_locked';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(
+        v_locked_tier, "redacted",
+        "v_locked should remap to redacted"
+    );
+
+    let n_locked_tier: String = conn.query_row(
+        "SELECT privacy_tier FROM nodes WHERE id = 'n_locked';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(
+        n_locked_tier, "redacted",
+        "n_locked should remap to redacted"
+    );
+
+    // Assert untouched items remain intact
+    let v_open_tier: String = conn.query_row(
+        "SELECT privacy_tier FROM vaults WHERE id = 'v_open';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(v_open_tier, "open");
+
+    let v_local_tier: String = conn.query_row(
+        "SELECT privacy_tier FROM vaults WHERE id = 'v_local';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(v_local_tier, "local_only");
+
+    // Assert ZERO remaining 'locked' rows exist anywhere in the database
+    let remaining_locked_vaults: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM vaults WHERE privacy_tier = 'locked';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(remaining_locked_vaults, 0, "No locked vaults should remain");
+
+    let remaining_locked_nodes: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM nodes WHERE privacy_tier = 'locked';",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(remaining_locked_nodes, 0, "No locked nodes should remain");
+
+    Ok(())
+}

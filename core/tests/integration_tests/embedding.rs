@@ -670,7 +670,7 @@ fn test_privacy_tier_change_clears_stale_embeddings() -> Result<(), Box<dyn std:
     assert!(before.is_some());
 
     conn.execute(
-        "UPDATE nodes SET privacy_tier = 'locked' WHERE id = 'node_test';",
+        "UPDATE nodes SET privacy_tier = 'redacted' WHERE id = 'node_test';",
         [],
     )?;
 

@@ -3,18 +3,21 @@ import { describe, it, expect } from "vitest";
 import { PrivacyBadge } from "./PrivacyBadge";
 
 describe("PrivacyBadge Component", () => {
-  it("renders correct classes for standard tiers", () => {
+  it("renders correct classes for the 3 standard tiers", () => {
     const { container, rerender } = render(<PrivacyBadge tier="open" />);
     expect(container.querySelector(".privacy-badge")).toHaveClass("open");
 
     rerender(<PrivacyBadge tier="local_only" />);
     expect(container.querySelector(".privacy-badge")).toHaveClass("local_only");
 
-    rerender(<PrivacyBadge tier="locked" />);
-    expect(container.querySelector(".privacy-badge")).toHaveClass("locked");
-
     rerender(<PrivacyBadge tier="redacted" />);
     expect(container.querySelector(".privacy-badge")).toHaveClass("redacted");
+  });
+
+  it("normalizes legacy 'locked' tier to 'redacted'", () => {
+    const { container } = render(<PrivacyBadge tier="locked" />);
+    expect(container.querySelector(".privacy-badge")).toHaveClass("redacted");
+    expect(container.querySelector(".privacy-badge")).not.toHaveClass("locked");
   });
 
   it("falls back to open tier for unknown values", () => {

@@ -926,12 +926,6 @@ export default function NodeEditorExpanded({
                       Local-Only
                     </option>
                     <option
-                      value="locked"
-                      disabled={getPrivacyRank("locked") < getPrivacyRank(parentTier)}
-                    >
-                      Locked
-                    </option>
-                    <option
                       value="redacted"
                       disabled={getPrivacyRank("redacted") < getPrivacyRank(parentTier)}
                     >

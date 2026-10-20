@@ -53,7 +53,7 @@ fn test_deep_nesting_15_levels_resolution_and_performance() -> Result<(), Box<dy
     for depth in 1..=15 {
         let parent = format!("v_level_{}", depth - 1);
         let id = format!("v_level_{depth}");
-        let tier = if depth == 8 { "locked" } else { "open" };
+        let tier = if depth == 8 { "redacted" } else { "open" };
         let name = format!("Level {depth}");
 
         conn.execute(
@@ -79,8 +79,8 @@ fn test_deep_nesting_15_levels_resolution_and_performance() -> Result<(), Box<dy
 
     let eff_12 = resolve_vault_effective_privacy(&conn, "v_level_12")?;
     assert_eq!(
-        eff_12, "locked",
-        "Level 8 locked tier must propagate to descendant level 12"
+        eff_12, "redacted",
+        "Level 8 redacted tier must propagate to descendant level 12"
     );
 
     Ok(())
@@ -153,7 +153,7 @@ fn test_query_time_cycle_defense_in_depth_terminates_safely() -> Result<(), Box<
         r#"
         PRAGMA foreign_keys = OFF;
         INSERT INTO vaults (id, parent_vault_id, name, privacy_tier) VALUES ('v_x', 'v_y', 'X', 'open');
-        INSERT INTO vaults (id, parent_vault_id, name, privacy_tier) VALUES ('v_y', 'v_x', 'Y', 'locked');
+        INSERT INTO vaults (id, parent_vault_id, name, privacy_tier) VALUES ('v_y', 'v_x', 'Y', 'redacted');
         PRAGMA foreign_keys = ON;
         "#,
     )?;
@@ -163,7 +163,7 @@ fn test_query_time_cycle_defense_in_depth_terminates_safely() -> Result<(), Box<
     let privacy = resolve_vault_effective_privacy(&conn, "v_x")?;
     let elapsed = start.elapsed();
 
-    assert_eq!(privacy, "locked");
+    assert_eq!(privacy, "redacted");
     assert!(
         elapsed.as_millis() < 50,
         "Cyclic query must terminate immediately via cycle guard"
